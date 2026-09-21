@@ -16,24 +16,44 @@ export type SceneKind = "title" | "context" | "workspace" | "outro";
 export type Scene = { id: string; kind: SceneKind; durationMs: number; step?: Step; caption?: string };
 
 export const scenes: Scene[] = [
-  { id: "title", kind: "title", durationMs: 3200 },
-  { id: "context", kind: "context", durationMs: 4800 },
-  { id: "incoming", kind: "workspace", durationMs: 2600, step: "incoming_call", caption: "A call arrives. The copilot is already listening." },
-  { id: "intent", kind: "workspace", durationMs: 3400, step: "intent_detected", caption: "Intent classified from the first customer sentence, with evidence." },
-  { id: "verify", kind: "workspace", durationMs: 2600, step: "verification_started", caption: "Nothing unlocks until the customer is verified." },
-  { id: "email", kind: "workspace", durationMs: 2200, step: "email_verified", caption: "Factor one confirmed." },
-  { id: "verified", kind: "workspace", durationMs: 3200, step: "customer_verified", caption: "Factor two confirmed. Account context unlocks." },
-  { id: "account", kind: "workspace", durationMs: 2600, step: "account_retrieved", caption: "CRM and billing context, pulled without leaving the call." },
-  { id: "transactions", kind: "workspace", durationMs: 2800, step: "transactions_loaded", caption: "Recent transactions load into the workspace." },
-  { id: "duplicate", kind: "workspace", durationMs: 3400, step: "duplicate_detected", caption: "Two identical charges, 96 seconds apart. Flagged." },
-  { id: "recommend", kind: "workspace", durationMs: 3600, step: "refund_recommended", caption: "The recommendation cites the SOP scenario it is based on." },
-  { id: "prepare", kind: "workspace", durationMs: 3000, step: "refund_prepared", caption: "Refund pre-filled. The copilot never submits on its own." },
+  { id: "title", kind: "title", durationMs: 3000 },
+  { id: "context", kind: "context", durationMs: 4500 },
+  { id: "incoming", kind: "workspace", durationMs: 6500, step: "incoming_call", caption: "A call arrives. The copilot is already listening." },
+  { id: "intent", kind: "workspace", durationMs: 9000, step: "intent_detected", caption: "Intent classified from the first customer sentence, with evidence." },
+  { id: "verify", kind: "workspace", durationMs: 9000, step: "verification_started", caption: "Nothing unlocks until the customer is verified." },
+  { id: "email", kind: "workspace", durationMs: 8500, step: "email_verified", caption: "Factor one confirmed." },
+  { id: "verified", kind: "workspace", durationMs: 3000, step: "customer_verified", caption: "Factor two confirmed. Account context unlocks." },
+  { id: "account", kind: "workspace", durationMs: 1500, step: "account_retrieved", caption: "CRM and billing context, pulled without leaving the call." },
+  { id: "transactions", kind: "workspace", durationMs: 6200, step: "transactions_loaded", caption: "Recent transactions load into the workspace." },
+  { id: "duplicate", kind: "workspace", durationMs: 2000, step: "duplicate_detected", caption: "Two identical charges, 96 seconds apart. Flagged." },
+  { id: "recommend", kind: "workspace", durationMs: 9000, step: "refund_recommended", caption: "The recommendation cites the SOP scenario it is based on." },
+  { id: "prepare", kind: "workspace", durationMs: 7500, step: "refund_prepared", caption: "Refund pre-filled. The copilot never submits on its own." },
   { id: "approval", kind: "workspace", durationMs: Infinity, step: "awaiting_human_approval", caption: "The human decides. Presenter clicks Approve to continue." },
-  { id: "approved", kind: "workspace", durationMs: 2600, step: "refund_approved", caption: "Approved within the agent's authority band." },
-  { id: "document", kind: "workspace", durationMs: 4200, step: "documentation_generated", caption: "Case summary written automatically." },
-  { id: "resolved", kind: "workspace", durationMs: 2800, step: "resolved", caption: "Resolved. Under two minutes of talk time." },
-  { id: "outro", kind: "outro", durationMs: 5000 },
+  { id: "approved", kind: "workspace", durationMs: 2000, step: "refund_approved", caption: "Approved within the agent's authority band." },
+  { id: "document", kind: "workspace", durationMs: 6500, step: "documentation_generated", caption: "Case summary written automatically." },
+  { id: "resolved", kind: "workspace", durationMs: 6500, step: "resolved", caption: "Resolved. The copilot did everything except decide." },
+  { id: "outro", kind: "outro", durationMs: 4500 },
 ];
+
+/*
+  Audio alignment. The call audio file starts at the "incoming" scene.
+  The approval scene is open-ended on screen, so the audio is given a fixed
+  5s slot there (customer line + silence) and is paused/resumed around the
+  presenter's click. Each scene's offset lets seeking stay in sync.
+*/
+export const APPROVAL_AUDIO_SLOT_MS = 5000;
+export const CALL_AUDIO_START_SCENE = "incoming";
+
+export function sceneAudioOffsetMs(index: number): number | null {
+  const start = scenes.findIndex((s) => s.id === CALL_AUDIO_START_SCENE);
+  if (index < start) return null;
+  let t = 0;
+  for (let i = start; i < index; i++) {
+    const d = scenes[i].durationMs;
+    t += Number.isFinite(d) ? d : APPROVAL_AUDIO_SLOT_MS;
+  }
+  return t;
+}
 
 export type DemoState = {
   step: Step;

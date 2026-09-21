@@ -17,6 +17,7 @@ import { Wordmark } from "@/components/brand/wordmark";
 import { Button } from "@/components/ui/button";
 import { Mono } from "@/components/workspace/bits";
 import { Workspace } from "@/components/workspace/workspace";
+import { PresentationAudio } from "./audio";
 import { company, stepTitles } from "@/lib/demo-data";
 import { scenes, useDemo } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -283,6 +284,7 @@ export function PresentationPlayer() {
 
         <div className="flex items-center gap-1">
           <span className="mr-2 hidden text-xs text-white/40 lg:inline">Space play, arrows step, F fullscreen</span>
+          <PresentationAudio />
           <Button variant="ghost" size="sm" className="rounded-full text-white/80 hover:bg-white/10 hover:text-white" onClick={toggleFullscreen}>
             {fullscreen ? <ArrowsInIcon data-icon="inline-start" /> : <ArrowsOutIcon data-icon="inline-start" />} {fullscreen ? "Exit" : "Fullscreen"}
           </Button>
