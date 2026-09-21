@@ -17,6 +17,34 @@ import { scenes, sceneAudioOffsetMs, useDemo } from "@/lib/store";
 */
 
 const AMBIENT_VOLUME = 0.08;
+const AMBIENT_CANDIDATES = ["/audio/ambient.mp3", "/audio/ambient.m4a", "/audio/ambient.wav"];
+const CALL_CANDIDATES = ["/audio/call.mp3", "/audio/call.m4a", "/audio/call.wav"];
+
+/** First candidate that exists on the server, or null. Avoids 404 noise from <audio src>. */
+function useFirstAvailable(candidates: string[]) {
+  const [src, setSrc] = useState<string | null | undefined>(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      for (const url of candidates) {
+        try {
+          const res = await fetch(url, { method: "HEAD" });
+          const type = res.headers.get("content-type") ?? "";
+          if (res.ok && /audio|octet-stream|mp4/.test(type)) {
+            if (!cancelled) setSrc(url);
+            return;
+          }
+        } catch {}
+      }
+      if (!cancelled) setSrc(null);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return src;
+}
 const PAD_GAIN = 0.03;
 const APPROVAL_CUSTOMER_LINE_MS = 3200;
 
@@ -71,7 +99,9 @@ export function PresentationAudio() {
   const step = useDemo((s) => s.step);
 
   const [muted, setMuted] = useState(false);
-  const [ambientMissing, setAmbientMissing] = useState(false);
+  const ambientSrc = useFirstAvailable(AMBIENT_CANDIDATES);
+  const callSrc = useFirstAvailable(CALL_CANDIDATES);
+  const ambientMissing = ambientSrc === null;
   const ambientRef = useRef<HTMLAudioElement>(null);
   const callRef = useRef<HTMLAudioElement>(null);
 
@@ -88,7 +118,7 @@ export function PresentationAudio() {
     el.volume = AMBIENT_VOLUME;
     if (ambientOn) void el.play().catch(() => {});
     else el.pause();
-  }, [ambientOn, ambientMissing]);
+  }, [ambientOn, ambientMissing, ambientSrc]);
 
   // Call dialogue: seek to the scene offset on every scene change.
   useEffect(() => {
@@ -103,7 +133,7 @@ export function PresentationAudio() {
     el.currentTime = offset / 1000;
     if (isPlaying && !muted) void el.play().catch(() => {});
     else el.pause();
-  }, [sceneIndex, hasStarted, isPlaying, muted]);
+  }, [sceneIndex, hasStarted, isPlaying, muted, callSrc]);
 
   // Approval scene: let the customer finish, then hold until the presenter approves.
   useEffect(() => {
@@ -122,8 +152,8 @@ export function PresentationAudio() {
 
   return (
     <>
-      <audio ref={ambientRef} src="/audio/ambient.mp3" loop preload="auto" onError={() => setAmbientMissing(true)} />
-      <audio ref={callRef} src="/audio/call.mp3" preload="auto" />
+      {ambientSrc && <audio ref={ambientRef} src={ambientSrc} loop preload="auto" />}
+      {callSrc && <audio ref={callRef} src={callSrc} preload="auto" />}
       <Button
         variant="ghost"
         size="sm"
