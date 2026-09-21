@@ -1,36 +1,33 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Axentra Agent Copilot
 
-## Getting Started
+Graduation project MVP: an enterprise AI copilot that works alongside a customer experience agent on a live call. One real scenario (a duplicate payment refund at the fictional AtlasOne Communications), built end to end.
 
-First, run the development server:
+## Routes
+
+| Route | What it is |
+|---|---|
+| `/` | Landing page with a live, auto-cycling instance of the product as the hero visual |
+| `/demo` | Interactive Demo Mode. Drive every step with Next, or Auto-play. Alternate paths: failed verification, account lock, customer disputes the charge |
+| `/presentation` | Product Experience. Clicker-driven scene timeline for the 1-minute recording. Pauses indefinitely at the human approval step. Space, arrows, R, F |
+| `/sop` | The billing SOP the copilot cites |
+
+## Run
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Then open http://localhost:3000. `npm run build && npm start` for production.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Architecture
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- Next.js App Router, Tailwind v4, shadcn/ui (Radix), `motion/react`, Zustand, Phosphor icons, Geist and Geist Mono via `next/font`.
+- `src/lib/demo-data.ts` holds the scenario, SOP, transcript, and workflow. Nothing is hardcoded in components.
+- `src/lib/store.ts` is the state machine: `idle → incoming_call → … → resolved` plus branches. Interactive Demo and Presentation Mode drive the same store; the landing hero runs its own instance.
+- `src/components/workspace/*` is the four-zone Agent Workspace, rendered identically on `/demo` and `/presentation`.
+- Brand assets in `public/brand/`. The wordmark is used exactly as supplied (`src/components/brand/wordmark.tsx`).
 
-## Learn More
+## Recording
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Open `/presentation` at 1920×1080, press F for fullscreen, then Start. The control bar hides after two seconds without mouse movement. At the approval scene the dialog opens on its own; click Approve to continue.

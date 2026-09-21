@@ -1,26 +1,177 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
 
+@custom-variant dark (&:is(.dark *));
+
+/*
+  Axentra brand tokens. One accent (cyan), navy carries the page.
+  These never change between light and dark; the semantic shadcn
+  variables below are what flip.
+*/
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --navy: #102542;
+  --navy-deep: #0b1a2f;
+  --cyan: #0bebf9;
+  --muted-blue: #5995b1;
+  --bg-light: #f7f9fa;
 }
 
 @theme inline {
+  --color-navy: var(--navy);
+  --color-navy-deep: var(--navy-deep);
+  --color-cyan: var(--cyan);
+  --color-muted-blue: var(--muted-blue);
+  --color-bg-light: var(--bg-light);
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-heading: var(--font-geist-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: var(--radius);
+  --radius-2xl: calc(var(--radius) * 1.5);
+  --radius-3xl: calc(var(--radius) * 2);
+  --radius-4xl: 9999px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* Light mode: primary for the workspace. */
+:root {
+  --radius: 0.5rem;
+  --background: #f7f9fa;
+  --foreground: #102542;
+  --card: #ffffff;
+  --card-foreground: #102542;
+  --popover: #ffffff;
+  --popover-foreground: #102542;
+  --primary: #102542;
+  --primary-foreground: #ffffff;
+  --secondary: #e7edf2;
+  --secondary-foreground: #102542;
+  --muted: #eef2f5;
+  --muted-foreground: #5a6b7d;
+  --accent: #e7edf2;
+  --accent-foreground: #102542;
+  --destructive: #b3261e;
+  --border: rgb(16 37 66 / 0.12);
+  --input: rgb(16 37 66 / 0.16);
+  --ring: #5995b1;
+  --chart-1: #102542;
+  --chart-2: #5995b1;
+  --chart-3: #0bebf9;
+  --chart-4: #9db8c9;
+  --chart-5: #d5e0e8;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #102542;
+  --sidebar-primary: #102542;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #eef2f5;
+  --sidebar-accent-foreground: #102542;
+  --sidebar-border: rgb(16 37 66 / 0.12);
+  --sidebar-ring: #5995b1;
+}
+
+/* Dark mode: deep navy surfaces, reversed wordmark. */
+.dark {
+  --background: #0b1a2f;
+  --foreground: #e6edf3;
+  --card: #102542;
+  --card-foreground: #e6edf3;
+  --popover: #102542;
+  --popover-foreground: #e6edf3;
+  --primary: #e6edf3;
+  --primary-foreground: #102542;
+  --secondary: #1b3355;
+  --secondary-foreground: #e6edf3;
+  --muted: #17304f;
+  --muted-foreground: #9fb3c6;
+  --accent: #1b3355;
+  --accent-foreground: #e6edf3;
+  --destructive: #f28b82;
+  --border: rgb(230 237 243 / 0.12);
+  --input: rgb(230 237 243 / 0.16);
+  --ring: #5995b1;
+  --chart-1: #e6edf3;
+  --chart-2: #5995b1;
+  --chart-3: #0bebf9;
+  --chart-4: #3d5a7c;
+  --chart-5: #1b3355;
+  --sidebar: #102542;
+  --sidebar-foreground: #e6edf3;
+  --sidebar-primary: #e6edf3;
+  --sidebar-primary-foreground: #102542;
+  --sidebar-accent: #17304f;
+  --sidebar-accent-foreground: #e6edf3;
+  --sidebar-border: rgb(230 237 243 / 0.12);
+  --sidebar-ring: #5995b1;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "ss01", "cv11";
+  }
+  ::selection {
+    background: color-mix(in oklch, var(--cyan) 35%, transparent);
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@layer utilities {
+  /* Horizontal scroll track without a visible scrollbar (landing sequence). */
+  .scrollbar-none {
+    scrollbar-width: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+  /* Presentation surface: no scrollbars during capture. */
+  .capture-surface,
+  .capture-surface * {
+    scrollbar-width: none;
+  }
+  .capture-surface::-webkit-scrollbar,
+  .capture-surface *::-webkit-scrollbar {
+    display: none;
+  }
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
 }
