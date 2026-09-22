@@ -24,7 +24,7 @@ if [ -f public/audio/call.mp3 ]; then
   [ -x exports/.mux-av ] || xcrun swiftc -O -parse-as-library -o exports/.mux-av scripts/mux-av.swift
   AUDIO=("public/audio/call.mp3:1.0")
   for bed in public/audio/ambient.mp3 public/audio/ambient.m4a; do
-    [ -f "$bed" ] && AUDIO+=("$bed:0.08") && break
+    [ -f "$bed" ] && AUDIO+=("$bed:0.08:loop") && break
   done
   exports/.mux-av exports/axentra-demo-silent.mp4 exports/axentra-demo.mp4 "${AUDIO[@]}"
   echo "done: exports/axentra-demo.mp4 (with audio)"

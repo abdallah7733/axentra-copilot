@@ -1,6 +1,8 @@
 // Muxes a video track with one or two audio tracks into an MP4.
-//   mux-av <video.mp4> <out.mp4> <audio1.mp3>[:volume] [<audio2.mp3>[:volume]]
-// Audio starts at 0 and is truncated to the video's duration.
+//   mux-av <video.mp4> <out.mp4> <audio.mp3>[:volume[:loop]] ...
+// Each audio track starts at 0 and is truncated to the video's duration.
+// A track is repeated to fill the video ONLY with the explicit ":loop" flag,
+// which is for the ambient bed. Dialogue must never loop.
 import AVFoundation
 
 @main struct Main {
@@ -27,21 +29,27 @@ import AVFoundation
     try vDst.insertTimeRange(CMTimeRange(start: .zero, duration: vDur), of: vSrc, at: .zero)
 
     for spec in args.dropFirst(3) {
-      let parts = spec.split(separator: ":", maxSplits: 1)
+      let parts = spec.split(separator: ":", maxSplits: 2)
       let path = String(parts[0])
       let vol = parts.count > 1 ? Float(parts[1]) ?? 1.0 : 1.0
+      let shouldLoop = parts.count > 2 && parts[2] == "loop"
       let asset = AVURLAsset(url: URL(fileURLWithPath: path))
       guard let src = try await asset.loadTracks(withMediaType: .audio).first,
             let dst = comp.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else { continue }
       let aDur = try await asset.load(.duration)
-      var remaining = vDur
-      var at = CMTime.zero
-      // Loop the source if it is shorter than the video (used for the ambient bed).
-      while remaining > .zero {
-        let chunk = CMTimeMinimum(aDur, remaining)
-        try dst.insertTimeRange(CMTimeRange(start: .zero, duration: chunk), of: src, at: at)
-        at = at + chunk
-        remaining = remaining - chunk
+      if shouldLoop {
+        var remaining = vDur
+        var at = CMTime.zero
+        while remaining > .zero {
+          let chunk = CMTimeMinimum(aDur, remaining)
+          try dst.insertTimeRange(CMTimeRange(start: .zero, duration: chunk), of: src, at: at)
+          at = at + chunk
+          remaining = remaining - chunk
+        }
+      } else {
+        // Play once. Shorter than the video means silence after it ends, which is correct.
+        let dur = CMTimeMinimum(aDur, vDur)
+        try dst.insertTimeRange(CMTimeRange(start: .zero, duration: dur), of: src, at: .zero)
       }
       let p = AVMutableAudioMixInputParameters(track: dst)
       p.setVolume(vol, at: .zero)
