@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { ArrowSquareOutIcon, CheckCircleIcon, LockSimpleIcon } from "@phosphor-icons/react/dist/ssr";
 import { Mono } from "@/components/workspace/bits";
 import { customer, duplicate, money, sop } from "@/lib/demo-data";
@@ -106,7 +107,7 @@ export function Strengths() {
           </Cell>
         </div>
         <p className="mt-6 flex items-center gap-1.5 text-sm text-muted-foreground">
-          Read the full policy the demo runs on <a href="/sop" className="inline-flex items-center gap-1 text-muted-blue hover:text-foreground">Billing SOP 4.2 <ArrowSquareOutIcon className="size-3.5" /></a>
+          Read the full policy the demo runs on <Link href="/sop" className="inline-flex items-center gap-1 text-muted-blue hover:text-foreground">Billing SOP 4.2 <ArrowSquareOutIcon className="size-3.5" /></Link>
         </p>
       </div>
     </section>

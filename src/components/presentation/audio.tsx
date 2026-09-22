@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { SpeakerHighIcon, SpeakerSlashIcon } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
+import { asset } from "@/lib/base-path";
 import { scenes, sceneAudioOffsetMs, useDemo } from "@/lib/store";
 
 /*
@@ -17,8 +18,8 @@ import { scenes, sceneAudioOffsetMs, useDemo } from "@/lib/store";
 */
 
 const AMBIENT_VOLUME = 0.08;
-const AMBIENT_CANDIDATES = ["/audio/ambient.mp3", "/audio/ambient.m4a", "/audio/ambient.wav"];
-const CALL_CANDIDATES = ["/audio/call.mp3", "/audio/call.m4a", "/audio/call.wav"];
+const AMBIENT_CANDIDATES = ["/audio/ambient.mp3", "/audio/ambient.m4a", "/audio/ambient.wav"].map(asset);
+const CALL_CANDIDATES = ["/audio/call.mp3", "/audio/call.m4a", "/audio/call.wav"].map(asset);
 
 /** First candidate that exists on the server, or null. Avoids 404 noise from <audio src>. */
 function useFirstAvailable(candidates: string[]) {
