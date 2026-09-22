@@ -136,12 +136,21 @@ export function PresentationAudio() {
   }, [sceneIndex, hasStarted, isPlaying, muted, callSrc]);
 
   // Approval scene: let the customer finish, then hold until the presenter approves.
+  // Driven off the audio's own clock rather than a wall-clock timer, so it cannot
+  // drift or miss when the element mounts late (the file is probed asynchronously).
   useEffect(() => {
     const el = callRef.current;
-    if (!el || scene.step !== "awaiting_human_approval" || step === "refund_approved") return;
-    const t = setTimeout(() => el.pause(), APPROVAL_CUSTOMER_LINE_MS);
-    return () => clearTimeout(t);
-  }, [scene.step, step, sceneIndex, isPlaying]);
+    if (!el || !callSrc || scene.step !== "awaiting_human_approval" || step === "refund_approved") return;
+    const offset = sceneAudioOffsetMs(sceneIndex);
+    if (offset === null) return;
+    const holdAt = (offset + APPROVAL_CUSTOMER_LINE_MS) / 1000;
+    const hold = () => {
+      if (el.currentTime >= holdAt && !el.paused) el.pause();
+    };
+    hold();
+    el.addEventListener("timeupdate", hold);
+    return () => el.removeEventListener("timeupdate", hold);
+  }, [scene.step, step, sceneIndex, callSrc]);
 
   useEffect(() => {
     if (!hasStarted) {
