@@ -79,7 +79,6 @@ function OutroScene() {
       </motion.p>
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.8, delay: 1.4 }} className="flex flex-col items-center">
         <WordmarkLockup lockup="reversed" height={44} />
-        <span className="mt-6 text-sm text-white/45">Graduation Project MVP, AI Copilot Diploma</span>
       </motion.div>
     </div>
   );
