@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Wordmark } from "@/components/brand/wordmark";
+import { SLOGAN, Wordmark } from "@/components/brand/wordmark";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 
@@ -17,7 +17,8 @@ export function Header() {
           <Link href="/" aria-label="Axentra home" className="flex items-center">
             <Wordmark lockup="reversed" height={18} />
           </Link>
-          <span className="hidden rounded-full border border-white/20 px-2 py-0.5 text-[11px] text-white/70 sm:inline">Graduation Project MVP</span>
+          <span className="hidden h-4 w-px bg-white/20 sm:block" />
+          <span className="hidden text-[11px] tracking-[0.12em] text-white/65 sm:inline">{SLOGAN}</span>
         </div>
         <nav className="hidden items-center gap-7 text-sm text-white/80 md:flex" aria-label="Primary">
           {nav.map((n) => (

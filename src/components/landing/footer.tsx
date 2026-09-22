@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Wordmark } from "@/components/brand/wordmark";
+import { SLOGAN, Wordmark } from "@/components/brand/wordmark";
 
 export function Footer() {
   return (
@@ -8,7 +8,7 @@ export function Footer() {
         <div className="flex items-center gap-4">
           <Wordmark height={16} />
           <span className="hidden h-4 w-px bg-border md:block" />
-          <span>Graduation Project MVP, AI Copilot Diploma</span>
+          <span className="text-[13px] tracking-[0.12em]">{SLOGAN}</span>
         </div>
         <nav className="flex flex-wrap gap-5" aria-label="Footer">
           <Link href="/demo" className="hover:text-foreground">Launch Demo</Link>

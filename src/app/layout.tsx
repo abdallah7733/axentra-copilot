@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Axentra Agent Copilot",
   description:
-    "AI assistance that works alongside your customer experience team. Graduation project MVP.",
+    "AI-Assisted CX Copilot. AI assistance that works alongside your customer experience team.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
