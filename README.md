@@ -38,4 +38,4 @@ Open `/presentation` at 1920×1080, press F for fullscreen, then Start. The cont
 scripts/export-video.sh
 ```
 
-Records `/presentation?from=incoming&capture=1` headlessly (Playwright, 1920×1080), clicks Approve at the 5-second audio slot, encodes H.264 at 30 fps, then muxes in `public/audio/call.mp3` and the ambient bed. Output: `exports/axentra-demo.mp4`. Time 0.0 is the "incoming call" scene, the same origin as `docs/call-audio-prompt.md`. Needs a running server on port 3000 and `npx playwright install chromium` once.
+Records Presentation Mode headlessly (Playwright, 1920×1080) from the title card through the outro, clicks Approve at the 5-second audio slot, encodes H.264 at 30 fps, then muxes in `public/audio/call.mp3` (offset to the call scene) and the ambient bed. Output: `exports/axentra-demo.mp4`. Needs a running server on port 3000 and `npx playwright install chromium` once.

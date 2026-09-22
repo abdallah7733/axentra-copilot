@@ -1,6 +1,8 @@
 // Records Presentation Mode headlessly at 1920x1080 and writes exports/presentation.webm
-// plus exports/presentation.json (trim offset in ms so the file can start at the
-// "incoming" scene, where the call audio starts).
+// plus exports/presentation.json:
+//   trimMs      where the title card begins, so the export starts cleanly on it
+//   audioStartMs  where the call scene begins relative to that, which is where
+//                 the dialogue track has to start
 //
 //   node scripts/record-presentation.mjs [baseUrl]
 //
@@ -29,10 +31,12 @@ const context = await browser.newContext({
 const page = await context.newPage();
 const videoStartedAt = Date.now();
 
-await page.goto(`${BASE}/presentation?from=incoming&capture=1`, { waitUntil: "domcontentloaded" });
-await page.waitForSelector('[data-scene="incoming"]', { timeout: 15000 });
+await page.goto(`${BASE}/presentation?from=title&capture=1`, { waitUntil: "domcontentloaded" });
+await page.waitForSelector('[data-scene="title"]', { timeout: 15000 });
 const sceneStartedAt = Date.now();
-console.log("incoming scene started", sceneStartedAt - videoStartedAt, "ms into the recording");
+await page.waitForSelector('[data-scene="incoming"]', { timeout: 60000 });
+const callStartedAt = Date.now();
+console.log("title card at", sceneStartedAt - videoStartedAt, "ms; call scene", callStartedAt - sceneStartedAt, "ms after it");
 
 // Approval scene: click Approve so that the next scene starts exactly APPROVAL_SLOT_MS after the scene began.
 await page.waitForSelector('[data-scene="approval"]', { timeout: 120000 });
@@ -58,6 +62,7 @@ renameSync(join(TMP, webm), join(OUT, "presentation.webm"));
 rmSync(TMP, { recursive: true, force: true });
 const meta = {
   trimMs: sceneStartedAt - videoStartedAt,
+  audioStartMs: callStartedAt - sceneStartedAt,
   durationMs: endedAt - sceneStartedAt,
   recordedAt: new Date().toISOString(),
 };

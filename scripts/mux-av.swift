@@ -1,5 +1,5 @@
 // Muxes a video track with one or two audio tracks into an MP4.
-//   mux-av <video.mp4> <out.mp4> <audio.mp3>[:volume[:loop]] ...
+//   mux-av <video.mp4> <out.mp4> <audio.mp3>[:volume[:loop|once[:startSeconds]]] ...
 // Each audio track starts at 0 and is truncated to the video's duration.
 // A track is repeated to fill the video ONLY with the explicit ":loop" flag,
 // which is for the ambient bed. Dialogue must never loop.
@@ -29,17 +29,18 @@ import AVFoundation
     try vDst.insertTimeRange(CMTimeRange(start: .zero, duration: vDur), of: vSrc, at: .zero)
 
     for spec in args.dropFirst(3) {
-      let parts = spec.split(separator: ":", maxSplits: 2)
+      let parts = spec.split(separator: ":", maxSplits: 3)
       let path = String(parts[0])
       let vol = parts.count > 1 ? Float(parts[1]) ?? 1.0 : 1.0
       let shouldLoop = parts.count > 2 && parts[2] == "loop"
+      let startAt = parts.count > 3 ? CMTime(seconds: Double(parts[3]) ?? 0, preferredTimescale: 600) : .zero
       let asset = AVURLAsset(url: URL(fileURLWithPath: path))
       guard let src = try await asset.loadTracks(withMediaType: .audio).first,
             let dst = comp.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else { continue }
       let aDur = try await asset.load(.duration)
       if shouldLoop {
-        var remaining = vDur
-        var at = CMTime.zero
+        var remaining = vDur - startAt
+        var at = startAt
         while remaining > .zero {
           let chunk = CMTimeMinimum(aDur, remaining)
           try dst.insertTimeRange(CMTimeRange(start: .zero, duration: chunk), of: src, at: at)
@@ -48,8 +49,8 @@ import AVFoundation
         }
       } else {
         // Play once. Shorter than the video means silence after it ends, which is correct.
-        let dur = CMTimeMinimum(aDur, vDur)
-        try dst.insertTimeRange(CMTimeRange(start: .zero, duration: dur), of: src, at: .zero)
+        let dur = CMTimeMinimum(aDur, vDur - startAt)
+        try dst.insertTimeRange(CMTimeRange(start: .zero, duration: dur), of: src, at: startAt)
       }
       let p = AVMutableAudioMixInputParameters(track: dst)
       p.setVolume(vol, at: .zero)

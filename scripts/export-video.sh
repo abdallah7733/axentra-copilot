@@ -9,6 +9,7 @@ FPS=30
 
 node scripts/record-presentation.mjs "${1:-http://localhost:3000}"
 TRIM_MS=$(node -p 'require("./exports/presentation.json").trimMs')
+AUDIO_START=$(node -p '(require("./exports/presentation.json").audioStartMs/1000).toFixed(3)')
 
 rm -rf exports/.frames && mkdir -p exports/.frames
 "$FF" -hide_banner -loglevel error -ss "$(node -p "$TRIM_MS/1000")" -i exports/presentation.webm -r "$FPS" exports/.frames/%05d.png
@@ -22,9 +23,9 @@ rm -rf exports/.frames exports/presentation.webm
 # Mux the call dialogue and the ambient bed in, when they are present.
 if [ -f public/audio/call.mp3 ]; then
   [ -x exports/.mux-av ] || xcrun swiftc -O -parse-as-library -o exports/.mux-av scripts/mux-av.swift
-  AUDIO=("public/audio/call.mp3:1.0")
+  AUDIO=("public/audio/call.mp3:1.0:once:$AUDIO_START")
   for bed in public/audio/ambient.mp3 public/audio/ambient.m4a; do
-    [ -f "$bed" ] && AUDIO+=("$bed:0.08:loop") && break
+    [ -f "$bed" ] && AUDIO+=("$bed:0.08:loop:0") && break
   done
   exports/.mux-av exports/axentra-demo-silent.mp4 exports/axentra-demo.mp4 "${AUDIO[@]}"
   echo "done: exports/axentra-demo.mp4 (with audio)"
