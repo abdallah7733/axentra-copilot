@@ -11,15 +11,27 @@ const PATH =
 
 type Lockup = "navy" | "reversed" | "auto";
 
+/**
+ * The wordmark's SVG box spans the top of the `t` ascender to the round-letter
+ * overshoot, but the ink sits lower than that box: its measured centroid is 9.1%
+ * of the height below the box centre. Anything aligned to the box therefore reads
+ * high next to the letters. `opticalCenter` lifts the mark so its centroid lands
+ * on the row's centre line, which is what the eye expects in a header or footer.
+ */
+const OPTICAL_CENTER_RATIO = 0.091;
+
 export function Wordmark({
   lockup = "auto",
   className,
   height = 22,
+  opticalCenter = false,
 }: {
   lockup?: Lockup;
   className?: string;
   /** Rendered height in px. Width follows the 1954:400 ratio. */
   height?: number;
+  /** Align the letters' visual centre, not the SVG box, with centred siblings. */
+  opticalCenter?: boolean;
 }) {
   const color =
     lockup === "navy" ? "text-navy" : lockup === "reversed" ? "text-white" : "text-navy dark:text-white";
@@ -30,6 +42,7 @@ export function Wordmark({
       viewBox="0 -395 1954.11 400"
       height={height}
       width={height * (1954.11 / 400)}
+      style={opticalCenter ? { transform: `translateY(${-(height * OPTICAL_CENTER_RATIO).toFixed(2)}px)` } : undefined}
       className={cn("shrink-0 fill-current", color, className)}
     >
       <path d={PATH} />

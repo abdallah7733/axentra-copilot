@@ -15,7 +15,7 @@ export function Header() {
       <div className="mx-auto flex h-full max-w-7xl items-center justify-between gap-6 px-6">
         <div className="flex items-center gap-3">
           <Link href="/" aria-label="Axentra home" className="flex items-center">
-            <Wordmark lockup="reversed" height={18} />
+            <Wordmark lockup="reversed" height={18} opticalCenter />
           </Link>
           <span className="hidden h-4 w-px bg-white/20 sm:block" />
           <span className="hidden text-[11px] tracking-[0.12em] text-white/65 sm:inline">{SLOGAN}</span>

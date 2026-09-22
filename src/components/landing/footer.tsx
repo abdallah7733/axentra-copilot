@@ -6,7 +6,7 @@ export function Footer() {
     <footer className="border-t border-border">
       <div className="mx-auto flex max-w-7xl flex-col gap-6 px-6 py-10 text-sm text-muted-foreground md:flex-row md:items-center md:justify-between">
         <div className="flex items-center gap-4">
-          <Wordmark height={16} />
+          <Wordmark height={16} opticalCenter />
           <span className="hidden h-4 w-px bg-border md:block" />
           <span className="text-[13px] tracking-[0.12em]">{SLOGAN}</span>
         </div>

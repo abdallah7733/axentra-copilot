@@ -231,7 +231,7 @@ export function PresentationPlayer() {
               <motion.div key="workspace" {...sceneFade} className="absolute inset-0 flex flex-col bg-background">
                 <div className="flex h-10 shrink-0 items-center justify-between border-b border-border bg-card px-4 text-xs text-muted-foreground">
                   <div className="flex items-center gap-3">
-                    <Wordmark height={14} />
+                    <Wordmark height={14} opticalCenter />
                     <span className="h-3.5 w-px bg-border" />
                     <span>{company.name}</span>
                     <span className="opacity-40">/</span>

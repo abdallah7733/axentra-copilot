@@ -19,7 +19,7 @@ export function TopBar() {
         <Link href="/" className="flex items-center gap-2 text-muted-foreground hover:text-foreground" aria-label="Back to home">
           <ArrowLeftIcon className="size-4" />
         </Link>
-        <Wordmark height={16} />
+        <Wordmark height={16} opticalCenter />
         <span className="hidden h-4 w-px bg-border sm:block" />
         <div className="hidden items-center gap-2 text-xs text-muted-foreground sm:flex">
           <span>{company.name}</span>
