@@ -16,6 +16,19 @@ rm -rf exports/.frames && mkdir -p exports/.frames
 if [ ! -x exports/.pngs2mp4 ]; then
   xcrun swiftc -O -o exports/.pngs2mp4 scripts/pngs2mp4.swift
 fi
-exports/.pngs2mp4 exports/.frames "$FPS" exports/axentra-demo-call.mp4
+exports/.pngs2mp4 exports/.frames "$FPS" exports/axentra-demo-silent.mp4
 rm -rf exports/.frames exports/presentation.webm
-echo "done: exports/axentra-demo-call.mp4"
+
+# Mux the call dialogue and the ambient bed in, when they are present.
+if [ -f public/audio/call.mp3 ]; then
+  [ -x exports/.mux-av ] || xcrun swiftc -O -parse-as-library -o exports/.mux-av scripts/mux-av.swift
+  AUDIO=("public/audio/call.mp3:1.0")
+  for bed in public/audio/ambient.mp3 public/audio/ambient.m4a; do
+    [ -f "$bed" ] && AUDIO+=("$bed:0.08") && break
+  done
+  exports/.mux-av exports/axentra-demo-silent.mp4 exports/axentra-demo.mp4 "${AUDIO[@]}"
+  echo "done: exports/axentra-demo.mp4 (with audio)"
+else
+  mv exports/axentra-demo-silent.mp4 exports/axentra-demo.mp4
+  echo "done: exports/axentra-demo.mp4 (no audio; add public/audio/call.mp3 and re-run)"
+fi

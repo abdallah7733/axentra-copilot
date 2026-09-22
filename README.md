@@ -38,4 +38,4 @@ Open `/presentation` at 1920×1080, press F for fullscreen, then Start. The cont
 scripts/export-video.sh
 ```
 
-Records `/presentation?from=incoming&capture=1` headlessly (Playwright, 1920×1080), clicks Approve at the 5-second audio slot, and encodes `exports/axentra-demo-call.mp4` (H.264, 30 fps) with a small Swift/AVFoundation tool. Time 0.0 of the MP4 is the "incoming call" scene, the same origin as `docs/call-audio-prompt.md`. Needs a running server on port 3000 and `npx playwright install chromium` once.
+Records `/presentation?from=incoming&capture=1` headlessly (Playwright, 1920×1080), clicks Approve at the 5-second audio slot, encodes H.264 at 30 fps, then muxes in `public/audio/call.mp3` and the ambient bed. Output: `exports/axentra-demo.mp4`. Time 0.0 is the "incoming call" scene, the same origin as `docs/call-audio-prompt.md`. Needs a running server on port 3000 and `npx playwright install chromium` once.
