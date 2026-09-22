@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { AnimatePresence, motion } from "motion/react";
 import {
@@ -100,6 +100,7 @@ export function PresentationPlayer() {
   const prevScene = useDemo((s) => s.prevScene);
   const openApproval = useDemo((s) => s.openApproval);
   const reset = useDemo((s) => s.reset);
+  const setScene = useDemo((s) => s.setScene);
 
   const frameRef = useRef<HTMLDivElement>(null);
   const [fullscreen, setFullscreen] = useState(false);
@@ -112,6 +113,22 @@ export function PresentationPlayer() {
     reset();
     return () => reset();
   }, [reset]);
+
+  // Deep link for recording: /presentation?from=incoming starts playback at that scene.
+  const capture = useSyncExternalStore(
+    () => () => {},
+    () => new URLSearchParams(window.location.search).has("capture"),
+    () => false
+  );
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const from = params.get("from");
+    if (!from) return;
+    const i = scenes.findIndex((s) => s.id === from);
+    if (i < 0) return;
+    setScene(i);
+    play();
+  }, [setScene, play]);
 
   // Scene timer. Infinite scenes simply never schedule.
   useEffect(() => {
@@ -189,8 +206,14 @@ export function PresentationPlayer() {
   return (
     <div ref={frameRef} className="capture-surface flex h-dvh flex-col bg-navy-deep text-white">
       {/* 16:9 locked stage */}
-      <div className="flex flex-1 items-center justify-center overflow-hidden p-4">
-        <div className="relative aspect-video max-h-full w-full max-w-[calc((100dvh-7rem)*16/9)] overflow-hidden rounded-lg bg-navy text-foreground shadow-[0_0_0_1px_rgb(255_255_255/0.08)]">
+      <div className={cn("flex flex-1 items-center justify-center overflow-hidden", !capture && "p-4")}>
+        <div
+          data-scene={hasStarted ? scene.id : "cover"}
+          className={cn(
+            "relative aspect-video max-h-full w-full overflow-hidden bg-navy text-foreground",
+            capture ? "h-full" : "max-w-[calc((100dvh-7rem)*16/9)] rounded-lg shadow-[0_0_0_1px_rgb(255_255_255/0.08)]"
+          )}
+        >
           <AnimatePresence mode="wait">
             {!hasStarted ? (
               <motion.div key="cover" {...sceneFade} className="absolute inset-0">
@@ -241,7 +264,7 @@ export function PresentationPlayer() {
       </div>
 
       {/* Clicker bar */}
-      <div className={cn("flex h-12 shrink-0 items-center justify-between gap-4 border-t border-white/10 px-4 text-sm transition-opacity duration-500", fullscreen && idle && "opacity-0")}>
+      <div className={cn("flex h-12 shrink-0 items-center justify-between gap-4 border-t border-white/10 px-4 text-sm transition-opacity duration-500", fullscreen && idle && "opacity-0", capture && "hidden")}>
         <div className="flex items-center gap-1">
           <Button variant="ghost" size="sm" className="rounded-full text-white/80 hover:bg-white/10 hover:text-white" onClick={prevScene} disabled={!hasStarted || sceneIndex === 0}>
             <CaretLeftIcon data-icon="inline-start" /> Previous

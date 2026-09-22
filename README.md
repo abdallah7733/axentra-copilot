@@ -31,3 +31,11 @@ Then open http://localhost:3000. `npm run build && npm start` for production.
 ## Recording
 
 Open `/presentation` at 1920×1080, press F for fullscreen, then Start. The control bar hides after two seconds without mouse movement. At the approval scene the dialog opens on its own; click Approve to continue.
+
+## Exporting the video (for audio sync)
+
+```bash
+scripts/export-video.sh
+```
+
+Records `/presentation?from=incoming&capture=1` headlessly (Playwright, 1920×1080), clicks Approve at the 5-second audio slot, and encodes `exports/axentra-demo-call.mp4` (H.264, 30 fps) with a small Swift/AVFoundation tool. Time 0.0 of the MP4 is the "incoming call" scene, the same origin as `docs/call-audio-prompt.md`. Needs a running server on port 3000 and `npx playwright install chromium` once.
