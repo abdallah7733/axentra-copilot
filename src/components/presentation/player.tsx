@@ -13,7 +13,7 @@ import {
   PlayIcon,
   XIcon,
 } from "@phosphor-icons/react";
-import { Wordmark } from "@/components/brand/wordmark";
+import { Wordmark, WordmarkLockup } from "@/components/brand/wordmark";
 import { Button } from "@/components/ui/button";
 import { Mono } from "@/components/workspace/bits";
 import { Workspace } from "@/components/workspace/workspace";
@@ -37,13 +37,10 @@ const sceneFade = {
 
 function TitleScene() {
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-8 bg-navy text-white">
+    <div className="flex h-full flex-col items-center justify-center bg-navy text-white">
       <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8, delay: 0.2 }}>
-        <Wordmark lockup="reversed" height={64} />
+        <WordmarkLockup lockup="reversed" height={72} />
       </motion.div>
-      <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.8, delay: 0.9 }} className="text-2xl tracking-tight text-white/80">
-        Agent Copilot
-      </motion.p>
     </div>
   );
 }
@@ -80,9 +77,9 @@ function OutroScene() {
       <motion.p initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.7, delay: 0.2 }} className="max-w-[26ch] text-center text-4xl font-medium tracking-tighter leading-tight xl:text-5xl">
         The human approved. The copilot did the rest.
       </motion.p>
-      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.8, delay: 1.4 }} className="flex flex-col items-center gap-3">
-        <Wordmark lockup="reversed" height={36} />
-        <span className="text-sm text-white/50">Graduation Project MVP, AI Copilot Diploma</span>
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.8, delay: 1.4 }} className="flex flex-col items-center">
+        <WordmarkLockup lockup="reversed" height={44} />
+        <span className="mt-6 text-sm text-white/45">Graduation Project MVP, AI Copilot Diploma</span>
       </motion.div>
     </div>
   );
@@ -218,7 +215,7 @@ export function PresentationPlayer() {
             {!hasStarted ? (
               <motion.div key="cover" {...sceneFade} className="absolute inset-0">
                 <div className="flex h-full flex-col items-center justify-center gap-6 bg-navy text-white">
-                  <Wordmark lockup="reversed" height={48} />
+                  <WordmarkLockup lockup="reversed" height={52} className="mb-2" />
                   <p className="text-white/60">Product experience. Press Start, or space.</p>
                   <Button size="lg" className="rounded-full bg-cyan px-6 text-navy hover:bg-cyan/85" onClick={play}>
                     <PlayIcon data-icon="inline-start" weight="fill" /> Start

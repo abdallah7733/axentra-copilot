@@ -37,6 +37,42 @@ export function Wordmark({
   );
 }
 
+/**
+ * The brand slogan. One wording, used everywhere it appears.
+ */
+export const SLOGAN = "AI-Assisted CX Copilot";
+
+/**
+ * Wordmark with the slogan set beneath it, as one locked unit.
+ * Both the gap and the slogan size are derived from the wordmark height, so the
+ * proportions hold at every size. The wordmark itself is never altered.
+ */
+export function WordmarkLockup({
+  lockup = "auto",
+  height = 48,
+  className,
+}: {
+  lockup?: Lockup;
+  className?: string;
+  height?: number;
+}) {
+  const sloganSize = Math.max(12, Math.round(height * 0.26));
+  return (
+    <div className={cn("flex flex-col items-center", className)}>
+      <Wordmark lockup={lockup} height={height} />
+      <span
+        className={cn(
+          "whitespace-nowrap font-medium",
+          lockup === "navy" ? "text-navy/70" : lockup === "reversed" ? "text-white/65" : "text-navy/70 dark:text-white/65"
+        )}
+        style={{ marginTop: Math.round(height * 0.34), fontSize: sloganSize, letterSpacing: "0.14em" }}
+      >
+        {SLOGAN}
+      </span>
+    </div>
+  );
+}
+
 /** Compact mark: the "a" glyph inside a navy disc, for avatars and small chrome. */
 export function CompactMark({ size = 24, className }: { size?: number; className?: string }) {
   return (
