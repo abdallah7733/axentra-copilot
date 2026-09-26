@@ -45,3 +45,7 @@ exports/
 
 # static export
 out/
+
+# console build served by the local engine (npm run build:console)
+out-console/
+out-console-build.log

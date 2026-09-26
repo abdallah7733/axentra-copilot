@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "build:static": "STATIC_EXPORT=1 next build"
+    "build:static": "STATIC_EXPORT=1 next build",
+    "build:console": "STATIC_EXPORT=1 NEXT_PUBLIC_BASE_PATH=/console next build && rm -rf out-console && mv out out-console"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
