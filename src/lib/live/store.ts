@@ -63,6 +63,12 @@ type LiveState = {
 
 const MIC_KEY = "axentra-mic-label";
 
+/** Shown on a projected screen, so keep only the country code and last four digits. */
+const maskNumber = (from: string | undefined) => {
+  const digits = (from ?? "").replace(/\D/g, "");
+  return digits.length >= 7 ? `+${digits.slice(0, digits[0] === "1" ? 1 : 2)} •••• ${digits.slice(-4)}` : "Hidden number";
+};
+
 // Not React state: SDK objects and the access code, which stays in memory only
 // (for token refresh) and is never written anywhere.
 let device: TwilioDevice | null = null;
@@ -238,7 +244,7 @@ export const useLive = create<LiveState>((set, get) => {
           set({
             phase: "incoming",
             status: "Incoming call",
-            callerFrom: call.parameters.From ?? null,
+            callerFrom: maskNumber(call.parameters.From),
             lines: [],
             delays: [],
             levels: null,
