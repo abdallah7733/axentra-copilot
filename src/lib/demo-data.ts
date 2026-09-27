@@ -84,6 +84,21 @@ export const duplicate = {
 
 export type SopScenario = { id: string; title: string; conditions: string[]; action: string; authority: string };
 
+/** One client SOP document. The SOP sheet renders any client's SOP in this shape. */
+export type Sop = {
+  id: string;
+  title: string;
+  version: string;
+  owner: string;
+  verification: { title: string; factors: string[]; failure: string };
+  /** Client-wide rules that apply before any scenario, if the SOP has them. */
+  rules?: { title: string; items: string[] };
+  authorityTitle: string;
+  authority: { range: string; approver: string; note: string }[];
+  scenarios: SopScenario[];
+  documentation: string[];
+};
+
 export const sop = {
   id: "BIL-SOP-4.2",
   title: "Duplicate and Disputed Payment Handling",
@@ -94,6 +109,7 @@ export const sop = {
     factors: ["Email address on file", "Last four digits of the payment method on file"],
     failure: "Two failed attempts lock the account view for this session. Escalate to the Identity team. Do not disclose which factor failed.",
   },
+  authorityTitle: "Refund authority matrix",
   authority: [
     { range: "$0 to $100", approver: "Agent (Tier 1)", note: "Self-approve, log reason code" },
     { range: "$100.01 to $500", approver: "Team Lead", note: "Same-day review" },
@@ -129,7 +145,7 @@ export const sop = {
     "Approval record: who approved, authority band, timestamp",
     "Customer communication sent",
   ],
-};
+} satisfies Sop;
 
 export const intent = {
   label: "Billing: duplicate charge",

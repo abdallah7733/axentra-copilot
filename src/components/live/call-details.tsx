@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { CpuIcon, ShieldCheckIcon } from "@phosphor-icons/react";
+import { CpuIcon, LockSimpleIcon, LockSimpleOpenIcon, ShieldCheckIcon } from "@phosphor-icons/react";
 import { Mono, PanelHeader } from "@/components/workspace/bits";
+import { pack, useCopilot } from "@/lib/live/copilot-store";
 import { median, useLive } from "@/lib/live/store";
 import { cn } from "@/lib/utils";
 
@@ -20,6 +21,47 @@ const duration = (ms: number) => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 };
 
+/* The customer record the caller ID points to. Caller ID matching is simulated in
+   this demo (every call is the demo customer), and the record stays locked until
+   the caller passes the SOP identity check by voice. */
+function CustomerRecord() {
+  const verification = useCopilot((s) => s.view.verification);
+  const lineCount = useCopilot((s) => s.view.lineCount);
+  const customer = pack.customers.find((c) => c.id === pack.callerCustomerId)!;
+  const open = verification.verified;
+  return (
+    <section className="rounded-lg border border-border bg-card">
+      <PanelHeader title="Customer" meta={open ? "Verified" : verification.locked ? "Not verified" : lineCount ? "Checking identity" : "Caller ID match (simulated)"}>
+        {open ? <LockSimpleOpenIcon className="size-3.5 text-muted-foreground" /> : <LockSimpleIcon className="size-3.5 text-muted-foreground" />}
+      </PanelHeader>
+      {open ? (
+        <dl className="divide-y divide-border px-4 py-1">
+          <Row label="Name">{customer.name}</Row>
+          <Row label="Customer">
+            <Mono>{customer.id}</Mono>
+          </Row>
+          <Row label="Email">
+            <Mono>{customer.emailMasked}</Mono>
+          </Row>
+          <Row label="Delivery">
+            {customer.address.street}, {customer.address.city}, {customer.address.state}
+          </Row>
+          <Row label="Since">{customer.customerSince}</Row>
+          <Row label="Damage claims, 90 days">
+            <Mono>{customer.damageClaimsLast90Days}</Mono>
+          </Row>
+        </dl>
+      ) : (
+        <p className="px-4 py-3 text-xs text-muted-foreground leading-relaxed">
+          {verification.locked
+            ? "Identity not verified after two attempts. Offer a call back to the phone number on the order."
+            : `Details and orders unlock after the ${pack.sop.id} identity check: full name, then the email or the delivery street and city.`}
+        </p>
+      )}
+    </section>
+  );
+}
+
 /* Right column: the call itself and the local engine, so a presenter can see
    at a glance that recognition is local, how fast it is, and that both
    microphones are actually being heard. */
@@ -33,22 +75,24 @@ export function CallDetails({ className }: { className?: string }) {
   const levels = useLive((s) => s.levels);
   const mics = useLive((s) => s.mics);
   const micId = useLive((s) => s.micId);
+  const replaying = useLive((s) => s.replaying);
   const [now, setNow] = useState(0);
 
   useEffect(() => {
-    if (phase !== "active") return;
+    if (phase !== "active" && !replaying) return;
     const t = setInterval(() => setNow(performance.now()), 1000);
     return () => clearInterval(t);
-  }, [phase]);
+  }, [phase, replaying]);
 
   const mid = median(delays);
-  const elapsed = startedAt === null ? null : (phase === "active" ? now || startedAt : endedAt ?? startedAt) - startedAt;
+  const running = phase === "active" || replaying;
+  const elapsed = startedAt === null ? null : (running ? Math.max(now, startedAt) : endedAt ?? startedAt) - startedAt;
   const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
 
   return (
-    <div className={cn("grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3 lg:grid-rows-[minmax(0,0.9fr)_minmax(0,1.1fr)]", className)}>
-      <section className="min-h-0 overflow-y-auto rounded-lg border border-border bg-card">
-        <PanelHeader title="Call" meta={phase === "active" ? "In progress" : phase === "incoming" ? "Ringing" : startedAt ? "Ended" : "Idle"} />
+    <div className={cn("flex min-h-0 flex-col gap-3 lg:overflow-y-auto", className)}>
+      <section className="rounded-lg border border-border bg-card">
+        <PanelHeader title="Call" meta={replaying ? "Replay, no call" : phase === "active" ? "In progress" : phase === "incoming" ? "Ringing" : startedAt ? "Ended" : "Idle"} />
         <dl className="divide-y divide-border px-4 py-1">
           <Row label="Caller">
             <Mono>{callerFrom ?? "None yet"}</Mono>
@@ -70,8 +114,9 @@ export function CallDetails({ className }: { className?: string }) {
           )}
         </dl>
       </section>
-      <section className="min-h-0 overflow-y-auto rounded-lg border border-border bg-card">
-        <PanelHeader title="Speech engine" meta="On this Mac">
+      <CustomerRecord />
+      <section className="rounded-lg border border-border bg-card">
+        <PanelHeader title="Speech and copilot" meta="On this Mac">
           <CpuIcon className="size-3.5 text-muted-foreground" />
         </PanelHeader>
         <dl className="divide-y divide-border px-4 py-1">
@@ -80,11 +125,12 @@ export function CallDetails({ className }: { className?: string }) {
           </Row>
           <Row label="Hardware">{health?.gpu ? "Apple GPU (Metal)" : "CPU"}</Row>
           <Row label="Speech detection">{health?.vad ? "On" : "Off"}</Row>
-          <Row label="Cloud transcription">None</Row>
+          <Row label="Copilot">Rules ({pack.sop.id})</Row>
+          <Row label="Cloud AI">None</Row>
         </dl>
         <p className="flex items-start gap-2 px-4 pb-4 pt-2 text-xs text-muted-foreground leading-relaxed">
           <ShieldCheckIcon className="size-3.5 shrink-0 mt-0.5" />
-          Call audio is processed in memory and discarded. The transcript lives only in this tab.
+          Call audio is processed in memory and discarded. The transcript and copilot notes live only in this tab.
         </p>
       </section>
     </div>

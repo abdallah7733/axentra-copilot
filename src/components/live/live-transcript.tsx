@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { PhoneIcon } from "@phosphor-icons/react";
 import { LiveDot, Mono, PanelHeader, ease } from "@/components/workspace/bits";
+import { useCopilot } from "@/lib/live/copilot-store";
 import { useLive } from "@/lib/live/store";
 import { cn } from "@/lib/utils";
 
@@ -22,14 +23,16 @@ export function LiveTranscript({ className }: { className?: string }) {
   const phase = useLive((s) => s.phase);
   const callerFrom = useLive((s) => s.callerFrom);
   const callStartedAt = useLive((s) => s.callStartedAt);
+  const replaying = useLive((s) => s.replaying);
+  const highlightKey = useCopilot((s) => s.highlightKey);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
   }, [lines.length]);
 
-  const live = phase === "active";
-  const meta = live ? "Connected" : phase === "incoming" ? "Ringing" : lines.length ? "Call ended" : "No active call";
+  const live = phase === "active" || replaying;
+  const meta = replaying ? "Replay, no call" : live ? "Connected" : phase === "incoming" ? "Ringing" : lines.length ? "Call ended" : "No active call";
 
   return (
     <section className={cn("flex flex-col min-h-0 bg-card border border-border rounded-none", className)} aria-label="Live call transcript">
@@ -55,7 +58,10 @@ export function LiveTranscript({ className }: { className?: string }) {
                   initial={{ opacity: 0, y: 6 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.3, ease }}
-                  className="grid grid-cols-[3.25rem_4.5rem_1fr] gap-x-2 px-4 py-2.5 text-[13px] leading-relaxed"
+                  className={cn(
+                    "grid grid-cols-[3.25rem_4.5rem_1fr] gap-x-2 px-4 py-2.5 text-[13px] leading-relaxed transition-colors",
+                    t.key === highlightKey && "bg-cyan/10"
+                  )}
                 >
                   <Mono className="text-muted-foreground pt-px">{callStartedAt === null ? "--:--" : clock(t.startedAt - callStartedAt)}</Mono>
                   <span className={cn("font-medium", t.side === "agent" ? "text-foreground" : "text-foreground/80")}>
@@ -64,7 +70,7 @@ export function LiveTranscript({ className }: { className?: string }) {
                   <div>
                     <p>{t.text}</p>
                     <p className="text-[11px] text-muted-foreground">
-                      <Mono>{t.delay.toFixed(1)} s</Mono> after speech ended
+                      {t.key.startsWith("replay-") ? "Replayed line" : <><Mono>{t.delay.toFixed(1)} s</Mono> after speech ended</>}
                       {t.confidence !== null && t.confidence < 0.6 && <span> · low confidence</span>}
                     </p>
                   </div>

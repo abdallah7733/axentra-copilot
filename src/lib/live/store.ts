@@ -1,6 +1,7 @@
 "use client";
 
 import { create } from "zustand";
+import { createEventBus } from "@/lib/copilot/events";
 import {
   captureStream,
   fetchPhoneToken,
@@ -20,13 +21,27 @@ import {
   Live presenter mode: a real call through the Milestone 1 Twilio number, with
   both sides transcribed by the local engine. Separate from the scripted demo
   store on purpose, so /demo and /presentation are untouched.
+
+  Milestone 3: each final line carries the call it belongs to (the Twilio
+  CallSid), a sequence number and absolute timestamps, and is emitted on
+  `liveEvents`. The copilot subscribes there; it never reads this store's lines.
 */
+
+/** The transcript event boundary for live mode. */
+export const liveEvents = createEventBus();
 
 export type LiveLine = {
   key: string;
+  callId: string;
+  /** Arrival order within the call, from 1. */
+  seq: number;
   side: Side;
   text: string;
+  /** performance.now() time, for the on-screen call clock. */
   startedAt: number;
+  /** Epoch milliseconds when the speech began and ended. */
+  startedAtEpoch: number;
+  endedAtEpoch: number;
   /** Seconds between the speaker stopping and the text appearing. */
   delay: number;
   confidence: number | null;
@@ -35,6 +50,8 @@ export type LiveLine = {
 export type EngineState = "checking" | "offline" | "online";
 export type Phase = "setup" | "connecting" | "ready" | "incoming" | "active";
 export type Mic = { id: string; label: string };
+/** A scripted line for the offline replay (no call, no audio, no engine). */
+export type ReplayLine = { side: Side; text: string; confidence?: number | null };
 
 type LiveState = {
   engine: EngineState;
@@ -50,6 +67,9 @@ type LiveState = {
   levels: { agent: number; caller: number; agentInput: string } | null;
   mics: Mic[];
   micId: string;
+  /** An offline replay is running instead of a call. */
+  replaying: boolean;
+  sopOpen: boolean;
 
   checkEngine: () => Promise<void>;
   refreshMics: () => Promise<void>;
@@ -59,6 +79,9 @@ type LiveState = {
   decline: () => void;
   hangUp: () => void;
   clearTranscript: () => void;
+  replay: (lines: ReplayLine[], msPerLine?: number) => void;
+  stopReplay: () => void;
+  setSop: (open: boolean) => void;
 };
 
 const MIC_KEY = "axentra-mic-label";
@@ -77,6 +100,12 @@ let accessCode = "";
 let captures: CaptureHandle[] = [];
 let captureInput = "";
 let epoch = 0;
+let callId = "";
+let seq = 0;
+let replayTimers: ReturnType<typeof setTimeout>[] = [];
+
+/** performance.now() time to epoch milliseconds. */
+const toEpoch = (t: number) => Math.round(performance.timeOrigin + t);
 
 const readSavedMic = () => {
   try {
@@ -95,10 +124,41 @@ export const useLive = create<LiveState>((set, get) => {
     await get().refreshMics();
   }
 
-  function addLine(line: LiveLine) {
+  function addLine(fields: Omit<LiveLine, "callId" | "seq" | "startedAtEpoch" | "endedAtEpoch">, endedAt: number) {
+    const line: LiveLine = { ...fields, callId, seq: ++seq, startedAtEpoch: toEpoch(fields.startedAt), endedAtEpoch: toEpoch(endedAt) };
     // Order by when the speech began, not when recognition finished.
     const lines = [...get().lines.filter((l) => l.key !== line.key), line].sort((a, b) => a.startedAt - b.startedAt);
-    set({ lines: lines.slice(-200), delays: [...get().delays, line.delay] });
+    // A replay has no recognition delay, so it must not count towards the median.
+    set({ lines: lines.slice(-200), delays: get().replaying ? get().delays : [...get().delays, line.delay] });
+    liveEvents.emit({
+      type: "line",
+      line: {
+        callId: line.callId,
+        seq: line.seq,
+        key: line.key,
+        side: line.side,
+        text: line.text,
+        startedAt: line.startedAtEpoch,
+        endedAt: line.endedAtEpoch,
+        final: true,
+        confidence: line.confidence,
+      },
+    });
+  }
+
+  function startCall(id: string) {
+    callId = id;
+    seq = 0;
+    liveEvents.emit({ type: "call-started", callId, at: Date.now() });
+  }
+
+  function cancelReplay() {
+    replayTimers.forEach(clearTimeout);
+    replayTimers = [];
+    if (get().replaying) {
+      set({ replaying: false, callEndedAt: performance.now() });
+      liveEvents.emit({ type: "call-ended", callId, at: Date.now() });
+    }
   }
 
   /** One queue per side so each speaker's phrases stay in order. */
@@ -111,14 +171,17 @@ export const useLive = create<LiveState>((set, get) => {
         .then(async () => {
           const result = await recognize(side, samples);
           if (callEpoch !== epoch || !result.text) return;
-          addLine({
-            key: `${side}-${phrase.id}`,
-            side,
-            text: result.text,
-            startedAt: phrase.startedAt,
-            delay: (performance.now() - phrase.endedAt) / 1000,
-            confidence: result.confidence,
-          });
+          addLine(
+            {
+              key: `${side}-${phrase.id}`,
+              side,
+              text: result.text,
+              startedAt: phrase.startedAt,
+              delay: (performance.now() - phrase.endedAt) / 1000,
+              confidence: result.confidence,
+            },
+            phrase.endedAt
+          );
         })
         .catch(() => {
           if (callEpoch === epoch) set({ error: "Local transcription had an error. The call audio is unaffected." });
@@ -159,6 +222,7 @@ export const useLive = create<LiveState>((set, get) => {
     currentCall = null;
     epoch++;
     set({ phase: "ready", status: message, callEndedAt: performance.now() });
+    liveEvents.emit({ type: "call-ended", callId, at: Date.now() });
     void stopCaptures();
   }
 
@@ -176,6 +240,8 @@ export const useLive = create<LiveState>((set, get) => {
     levels: null,
     mics: [],
     micId: "",
+    replaying: false,
+    sopOpen: false,
 
     checkEngine: async () => {
       const health = await readEngineHealth();
@@ -238,8 +304,10 @@ export const useLive = create<LiveState>((set, get) => {
           }
         });
         device.on("incoming", (call: TwilioCall) => {
+          cancelReplay();
           currentCall = call;
           epoch++;
+          startCall(call.parameters.CallSid || `call-${Date.now()}`);
           const callEpoch = epoch;
           set({
             phase: "incoming",
@@ -273,7 +341,33 @@ export const useLive = create<LiveState>((set, get) => {
     answer: () => currentCall?.accept(),
     decline: () => currentCall?.reject(),
     hangUp: () => currentCall?.disconnect(),
-    clearTranscript: () => set({ lines: [], delays: [], levels: null, callStartedAt: null, callEndedAt: null }),
+    clearTranscript: () => {
+      cancelReplay();
+      set({ lines: [], delays: [], levels: null, callStartedAt: null, callEndedAt: null });
+      liveEvents.emit({ type: "cleared" });
+    },
+
+    /** Feeds scripted lines through the same path as a call, for rehearsal. No call, no audio. */
+    replay: (script, msPerLine = 2200) => {
+      if (currentCall) return;
+      cancelReplay();
+      epoch++;
+      startCall(`replay-${Date.now()}`);
+      const began = performance.now();
+      set({ replaying: true, lines: [], delays: [], levels: null, error: null, callerFrom: "Replay, no call", callStartedAt: began, callEndedAt: null });
+      script.forEach((l, i) => {
+        replayTimers.push(
+          setTimeout(() => {
+            const endedAt = performance.now();
+            const startedAt = endedAt - Math.min(msPerLine - 200, 400 + l.text.length * 45);
+            addLine({ key: `replay-${i}`, side: l.side, text: l.text, startedAt, delay: 0, confidence: l.confidence === undefined ? 0.9 : l.confidence }, endedAt);
+          }, (i + 1) * msPerLine)
+        );
+      });
+      replayTimers.push(setTimeout(cancelReplay, (script.length + 1) * msPerLine));
+    },
+    stopReplay: () => cancelReplay(),
+    setSop: (open) => set({ sopOpen: open }),
   };
 });
 
