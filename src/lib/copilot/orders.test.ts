@@ -33,6 +33,13 @@ test('"to the order 427" is exact', () => {
   assert.equal(m.method, "exact");
 });
 
+test('"Order 4-7" (accuracy read, 27 Sep) reads as 427, sound-alike; "3-5 business days" is still a duration', () => {
+  const m = first("Order 4-7");
+  assert.equal(m.candidates[0], "427");
+  assert.equal(m.method, "sound-alike");
+  assert.deepEqual(mentions("A full refund in 3-5 business days."), []);
+});
+
 test("spoken digits: four two seven, four twenty-seven", () => {
   assert.equal(first("It's order four two seven.").candidates[0], "427");
   assert.equal(first("It's order four two seven.").method, "spoken");

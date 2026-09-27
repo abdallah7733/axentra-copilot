@@ -1,4 +1,4 @@
-import { sameWord, words } from "./text";
+import { soundsLike, words } from "./text";
 import type { Customer } from "./types";
 
 /*
@@ -13,7 +13,7 @@ export type FactorResult = "match" | "partial" | "mismatch" | "none";
 /** Words that mean the caller did not answer (so a line of them is not a failed attempt). */
 const NOT_AN_ANSWER = /^(sorry|what|pardon|hello|hi|yes|yeah|no|okay|ok|sure|one|second|moment|hold|on|um|uh|hmm|can|you|repeat|that|please|say|again|it|is|its|it's|the|a|of|my|i|am|i'm|this|name|in|at|and|on|to|for|from|full|speaking|calling|here|called|thanks|thank|street|city|address|delivery|delivered|email|e|mail)$/;
 
-const has = (tokens: string[], expected: string) => tokens.some((t) => sameWord(t, expected));
+const has = (tokens: string[], expected: string) => tokens.some((t) => soundsLike(t, expected));
 
 export function matchName(text: string, customer: Customer): FactorResult {
   const tokens = words(text);
@@ -25,7 +25,7 @@ export function matchName(text: string, customer: Customer): FactorResult {
 
 /** Answer words that are neither filler nor part of what was expected. */
 const leftover = (tokens: string[], expected: string[]) =>
-  tokens.filter((t) => !NOT_AN_ANSWER.test(t) && !expected.some((e) => sameWord(t, e)));
+  tokens.filter((t) => !NOT_AN_ANSWER.test(t) && !expected.some((e) => soundsLike(t, e)));
 
 /** Some parts right and nothing else said: ask for the rest. Anything else said: a wrong answer. */
 const judge = (someRight: boolean, extra: string[]): FactorResult => (extra.length ? "mismatch" : someRight ? "partial" : "none");
@@ -51,6 +51,6 @@ export function matchAddress(text: string, customer: Customer): FactorResult {
   const expected = [streetName, ...typeWords, ...words(customer.address.city), ...state, ...state.flatMap((w) => STATE_NAMES[w] ?? [])];
   // A different street type right after the name ("Hill Street") is a wrong answer, not a missing one.
   const otherTypes = Object.values(STREET_TYPES).flat().filter((t) => !typeWords.includes(t));
-  const wrongType = tokens.some((t, i) => i > 0 && sameWord(tokens[i - 1], streetName) && otherTypes.includes(t));
+  const wrongType = tokens.some((t, i) => i > 0 && soundsLike(tokens[i - 1], streetName) && otherTypes.includes(t));
   return judge(street || city, [...leftover(tokens, expected), ...(wrongType ? ["street type"] : [])]);
 }

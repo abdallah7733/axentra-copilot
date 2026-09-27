@@ -6,6 +6,8 @@ export function normalize(text: string): string {
     .toLowerCase()
     .replace(/[’‘`]/g, "'")
     .replace(/(\d),(\d{3})\b/g, "$1$2")
+    // Recognition writes a spoken "4 to 7" as "4-7"; keep the words so both readings stay possible.
+    .replace(/\b(\d{1,2})-(\d{1,2})\b/g, "$1 to $2")
     .replace(/[^\p{L}\p{N}'$@.\s-]/gu, " ")
     .replace(/(\p{L})\.(?=\p{L})/gu, "$1 dot ")
     .replace(/[.\-]/g, " ")
@@ -49,6 +51,17 @@ export function editDistance(a: string, b: string): number {
 /** A heard word is close enough to an expected one: exact for short words, one edit for longer ones. */
 export const sameWord = (heard: string, expected: string) =>
   heard === expected || (expected.length >= 4 && heard.length >= 3 && editDistance(heard, expected) <= 1);
+
+/** Consonants only, doubles collapsed: "hill", "hel" and "hil" all become "hl". */
+const skeleton = (word: string) => word.replace(/[aeiouy']/g, "").replace(/(.)\1+/g, "$1");
+
+/**
+ * Looser than `sameWord`, for names and addresses the caller is expected to say:
+ * also accepts a word that sounds alike (same first letter, same consonants), such as
+ * "Hel Road" for "Hill Road", heard on the Milestone 3 accuracy read.
+ */
+export const soundsLike = (heard: string, expected: string) =>
+  sameWord(heard, expected) || (heard[0] === expected[0] && skeleton(expected).length >= 2 && skeleton(heard) === skeleton(expected));
 
 /** True if a negation ("not", "don't", "no") comes up to three words before position `index`. */
 export function negatedAt(tokens: string[], index: number): boolean {

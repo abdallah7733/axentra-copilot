@@ -97,4 +97,7 @@ test("identity factors", () => {
   assert.equal(matchAddress("Hill Road, in Houston.", samMiller), "mismatch");
   assert.equal(matchAddress("Hill Street, Dallas.", samMiller), "mismatch");
   assert.equal(matchAddress("Dallas.", samMiller), "partial");
+  // Heard on the Milestone 3 accuracy read (27 Sep): "Hill Road" came out as "Hel Road".
+  assert.equal(matchAddress("Hel Road in Dallas.", samMiller), "match");
+  assert.equal(matchAddress("Lake Road, in Dallas.", samMiller), "mismatch");
 });
