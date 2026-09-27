@@ -210,15 +210,23 @@ export function LiveCopilot({ className }: { className?: string }) {
               ))}
             </AnimatePresence>
             {prompts.map((p) => (
-              <div key={`${p.target}-${p.evidence?.key}`} className="flex items-start gap-2 rounded-lg border border-border bg-muted/40 p-3">
+              // Amber and pulsing: on the first live call the agent only noticed this after hanging up.
+              <motion.div
+                key={`${p.target}-${p.evidence?.key}`}
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.3, ease }}
+                className="flex items-start gap-2.5 rounded-lg border-2 border-amber-500 bg-amber-500/10 p-3"
+              >
+                <LiveDot active className="mt-1 [&>span]:bg-amber-500" />
                 <div className="min-w-0 flex-1 space-y-1">
-                  <p className="text-xs font-medium">Please confirm</p>
-                  <p className="text-xs leading-relaxed text-muted-foreground">{p.text}</p>
+                  <p className="text-sm font-medium">Please confirm</p>
+                  <p className="text-xs leading-relaxed">{p.text}</p>
                 </div>
-                <Button variant="outline" size="xs" className="rounded-full" onClick={() => confirm(p.target)}>
+                <Button size="sm" className="rounded-full bg-amber-600 text-white hover:bg-amber-700" onClick={() => confirm(p.target)}>
                   Confirmed
                 </Button>
-              </div>
+              </motion.div>
             ))}
           </div>
         )}
