@@ -61,7 +61,18 @@ export type Recommendation = {
 export type CopilotView = {
   callId: string | null;
   lineCount: number;
-  intent: { id: "damaged" | "order-status"; label: string; category: string; sopId: string | null; certainty: "high" | "low"; confidence: number; phrases: string[]; evidence: Evidence[] } | null;
+  intent: {
+    id: "damaged" | "order-status";
+    label: string;
+    category: string;
+    sopId: string | null;
+    certainty: "high" | "low";
+    confidence: number;
+    phrases: string[];
+    evidence: Evidence[];
+    /** "model" when only the local model could read the line; always low certainty. */
+    source: "rules" | "model";
+  } | null;
   verification: { factors: Factor[]; verified: boolean; verifiedAt?: Evidence; locked: boolean; attemptsLeft: number };
   order: {
     state: "none" | "heard" | "matched" | "unmatched";
@@ -102,8 +113,11 @@ export const bandFor = (bands: AuthorityBand[], amount: number) => bands.find((b
 const money = (n: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
 const clock = (at: number) => new Date(at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
 
+/** What the optional local model read in lines the rules could not. It never ticks a step. */
+export type ModelHints = { intent?: { id: "damaged" | "order-status"; key: string } };
+
 /** The rules in one pass over the call. `now` fixes "delivered yesterday" and approval times for tests. */
-export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[] = [], now = Date.now()): CopilotView {
+export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[] = [], now = Date.now(), hints: ModelHints = {}): CopilotView {
   const sopId = pack.sop.id;
   const ref = (section: string) => `${sopId} · ${section}`;
   const customer: Customer = pack.customers.find((c) => c.id === pack.callerCustomerId)!;
@@ -216,6 +230,7 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
           confidence: same ? Math.max(same.confidence, found.score) : found.score,
           phrases: [...new Set([...(same?.phrases ?? []), ...found.evidence])].slice(0, 4),
           evidence: [...(same?.evidence ?? []), ev].slice(0, 3),
+          source: "rules",
         };
       }
 
@@ -271,6 +286,21 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     }
   }
 
+  const hinted = hints.intent && ordered.find((l) => l.key === hints.intent!.key);
+  if (!intent && hints.intent && hinted) {
+    const damaged = hints.intent.id === "damaged";
+    intent = {
+      id: hints.intent.id,
+      label: damaged ? "Order issue: damaged on arrival" : "Order status",
+      category: "Orders and delivery",
+      sopId: damaged ? sopId : null,
+      certainty: "low",
+      confidence: 0.5,
+      phrases: ["read by the local model"],
+      evidence: [evidenceOf(hinted)],
+      source: "model",
+    };
+  }
   if (intent && issueConfirmedInPanel) intent = { ...intent, certainty: "high" };
   const isVerified = verified();
   const attemptsLeft = Math.max(0, pack.policy.maxVerificationAttempts - Math.max(name.attempts, address.attempts));
@@ -527,7 +557,14 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     prompts.push({ target: "choice", text: `Heard "${lowConfidenceChoice.text}" with low confidence. Confirm what the customer wants.`, evidence: lowConfidenceChoice });
   }
   if (intent?.certainty === "low" && intent.evidence[0]) {
-    prompts.push({ target: "issue", text: `The issue was heard with low certainty ("${intent.phrases[0]}"). Confirm the damage with the caller.`, evidence: intent.evidence[0] });
+    prompts.push({
+      target: "issue",
+      text:
+        intent.source === "model"
+          ? `Only the local model read this as "${intent.label}". Confirm the problem with the caller.`
+          : `The issue was heard with low certainty ("${intent.phrases[0]}"). Confirm the damage with the caller.`,
+      evidence: intent.evidence[0],
+    });
   }
 
   /* ---------- SOP steps ---------- */

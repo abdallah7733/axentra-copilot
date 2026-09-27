@@ -76,6 +76,7 @@ export function CallDetails({ className }: { className?: string }) {
   const mics = useLive((s) => s.mics);
   const micId = useLive((s) => s.micId);
   const replaying = useLive((s) => s.replaying);
+  const assistTimes = useCopilot((s) => s.assistTimes);
   const [now, setNow] = useState(0);
 
   useEffect(() => {
@@ -126,6 +127,16 @@ export function CallDetails({ className }: { className?: string }) {
           <Row label="Hardware">{health?.gpu ? "Apple GPU (Metal)" : "CPU"}</Row>
           <Row label="Speech detection">{health?.vad ? "On" : "Off"}</Row>
           <Row label="Copilot">Rules ({pack.sop.id})</Row>
+          {health?.assist === "local" && (
+            <>
+              <Row label="Local model">
+                {health.assistModel === "qwen15b" ? "Qwen 2.5 1.5B" : "Llama 3.2 3B"} ({health.assistGpu ? "GPU" : "CPU"}){health.assistReady ? "" : ", loading"}
+              </Row>
+              <Row label="Suggestion time">
+                <Mono>{median(assistTimes) === null ? "n/a" : `${(median(assistTimes)! / 1000).toFixed(1)} s median`}</Mono>
+              </Row>
+            </>
+          )}
           <Row label="Cloud AI">None</Row>
         </dl>
         <p className="flex items-start gap-2 px-4 pb-4 pt-2 text-xs text-muted-foreground leading-relaxed">
