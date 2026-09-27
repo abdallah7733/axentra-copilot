@@ -2,7 +2,7 @@
 
 import { create } from "zustand";
 import { checkWording, classifyMessages, parseIntentLabel, replyMessages } from "@/lib/copilot/assist";
-import { analyze, type CopilotView, type ModelHints } from "@/lib/copilot/copilot";
+import { ANSWER_GAP_MS, analyze, type CopilotView, type ModelHints } from "@/lib/copilot/copilot";
 import type { AgentAction, TranscriptEvent } from "@/lib/copilot/types";
 import { assistChat } from "./engine";
 import { liveEvents, useLive } from "./store";
@@ -62,6 +62,8 @@ export const useCopilot = create<CopilotState>((set, get) => {
   let lastDraft = "";
   let classified = new Set<string>();
   let healthCheckedAt = 0;
+  // Re-check once the caller has been quiet long enough for an identity answer to be complete.
+  let settleTimer: ReturnType<typeof setTimeout> | undefined;
 
   const assistOn = () => useLive.getState().health?.assist === "local";
 
@@ -135,6 +137,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
   const act = (action: AgentAction) => update(get().lines, [...get().actions, action], get().hints);
 
   const reset = (callId: string | null) => {
+    clearTimeout(settleTimer);
     queued = null;
     lastDraft = "";
     classified = new Set();
@@ -148,6 +151,8 @@ export const useCopilot = create<CopilotState>((set, get) => {
     else if (event.type === "line" && event.line.callId === get().callId) {
       lineArrivedAt = performance.now();
       update([...get().lines, event.line], get().actions, get().hints);
+      clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => set(run(get().lines, get().actions, get().hints)), ANSWER_GAP_MS + 100);
     }
   });
 

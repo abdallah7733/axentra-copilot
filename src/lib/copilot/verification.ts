@@ -1,4 +1,4 @@
-import { soundsLike, words } from "./text";
+import { editDistance, skeleton, soundsLike, words } from "./text";
 import type { Customer } from "./types";
 
 /*
@@ -53,4 +53,23 @@ export function matchAddress(text: string, customer: Customer): FactorResult {
   const otherTypes = Object.values(STREET_TYPES).flat().filter((t) => !typeWords.includes(t));
   const wrongType = tokens.some((t, i) => i > 0 && soundsLike(tokens[i - 1], streetName) && otherTypes.includes(t));
   return judge(street || city, [...leftover(tokens, expected), ...(wrongType ? ["street type"] : [])]);
+}
+
+/** Words around an answer that carry no identity ("it's", "the street is"). */
+const FILLER = /^(it's|its|it|is|the|um|uh|yeah|yes|my|and|street|city|address|name|full|called|this|i'm|am|i|sorry)$/;
+
+/**
+ * The answer, run together and reduced to consonants, is close to the record: "Helrout
+ * Indalis" or "Elroad indale" for "Hill Road in Dallas". Only ever a reason to ask the
+ * agent to confirm, never a match on its own.
+ */
+export function soundsLikeRecord(which: "name" | "address", text: string, customer: Customer): boolean {
+  const heard = skeleton(words(text).filter((w) => !FILLER.test(w)).join(""));
+  if (heard.length < 3) return false;
+  const { street, city } = customer.address;
+  const records = which === "name" ? [customer.name] : [`${street} in ${city}`, `${street} ${city}`];
+  return records.some((record) => {
+    const expected = skeleton(words(record).join(""));
+    return 1 - editDistance(heard, expected) / Math.max(heard.length, expected.length) >= 0.7;
+  });
 }

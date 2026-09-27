@@ -53,7 +53,7 @@ export const sameWord = (heard: string, expected: string) =>
   heard === expected || (expected.length >= 4 && heard.length >= 3 && editDistance(heard, expected) <= 1);
 
 /** Consonants only, doubles collapsed: "hill", "hel" and "hil" all become "hl". */
-const skeleton = (word: string) => word.replace(/[aeiouy']/g, "").replace(/(.)\1+/g, "$1");
+export const skeleton = (word: string) => word.replace(/[aeiouy']/g, "").replace(/(.)\1+/g, "$1");
 
 /**
  * Looser than `sameWord`, for names and addresses the caller is expected to say:

@@ -276,3 +276,64 @@ test("lines are read in speech order, not arrival order", () => {
   const shuffled = [e[6], e[2], e[0], e[4], e[1], e[5], e[3]];
   assert.deepEqual(analyze(sunlake, shuffled, [], NOW), analyze(sunlake, e, [], NOW));
 });
+
+/* ---------- Identity answers split by a pause (accuracy read, 27 Sep) ---------- */
+
+/** Script v2 up to line 6, then caller lines `gapMs` apart, all ending before `NOW - 60 s`. */
+function splitAnswer(parts: Line[], gapMs: number) {
+  const base = events(script().slice(0, 6));
+  const t0 = base[base.length - 1].endedAt + 1000;
+  const tail: TranscriptEvent[] = parts.map((p, i) => ({
+    callId: "CA-test",
+    seq: 7 + i,
+    key: `split${i}`,
+    side: p.side,
+    text: p.text,
+    startedAt: t0 + i * (1000 + gapMs),
+    endedAt: t0 + i * (1000 + gapMs) + 1000,
+    final: true,
+    confidence: p.confidence === undefined ? 0.9 : p.confidence,
+  }));
+  return [...base, ...tail];
+}
+const caller = (text: string, confidence?: number): Line => ({ side: "caller", text, confidence });
+
+test('"Hill Road," + "in Dallas." in two lines is one answer and verifies', () => {
+  const v = analyze(sunlake, splitAnswer([caller("Hill Road,"), caller("in Dallas.")], 700), [], NOW);
+  assert.equal(v.verification.verified, true);
+  assert.equal(v.verification.factors[1].attempts, 0);
+});
+
+test('"Helrout." + "Indalis." asks the agent to confirm and is never a failed attempt', () => {
+  const lines = splitAnswer([caller("Helrout."), caller("Indalis.")], 700);
+  let v = analyze(sunlake, lines, [], NOW);
+  const address = v.verification.factors[1];
+  assert.equal(address.state, "confirm");
+  assert.equal(address.confirmReason, "sounds-like");
+  assert.equal(address.attempts, 0);
+  assert.equal(v.verification.verified, false);
+  assert.ok(v.prompts.some((p) => p.target === "address" && p.text.includes("Helrout. Indalis.")));
+  assert.ok(!v.alerts.some((a) => a.id.startsWith("verification-")));
+  v = analyze(sunlake, lines, [{ type: "confirm", target: "address", at: NOW - 1000 }], NOW);
+  assert.equal(v.verification.verified, true);
+});
+
+test('phone-line version "elroad indale" also asks to confirm', () => {
+  const v = analyze(sunlake, splitAnswer([caller("Elroad."), caller("Indale.")], 700), [], NOW);
+  assert.equal(v.verification.factors[1].state, "confirm");
+});
+
+test("a wrong answer counts only when the caller has finished", () => {
+  const lines = splitAnswer([caller("Lake Road,")], 0);
+  const endedAt = lines[lines.length - 1].endedAt;
+  let v = analyze(sunlake, lines, [], endedAt + 500);
+  assert.equal(v.verification.factors[1].state, "asking", "still listening half a second later");
+  assert.equal(v.verification.factors[1].attempts, 0);
+  v = analyze(sunlake, lines, [], endedAt + 2500);
+  assert.equal(v.verification.factors[1].state, "failed");
+  assert.equal(v.verification.factors[1].attempts, 1);
+  // The agent speaking also ends the answer.
+  const withAgent = [...lines, { ...lines[lines.length - 1], key: "agent-next", seq: 99, side: "agent" as const, text: "Okay.", startedAt: endedAt + 300, endedAt: endedAt + 900 }];
+  v = analyze(sunlake, withAgent, [], endedAt + 1000);
+  assert.equal(v.verification.factors[1].attempts, 1);
+});

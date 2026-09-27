@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { agentAsksFor, agentCommits, agentDisclosesFactor, agentOffers, escalationWords, readChoice, readIntent, safetyWords } from "./signals";
-import { matchAddress, matchName } from "./verification";
+import { matchAddress, matchName, soundsLikeRecord } from "./verification";
 import { samMiller } from "@/lib/live/sunlake-data";
 
 const damaged = (text: string) => readIntent(text).find((i) => i.id === "damaged");
@@ -100,4 +100,13 @@ test("identity factors", () => {
   // Heard on the Milestone 3 accuracy read (27 Sep): "Hill Road" came out as "Hel Road".
   assert.equal(matchAddress("Hel Road in Dallas.", samMiller), "match");
   assert.equal(matchAddress("Lake Road, in Dallas.", samMiller), "mismatch");
+});
+
+test("answers that only sound like the record", () => {
+  assert.equal(soundsLikeRecord("address", "Helrout. Indalis.", samMiller), true);
+  assert.equal(soundsLikeRecord("address", "Elroad indale", samMiller), true);
+  assert.equal(soundsLikeRecord("address", "Lake Road, in Houston.", samMiller), false);
+  assert.equal(soundsLikeRecord("address", "Hill Road, in Houston.", samMiller), false);
+  assert.equal(soundsLikeRecord("name", "Semiler.", samMiller), true);
+  assert.equal(soundsLikeRecord("name", "John Smith.", samMiller), false);
 });

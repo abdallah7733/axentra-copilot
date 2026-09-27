@@ -1,7 +1,7 @@
 import { findOrderMentions, matchOrder, type MentionMethod, type OrderMention } from "./orders";
 import { agentAsksFor, agentCommits, agentDisclosesFactor, agentOffers, escalationWords, readChoice, readIntent, safetyWords, type Choice } from "./signals";
 import type { AgentAction, AuthorityBand, ClientPack, Customer, Order, Side, TranscriptEvent } from "./types";
-import { matchAddress, matchName } from "./verification";
+import { matchAddress, matchName, soundsLikeRecord } from "./verification";
 
 /*
   The copilot's rules layer. `analyze` rebuilds the whole copilot view from the
@@ -17,10 +17,28 @@ import { matchAddress, matchName } from "./verification";
 /** Recognition confidence below this is "low confidence", as shown in the transcript. */
 export const LOW_CONFIDENCE = 0.6;
 
+/**
+ * A pause can split one identity answer into two lines ("Hill Road, in Dallas" came out as
+ * "Helrout." and "Indalis." on the accuracy read). Caller lines after the agent's question
+ * are one answer until the agent speaks again or the caller has been silent this long.
+ */
+export const ANSWER_GAP_MS = 2000;
+
 export type Evidence = { key: string; seq: number; side: Side; text: string; at: number; lowConfidence: boolean };
 
 export type FactorState = "idle" | "asking" | "partial" | "confirm" | "ok" | "failed";
-export type Factor = { id: "name" | "address"; label: string; state: FactorState; attempts: number; method?: string; evidence?: Evidence };
+export type Factor = {
+  id: "name" | "address";
+  label: string;
+  state: FactorState;
+  attempts: number;
+  method?: string;
+  evidence?: Evidence;
+  /** The answer as heard so far, across lines. */
+  heard?: string;
+  /** Why the agent is asked to confirm: a doubtful line, or an answer that only sounds like the record. */
+  confirmReason?: "low-confidence" | "sounds-like";
+};
 
 export type OrderView = Order & { deliveredLabel: string; deliveredDate: string | null };
 
@@ -157,41 +175,80 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     if (verified() && !verifiedAt) verifiedAt = ev;
   };
 
-  function answer(factor: Factor, result: "match" | "partial" | "mismatch" | "none", ev: Evidence, asked: boolean, method?: string) {
+  /** The caller lines answering the agent's current identity question (see ANSWER_GAP_MS). */
+  type Pending = { factor: Factor; evs: Evidence[]; texts: string[]; endedAt: number; result: "partial" | "sounds-like" | "mismatch" | "none" };
+  // Cast so TypeScript doesn't narrow it to null: it changes inside hear() and closeAnswer().
+  let pending = null as Pending | null;
+
+  const addressMethod = (text: string) => (/\b(at|@)\b/.test(text.toLowerCase()) && !/\broad\b/i.test(text) ? "email" : "street and city");
+
+  function matched(factor: Factor, ev: Evidence, low: boolean, method?: string) {
+    factor.evidence = ev;
+    if (low) {
+      // A doubtful line never ticks a step on its own.
+      factor.state = "confirm";
+      factor.confirmReason = "low-confidence";
+      return;
+    }
+    factor.state = "ok";
+    factor.method = method;
+    markVerified(ev);
+  }
+
+  /** A caller line while the agent is waiting for this factor. */
+  function hear(factor: Factor, line: TranscriptEvent, ev: Evidence) {
     if (factor.state === "ok" || locked) return;
+    if (pending?.factor !== factor) pending = { factor, evs: [], texts: [], endedAt: 0, result: "none" };
+    pending.evs.push(ev);
+    pending.texts.push(line.text);
+    pending.endedAt = line.endedAt;
+    const heard = pending.texts.join(" ");
+    const low = pending.evs.some((e) => e.lowConfidence);
+    const result = factor.id === "name" ? matchName(heard, customer) : matchAddress(heard, customer);
+    factor.heard = heard;
+    factor.evidence = ev;
     if (result === "match") {
-      if (ev.lowConfidence) {
-        factor.state = "confirm";
-        factor.evidence = ev;
-      } else {
-        factor.state = "ok";
-        factor.evidence = ev;
-        factor.method = method;
-        markVerified(ev);
-      }
-    } else if (asked && result === "partial") {
+      matched(factor, ev, low, factor.id === "address" ? addressMethod(heard) : undefined);
+      pending = null;
+    } else if (result === "partial") {
       factor.state = "partial";
-      factor.evidence = ev;
-    } else if (asked && result === "mismatch") {
-      if (ev.lowConfidence) {
-        // A doubtful line never counts as a failed attempt; ask again instead.
-        factor.state = "confirm";
-        factor.evidence = ev;
-        return;
-      }
-      factor.attempts++;
-      factor.state = "failed";
-      factor.evidence = ev;
-      if (factor.attempts >= pack.policy.maxVerificationAttempts) locked = true;
+      pending.result = "partial";
+    } else if (soundsLikeRecord(factor.id, heard, customer)) {
+      // Close to the record but not a clear match: the agent decides; never a failed attempt.
+      factor.state = "confirm";
+      factor.confirmReason = "sounds-like";
+      pending.result = "sounds-like";
+    } else {
+      // More may be coming; a wrong answer counts only once the caller has finished (closeAnswer).
+      factor.state = "asking";
+      pending.result = result;
     }
   }
 
+  /** The caller finished answering: a clear mismatch is now a failed attempt. */
+  function closeAnswer() {
+    if (!pending) return;
+    const { factor, evs, result } = pending;
+    pending = null;
+    if (result !== "mismatch" || locked) return;
+    if (evs.some((e) => e.lowConfidence)) {
+      factor.state = "confirm";
+      factor.confirmReason = "low-confidence";
+      return;
+    }
+    factor.attempts++;
+    factor.state = "failed";
+    if (factor.attempts >= pack.policy.maxVerificationAttempts) locked = true;
+  }
+
   for (const item of timeline) {
+    if (pending && item.at - pending.endedAt >= ANSWER_GAP_MS) closeAnswer();
     if (item.kind === "action") {
       const a = item.action;
       if (a.type === "confirm" && (a.target === "name" || a.target === "address")) {
         const factor = a.target === "name" ? name : address;
         if (factor.state === "confirm" && factor.evidence && !locked) {
+          if (pending?.factor === factor) pending = null;
           factor.state = "ok";
           factor.method = factor.method ?? (a.target === "address" ? "confirmed by the agent" : undefined);
           markVerified(factor.evidence);
@@ -237,11 +294,11 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
       for (const mention of findOrderMentions(line.text, idLengths, expecting === "order")) callerMentions.push({ mention, ev });
 
       if (!locked) {
-        const nameResult = matchName(line.text, customer);
-        answer(name, nameResult, ev, expecting === "name");
-        const addressResult = matchAddress(line.text, customer);
-        const byEmail = /\b(at|@)\b/.test(line.text.toLowerCase()) && addressResult === "match" && !/\broad\b/i.test(line.text);
-        answer(address, addressResult, ev, expecting === "address", byEmail ? "email" : "street and city");
+        // The factor the agent asked for; the other only counts if volunteered as a clear match.
+        if (expecting === "name") hear(name, line, ev);
+        else if (name.state !== "ok" && matchName(line.text, customer) === "match") matched(name, ev, ev.lowConfidence);
+        if (expecting === "address") hear(address, line, ev);
+        else if (address.state !== "ok" && matchAddress(line.text, customer) === "match") matched(address, ev, ev.lowConfidence, addressMethod(line.text));
       }
 
       const wants = readChoice(line.text);
@@ -255,16 +312,15 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
       for (const phrase of escalationWords(line.text)) escalations.push({ kind: "words", phrase, ev });
       for (const phrase of safetyWords(line.text)) escalations.push({ kind: "safety", phrase, ev });
 
-      if (expecting && expecting !== "order") {
-        const factor = expecting === "name" ? name : address;
-        if (factor.state !== "partial") expecting = null;
-      } else if (expecting === "order" && callerMentions.length) expecting = null;
+      if (expecting === "order" && callerMentions.length) expecting = null;
     } else {
       const offer = agentOffers(line.text);
       if (offer && !verified()) earlyOffers.push(ev);
       if (offer && escalations.length) offersInEscalation.push(ev);
 
+      closeAnswer();
       const asks = agentAsksFor(line.text);
+      if (!asks && (expecting === "name" || expecting === "address")) expecting = null;
       if (asks) {
         expecting = asks;
         const factor = asks === "name" ? name : asks === "address" ? address : null;
@@ -302,6 +358,7 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     };
   }
   if (intent && issueConfirmedInPanel) intent = { ...intent, certainty: "high" };
+  if (pending && now - pending.endedAt >= ANSWER_GAP_MS) closeAnswer();
   const isVerified = verified();
   const attemptsLeft = Math.max(0, pack.policy.maxVerificationAttempts - Math.max(name.attempts, address.attempts));
 
@@ -547,7 +604,14 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
   /* ---------- Please-confirm prompts (low confidence never ticks a step) ---------- */
   for (const f of [name, address]) {
     if (f.state === "confirm" && f.evidence) {
-      prompts.push({ target: f.id, text: `Heard "${f.evidence.text}" with low confidence. Ask the caller to repeat it, or confirm if you heard it clearly.`, evidence: f.evidence });
+      prompts.push({
+        target: f.id,
+        text:
+          f.confirmReason === "sounds-like"
+            ? `Heard "${f.heard}". It sounds like the ${f.id === "name" ? "name" : "address"} on the order but isn't a clear match. Ask the caller to repeat it, or confirm if you heard it clearly.`
+            : `Heard "${f.heard ?? f.evidence.text}" with low confidence. Ask the caller to repeat it, or confirm if you heard it clearly.`,
+        evidence: f.evidence,
+      });
     }
   }
   if (match && match.needsConfirmation && !match.confirmed) {
@@ -570,6 +634,8 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
   /* ---------- SOP steps ---------- */
   const factorStep = (f: Factor): StepStatus =>
     locked && f.state !== "ok" ? "blocked" : f.state === "ok" ? "done" : f.state === "confirm" || f.state === "failed" || f.state === "partial" ? "attention" : f.state === "asking" ? "active" : "pending";
+  const factorDetail = (f: Factor) =>
+    f.state === "failed" ? `Not matched (${f.attempts})` : f.state === "confirm" ? "Please confirm" : f.state === "asking" && f.heard ? "Listening…" : undefined;
   const approved = recommendation?.approval.state === "approved";
   const steps: SopStep[] = [
     {
@@ -580,12 +646,12 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
       evidence: intent?.evidence[0],
       sopRef: sopId,
     },
-    { id: "name", label: "Verify: full name", status: factorStep(name), detail: name.state === "failed" ? `Not matched (${name.attempts})` : undefined, evidence: name.evidence, sopRef: ref("Verification") },
+    { id: "name", label: "Verify: full name", status: factorStep(name), detail: factorDetail(name), evidence: name.evidence, sopRef: ref("Verification") },
     {
       id: "address",
       label: "Verify: email, or street and city",
       status: factorStep(address),
-      detail: address.state === "ok" ? `By ${address.method}` : address.state === "failed" ? `Not matched (${address.attempts})` : undefined,
+      detail: address.state === "ok" ? `By ${address.method}` : factorDetail(address),
       evidence: address.evidence,
       sopRef: ref("Verification"),
     },
