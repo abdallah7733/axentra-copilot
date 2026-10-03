@@ -12,6 +12,7 @@ Graduation project MVP: an enterprise AI copilot that works alongside a customer
 | `/demo` | Interactive Demo Mode. Drive every step with Next, or Auto-play. Alternate paths: failed verification, account lock, customer disputes the charge |
 | `/presentation` | Product Experience. Clicker-driven scene timeline for the 1-minute recording. Pauses indefinitely at the human approval step. Space, arrows, R, F |
 | `/sop` | The billing SOP the copilot cites |
+| `/live` | Live call mode for the presenter's Mac: a real call through the demo line, transcribed locally, with the Milestone 3 rules copilot (Sunlake Electronics, CS-SOP-3.1). Includes an offline replay for rehearsal. On the public site it shows a note instead |
 
 ## Run
 
@@ -21,6 +22,8 @@ npm run dev
 ```
 
 Then open http://localhost:3000. `npm run build && npm start` for production.
+
+`npm test` runs the copilot unit tests in `src/lib/copilot` with Node's built-in test runner (Node 22.18 or later).
 
 ## Architecture
 
