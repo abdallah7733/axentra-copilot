@@ -14,6 +14,11 @@ export type EngineHealth = {
   primary?: string;
   gpu?: boolean;
   vad?: boolean;
+  /** Milestone 3: "local" when the engine runs the optional local language model (AXENTRA_ASSIST=local). */
+  assist?: "local" | "rules";
+  assistModel?: string;
+  assistReady?: boolean;
+  assistGpu?: boolean;
 };
 
 export type Side = "caller" | "agent";
@@ -51,6 +56,23 @@ export async function recognize(side: Side, samples: Float32Array): Promise<Reco
     body: wav(samples, 16000),
   });
   if (!response.ok) throw new Error("Local recognizer could not process audio");
+  return response.json();
+}
+
+export type AssistResult = { text: string; model: string; gpu: boolean; elapsedMs: number; tokens: number | null };
+
+/**
+ * Asks the engine's optional local language model (text only, on this Mac). Gives up
+ * after `timeoutMs`, so a slow model never holds up the rules-based suggestion.
+ */
+export async function assistChat(messages: { role: string; content: string }[], maxTokens: number, timeoutMs: number): Promise<AssistResult> {
+  const response = await fetch("/assist", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages, maxTokens }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!response.ok) throw new Error("Local assist is unavailable");
   return response.json();
 }
 

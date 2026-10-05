@@ -2,12 +2,16 @@
 
 import { Badge } from "@/components/ui/badge";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { sop } from "@/lib/demo-data";
+import { sop as atlasOneSop, type Sop } from "@/lib/demo-data";
 import { useDemo } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { Mono } from "./bits";
 
-export function SopBody({ highlight }: { highlight?: "A" | "B" }) {
+/**
+ * Any client's SOP. `highlight` marks the scenario that applies to this call and
+ * `authorityRow` the authority band it falls in.
+ */
+export function SopBody({ sop, highlight, authorityRow }: { sop: Sop; highlight?: string; authorityRow?: number }) {
   return (
     <div className="space-y-6 text-[13px] leading-relaxed">
       <section>
@@ -20,8 +24,19 @@ export function SopBody({ highlight }: { highlight?: "A" | "B" }) {
         <p className="mt-2 text-muted-foreground">{sop.verification.failure}</p>
       </section>
 
+      {sop.rules && (
+        <section>
+          <h3 className="mb-2 text-sm font-medium">{sop.rules.title}</h3>
+          <ul className="list-disc space-y-1 pl-5">
+            {sop.rules.items.map((r) => (
+              <li key={r}>{r}</li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <section>
-        <h3 className="mb-2 text-sm font-medium">Refund authority matrix</h3>
+        <h3 className="mb-2 text-sm font-medium">{sop.authorityTitle}</h3>
         <table className="w-full">
           <thead>
             <tr className="text-left text-xs text-muted-foreground">
@@ -32,7 +47,7 @@ export function SopBody({ highlight }: { highlight?: "A" | "B" }) {
           </thead>
           <tbody className="divide-y divide-border">
             {sop.authority.map((a, i) => (
-              <tr key={a.range} className={cn(i === 0 && highlight === "A" && "bg-cyan/10")}>
+              <tr key={a.range} className={cn(i === authorityRow && "bg-cyan/10")}>
                 <td className="py-1.5 pr-2"><Mono>{a.range}</Mono></td>
                 <td className="py-1.5 pr-2">{a.approver}</td>
                 <td className="py-1.5 text-muted-foreground">{a.note}</td>
@@ -76,24 +91,44 @@ export function SopBody({ highlight }: { highlight?: "A" | "B" }) {
   );
 }
 
-export function SopSheet() {
-  const open = useDemo((s) => s.sopOpen);
-  const setSop = useDemo((s) => s.setSop);
-  const branch = useDemo((s) => s.branch);
-  const highlight = branch === "unauthorized_transaction" ? "B" : "A";
+export function SopSheet({
+  sop,
+  open,
+  onOpenChange,
+  highlight,
+  authorityRow,
+  note,
+}: {
+  sop: Sop;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  highlight?: string;
+  authorityRow?: number;
+  /** Extra line under the SOP reference, for example that the client is fictional. */
+  note?: string;
+}) {
   return (
-    <Sheet open={open} onOpenChange={setSop}>
+    <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-xl">
         <SheetHeader>
           <SheetTitle>{sop.title}</SheetTitle>
           <SheetDescription>
-            <Mono>{sop.id}</Mono>. {sop.version}. Owner: {sop.owner}.
+            <Mono>{sop.id}</Mono>. {sop.version}. Owner: {sop.owner}.{note && <> {note}</>}
           </SheetDescription>
         </SheetHeader>
         <div className="px-4 pb-6">
-          <SopBody highlight={highlight} />
+          <SopBody sop={sop} highlight={highlight} authorityRow={authorityRow} />
         </div>
       </SheetContent>
     </Sheet>
   );
+}
+
+/** The scripted demo's SOP sheet: AtlasOne's BIL-SOP-4.2, driven by the demo store. */
+export function DemoSopSheet() {
+  const open = useDemo((s) => s.sopOpen);
+  const setSop = useDemo((s) => s.setSop);
+  const branch = useDemo((s) => s.branch);
+  const highlight = branch === "unauthorized_transaction" ? "B" : "A";
+  return <SopSheet sop={atlasOneSop} open={open} onOpenChange={setSop} highlight={highlight} authorityRow={highlight === "A" ? 0 : undefined} />;
 }

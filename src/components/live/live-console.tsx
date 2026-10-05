@@ -7,7 +7,7 @@ import { Wordmark } from "@/components/brand/wordmark";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { SopSheet } from "@/components/workspace/sop-sheet";
-import { useDemo } from "@/lib/store";
+import { pack, useCopilot } from "@/lib/live/copilot-store";
 import { useLive } from "@/lib/live/store";
 import { CallDetails } from "./call-details";
 import { LiveControls } from "./live-controls";
@@ -15,7 +15,9 @@ import { LiveCopilot } from "./live-copilot";
 import { LiveTranscript } from "./live-transcript";
 
 function LiveTopBar() {
-  const setSop = useDemo((s) => s.setSop);
+  const setSop = useLive((s) => s.setSop);
+  // The client and copilot labels only appear on the presenter's machine; the public page keeps its note.
+  const online = useLive((s) => s.engine === "online");
   return (
     <header className="flex h-12 items-center justify-between gap-4 border-b border-border bg-card px-4">
       <div className="flex items-center gap-4 min-w-0">
@@ -25,15 +27,44 @@ function LiveTopBar() {
         <Wordmark height={16} opticalCenter />
         <span className="hidden h-4 w-px bg-border sm:block" />
         <span className="hidden text-xs text-muted-foreground sm:block">Live call mode</span>
+        {online && (
+          <>
+            <span className="hidden h-4 w-px bg-border md:block" />
+            <span className="hidden truncate text-xs text-muted-foreground md:block">
+              {pack.company.name}, fictional client <span className="mx-1">/</span> {pack.agent.name}, {pack.agent.team}
+            </span>
+          </>
+        )}
       </div>
       <div className="flex items-center gap-2">
-        <span className="hidden text-[11px] text-muted-foreground lg:block">Real call. Speech recognition runs on this Mac. No cloud transcription.</span>
+        {online ? (
+          <span className="hidden text-[11px] text-muted-foreground xl:block">Real call. Speech and copilot run on this Mac. No cloud AI.</span>
+        ) : (
+          <span className="hidden text-[11px] text-muted-foreground lg:block">Real call. Speech recognition runs on this Mac. No cloud transcription.</span>
+        )}
         <Button variant="outline" size="sm" className="rounded-full" onClick={() => setSop(true)}>
           <BookOpenTextIcon data-icon="inline-start" /> SOP
         </Button>
         <ThemeToggle />
       </div>
     </header>
+  );
+}
+
+/** Sunlake's SOP, highlighting the scenario and authority band the copilot recommends. */
+function LiveSopSheet() {
+  const open = useLive((s) => s.sopOpen);
+  const setSop = useLive((s) => s.setSop);
+  const rec = useCopilot((s) => s.view.recommendation);
+  return (
+    <SopSheet
+      sop={pack.sop}
+      open={open}
+      onOpenChange={setSop}
+      highlight={rec?.scenario}
+      authorityRow={rec?.authorityRow}
+      note={`${pack.company.name} is a fictional client.`}
+    />
   );
 }
 
@@ -84,7 +115,7 @@ export function LiveConsole() {
           <LiveControls />
         </>
       )}
-      <SopSheet />
+      <LiveSopSheet />
     </main>
   );
 }

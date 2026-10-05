@@ -30,7 +30,7 @@ export default function SopPage() {
           This is the policy the copilot reads from during the demo. Recommendations in the workspace cite the scenario and authority band below. Fictional, written for the AtlasOne Communications scenario.
         </p>
         <div className="mt-10">
-          <SopBody highlight="A" />
+          <SopBody sop={sop} highlight="A" authorityRow={0} />
         </div>
       </article>
     </main>

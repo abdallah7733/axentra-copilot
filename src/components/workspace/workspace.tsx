@@ -5,7 +5,7 @@ import { ApprovalDialog } from "./approval-dialog";
 import { ContextualWorkspace } from "./contextual-workspace";
 import { CopilotPanel } from "./copilot-panel";
 import { CustomerContext } from "./customer-context";
-import { SopSheet } from "./sop-sheet";
+import { DemoSopSheet } from "./sop-sheet";
 import { Transcript } from "./transcript";
 
 /*
@@ -24,7 +24,7 @@ export function Workspace({ className, overlays = true }: { className?: string; 
       </div>
       {overlays && (
         <>
-          <SopSheet />
+          <DemoSopSheet />
           <ApprovalDialog />
         </>
       )}

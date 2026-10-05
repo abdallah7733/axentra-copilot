@@ -1,11 +1,45 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { MicrophoneIcon, PhoneDisconnectIcon, PhoneIcon, PhoneXIcon, WarningIcon } from "@phosphor-icons/react";
+import { MicrophoneIcon, PhoneDisconnectIcon, PhoneIcon, PhoneXIcon, PlayIcon, StopIcon, WarningIcon } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { LiveDot } from "@/components/workspace/bits";
+import { replayScripts } from "@/lib/live/replay-scripts";
 import { useLive } from "@/lib/live/store";
+
+const selectClass =
+  "h-7 max-w-64 rounded-full border border-input bg-transparent px-2.5 text-xs text-foreground outline-none focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30";
+
+/* Rehearsal: replays a script through the copilot with no call, audio or engine. */
+function Replay() {
+  const phase = useLive((s) => s.phase);
+  const replaying = useLive((s) => s.replaying);
+  const replay = useLive((s) => s.replay);
+  const stopReplay = useLive((s) => s.stopReplay);
+  const [id, setId] = useState(replayScripts[0].id);
+  if (phase === "incoming" || phase === "active" || phase === "connecting") return null;
+  return (
+    <span className="flex items-center gap-1.5">
+      <select value={id} onChange={(e) => setId(e.target.value)} disabled={replaying} aria-label="Replay script" className={selectClass}>
+        {replayScripts.map((r) => (
+          <option key={r.id} value={r.id}>
+            {r.label}
+          </option>
+        ))}
+      </select>
+      {replaying ? (
+        <Button variant="outline" size="sm" className="rounded-full" onClick={stopReplay}>
+          <StopIcon data-icon="inline-start" /> Stop replay
+        </Button>
+      ) : (
+        <Button variant="outline" size="sm" className="rounded-full" onClick={() => replay(replayScripts.find((r) => r.id === id)!.lines)}>
+          <PlayIcon data-icon="inline-start" /> Replay (no call)
+        </Button>
+      )}
+    </span>
+  );
+}
 
 /* Presenter controls for a real call. The access code is typed here, kept in
    memory for token refresh only, and cleared from the field immediately. */
@@ -67,7 +101,8 @@ export function LiveControls() {
             <PhoneDisconnectIcon data-icon="inline-start" /> Hang up
           </Button>
         )}
-        {phase === "ready" && lineCount > 0 && (
+        <Replay />
+        {phase !== "active" && phase !== "incoming" && lineCount > 0 && (
           <Button variant="ghost" size="sm" className="rounded-full" onClick={clearTranscript}>
             Clear transcript
           </Button>
@@ -90,7 +125,7 @@ export function LiveControls() {
           value={micId}
           onChange={(e) => setMic(e.target.value)}
           disabled={phase === "active"}
-          className="h-7 max-w-64 rounded-full border border-input bg-transparent px-2.5 text-xs text-foreground outline-none focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
+          className={selectClass}
         >
           <option value="">System default</option>
           {mics.map((m) => (
