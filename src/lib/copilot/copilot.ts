@@ -227,7 +227,7 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     } else if (result === "partial") {
       factor.state = "partial";
       pending.result = "partial";
-    } else if (soundsLikeRecord(factor.id, heard, customer)) {
+    } else if (result === "close" || soundsLikeRecord(factor.id, heard, customer)) {
       // Close to the record but not a clear match: the agent decides; never a failed attempt.
       factor.state = "confirm";
       factor.confirmReason = "sounds-like";

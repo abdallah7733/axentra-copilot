@@ -554,3 +554,28 @@ test("10 Oct second retest: a part-matched address asks again, and the choice wa
   assert.equal(v.verification.verified, true);
   assert.equal(v.order.match?.order.id, "427");
 });
+
+test("a near-miss street never verifies on its own, and never counts as a failed attempt", () => {
+  // Offline Whisper heard the caller's correct "Hill Road" as "Will Road" and "Wind Road" (4.20 PM call).
+  const lines: Line[] = [
+    { side: "caller", text: "Hello, I need help with order 427. The tablet came yesterday and the screen is cracked." },
+    { side: "agent", text: "First, can I have your full name, please?" },
+    { side: "caller", text: "Sam Miller." },
+    { side: "agent", text: "Thank you. And the street and city for the delivery?" },
+    { side: "caller", text: "Will Road in Dallas." },
+    { side: "agent", text: "Thank you, Sam. I can see the tablet on order 427." },
+  ];
+  let v = after(lines, 6);
+  const address = v.verification.factors[1];
+  assert.equal(address.state, "confirm");
+  assert.equal(address.confirmReason, "sounds-like");
+  assert.equal(address.attempts, 0);
+  assert.equal(v.verification.verified, false);
+  assert.equal(v.order.match, undefined, "order 427 stays locked");
+  assert.ok(v.prompts.some((p) => p.target === "address" && !p.askAgain));
+
+  // Said word for word, the same answer verifies.
+  v = after([...lines.slice(0, 4), { side: "caller", text: "Hill Road in Dallas." }, lines[5]], 6);
+  assert.equal(v.verification.verified, true);
+  assert.equal(v.order.match?.order.id, "427");
+});

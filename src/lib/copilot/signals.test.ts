@@ -124,7 +124,8 @@ test("agent commits and discloses", () => {
 
 test("identity factors", () => {
   assert.equal(matchName("Sam Miller.", samMiller), "match");
-  assert.equal(matchName("My name is Sam Millar.", samMiller), "match");
+  // Heard only by sound: close, for the agent to confirm, never a match on its own.
+  assert.equal(matchName("My name is Sam Millar.", samMiller), "close");
   assert.equal(matchName("Sam.", samMiller), "partial");
   assert.equal(matchName("John Smith.", samMiller), "mismatch");
   assert.equal(matchName("Sorry, what?", samMiller), "none");
@@ -136,11 +137,17 @@ test("identity factors", () => {
   assert.equal(matchAddress("Hill Road, in Houston.", samMiller), "mismatch");
   assert.equal(matchAddress("Hill Street, Dallas.", samMiller), "mismatch");
   assert.equal(matchAddress("Dallas.", samMiller), "partial");
+  assert.equal(matchAddress("s dot miler at example mail dot com", samMiller), "close");
   // Heard on the Milestone 3 accuracy read (27 Sep): "Hill Road" came out as "Hel Road".
-  assert.equal(matchAddress("Hel Road in Dallas.", samMiller), "match");
+  assert.equal(matchAddress("Hel Road in Dallas.", samMiller), "close");
   // Heard on the 10 Oct retest: the street type can sound alike too.
-  assert.equal(matchAddress("Hail Rode in Dallas.", samMiller), "match");
+  assert.equal(matchAddress("Hail Rode in Dallas.", samMiller), "close");
+  // A street one letter away is a different street as far as the record knows: never a match.
+  assert.equal(matchAddress("Will Road in Dallas.", samMiller), "close");
+  assert.equal(matchAddress("Mill Road, in Dallas.", samMiller), "close");
+  assert.equal(matchAddress("Hill Road in Dalas.", samMiller), "close");
   assert.equal(matchAddress("Hill Street, in Dallas.", samMiller), "mismatch");
+  assert.equal(matchAddress("Hill Drive in Dallas.", samMiller), "mismatch");
   assert.equal(matchAddress("Lake Road, in Dallas.", samMiller), "mismatch");
 });
 

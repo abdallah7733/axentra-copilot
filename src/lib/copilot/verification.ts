@@ -5,22 +5,31 @@ import type { Customer } from "./types";
   Identity factors, matched against the customer record the caller ID points to.
   Factor 1: full name. Factor 2: the email on the order, or the delivery street and city.
   A match needs every part (first and last name; street and city); one part alone
-  asks for the rest rather than counting as a failure.
+  asks for the rest rather than counting as a failure. Every part has to be heard word
+  for word: a part heard only by sound ("Will Road" for "Hill Road") makes the answer
+  "close", which the agent confirms and which never verifies on its own.
 */
 
-export type FactorResult = "match" | "partial" | "mismatch" | "none";
+export type FactorResult = "match" | "close" | "partial" | "mismatch" | "none";
 
 /** Words that mean the caller did not answer (so a line of them is not a failed attempt). */
 const NOT_AN_ANSWER = /^(sorry|what|pardon|hello|hi|yes|yeah|no|okay|ok|sure|one|second|moment|hold|on|um|uh|hmm|can|you|repeat|that|please|say|again|it|is|its|it's|the|a|of|my|i|am|i'm|this|name|in|at|and|on|to|for|from|full|speaking|calling|here|called|thanks|thank|street|city|address|delivery|delivered|email|e|mail)$/;
 
-const has = (tokens: string[], expected: string) => tokens.some((t) => soundsLike(t, expected));
+/** How one part of the record was heard: word for word, only by sound, or not at all. */
+type Heard = "exact" | "close" | null;
+const heardAs = (tokens: string[], expected: string): Heard =>
+  tokens.includes(expected) ? "exact" : tokens.some((t) => soundsLike(t, expected)) ? "close" : null;
+/** Every part heard: a match only if each was heard word for word. */
+const allHeard = (parts: Heard[]): "match" | "close" | null => (!parts.every(Boolean) ? null : parts.every((p) => p === "exact") ? "match" : "close");
+const has = (tokens: string[], expected: string) => heardAs(tokens, expected) !== null;
 
 export function matchName(text: string, customer: Customer): FactorResult {
   const tokens = words(text);
   const parts = words(customer.name);
-  const found = parts.filter((p) => has(tokens, p)).length;
-  if (found === parts.length) return "match";
-  return judge(found > 0, leftover(tokens, parts));
+  const heard = parts.map((p) => heardAs(tokens, p));
+  const all = allHeard(heard);
+  if (all) return all;
+  return judge(heard.some(Boolean), leftover(tokens, parts));
 }
 
 /** Answer words that are neither filler nor part of what was expected. */
@@ -39,15 +48,18 @@ export function matchAddress(text: string, customer: Customer): FactorResult {
   if (tokens.includes("at") && (tokens.includes("com") || tokens.includes("mail") || tokens.some((t) => t.includes("@")))) {
     const local = words(customer.emailFull.split("@")[0]);
     const domain = words(customer.emailFull.split("@")[1]).filter((w) => w !== "dot" && w !== "com");
-    const ok = local.filter((w) => w.length > 1).every((w) => has(tokens, w)) && domain.every((w) => has(tokens, w));
-    return ok ? "match" : "mismatch";
+    return allHeard([...local.filter((w) => w.length > 1), ...domain].map((w) => heardAs(tokens, w))) ?? "mismatch";
   }
   const [streetName, ...streetRest] = words(customer.address.street);
   const typeWords = streetRest.flatMap((w) => STREET_TYPES[w] ?? [w]);
-  // The street type may sound alike too: "Hail Rode in Dallas" on the 10 Oct retest.
-  const street = has(tokens, streetName) && (typeWords.length === 0 || tokens.some((t) => typeWords.some((w) => soundsLike(t, w))));
-  const city = words(customer.address.city).every((w) => has(tokens, w));
-  if (street && city) return "match";
+  // The street type may only sound alike too ("Hail Rode in Dallas" on the 10 Oct retest): close, not a match.
+  const type: Heard =
+    !typeWords.length || typeWords.some((w) => tokens.includes(w)) ? "exact" : tokens.some((t) => typeWords.some((w) => soundsLike(t, w))) ? "close" : null;
+  const cityHeard = words(customer.address.city).map((w) => heardAs(tokens, w));
+  const all = allHeard([heardAs(tokens, streetName), type, ...cityHeard]);
+  if (all) return all;
+  const street = has(tokens, streetName) && type !== null;
+  const city = cityHeard.every(Boolean);
   const state = words(customer.address.state);
   const expected = [streetName, ...typeWords, ...words(customer.address.city), ...state, ...state.flatMap((w) => STATE_NAMES[w] ?? [])];
   // A different street type right after the name ("Hill Street") is a wrong answer, not a missing one.
