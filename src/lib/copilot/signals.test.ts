@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { agentAsksChoice, agentAsksFor, agentCommits, agentDisclosesFactor, agentOffers, escalationWords, readChoice, readIntent, safetyWords } from "./signals";
 import { matchAddress, matchName, soundsLikeRecord } from "./verification";
+import { repeatsItself } from "./text";
 import { samMiller } from "@/lib/live/sunlake-data";
 
 const damaged = (text: string) => readIntent(text).find((i) => i.id === "damaged");
@@ -137,6 +138,9 @@ test("identity factors", () => {
   assert.equal(matchAddress("Dallas.", samMiller), "partial");
   // Heard on the Milestone 3 accuracy read (27 Sep): "Hill Road" came out as "Hel Road".
   assert.equal(matchAddress("Hel Road in Dallas.", samMiller), "match");
+  // Heard on the 10 Oct retest: the street type can sound alike too.
+  assert.equal(matchAddress("Hail Rode in Dallas.", samMiller), "match");
+  assert.equal(matchAddress("Hill Street, in Dallas.", samMiller), "mismatch");
   assert.equal(matchAddress("Lake Road, in Dallas.", samMiller), "mismatch");
 });
 
@@ -147,4 +151,13 @@ test("answers that only sound like the record", () => {
   assert.equal(soundsLikeRecord("address", "Hill Road, in Houston.", samMiller), false);
   assert.equal(soundsLikeRecord("name", "Semiler.", samMiller), true);
   assert.equal(soundsLikeRecord("name", "John Smith.", samMiller), false);
+});
+
+test("a line that is one phrase repeated is garbled", () => {
+  // Heard for "Sam Miller." on the 10 Oct retest.
+  assert.ok(repeatsItself("Ten milis. Ten milis. Ten milis."));
+  assert.ok(repeatsItself("Sam Miller. Sam Miller."));
+  assert.equal(repeatsItself("Sam Miller."), false);
+  assert.equal(repeatsItself("Hill Road, in Dallas."), false);
+  assert.equal(repeatsItself("It's Sam, Sam Miller."), false);
 });

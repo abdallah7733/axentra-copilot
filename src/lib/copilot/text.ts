@@ -18,6 +18,19 @@ export function normalize(text: string): string {
 
 export const words = (text: string): string[] => (normalize(text) ? normalize(text).split(" ") : []);
 
+/**
+ * The whole line is one short phrase said two or more times: "Ten milis. Ten milis. Ten milis."
+ * for "Sam Miller" on the 10 Oct retest. Recognition loops like this when it is unsure, so the
+ * words can't be trusted even when the line isn't marked low confidence.
+ */
+export function repeatsItself(text: string): boolean {
+  const w = words(text);
+  for (let n = 1; n <= 6 && n * 2 <= w.length; n++) {
+    if (w.length % n === 0 && w.every((word, i) => word === w[i % n])) return true;
+  }
+  return false;
+}
+
 const units: Record<string, number> = {
   zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9,
   ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16,

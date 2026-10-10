@@ -443,3 +443,53 @@ test("an unreadable choice can still be answered with low confidence, then confi
   v = after(lines, lines.length, [...actions, { type: "confirm", target: "choice", at: NOW - 1000 }]);
   assert.equal(v.choice?.value, "replacement");
 });
+
+/* ---------- Retest on the fixed build, 10 Oct 2026 (lines as the console heard them) ---------- */
+
+const retest1010: Line[] = [
+  { side: "agent", text: "Thank you for calling Sunlake. How can I help you today.", confidence: 0.4 },
+  { side: "caller", text: "Hello, I need help with order 427. The tablet came yesterday and the screen cracked." },
+  { side: "agent", text: "I'm sorry to hear that I can send you a new one today. First can I have your full name please." },
+  { side: "caller", text: "Ten milis. Ten milis. Ten milis." },
+  { side: "agent", text: "Thank you." },
+  { side: "agent", text: "And the street and city for the delivery." },
+  { side: "caller", text: "Hail Rode in Dallas.", confidence: 0.4 },
+  { side: "agent", text: "Thank you Sam! I can see the tablet on 427", confidence: 0.4 },
+  { side: "caller", text: "Yes, only the screen. Can I get a new one or my money back?" },
+  { side: "agent", text: "You can have either and new tablet ships today at no cost or full refund in 3 to 5 business days", confidence: 0.4 },
+  { side: "agent", text: "Which do you prefer?" },
+  { side: "caller", text: "And you want these." },
+  { side: "agent", text: "Done. New tablet ships today.", confidence: 0.4 },
+];
+
+test("10 Oct retest: a garbled name is the agent's call, never a failed attempt", () => {
+  let v = after(retest1010, 5);
+  const name = v.verification.factors[0];
+  assert.equal(name.state, "confirm");
+  assert.equal(name.confirmReason, "garbled");
+  assert.equal(name.attempts, 0);
+  assert.ok(!v.alerts.some((a) => a.id.startsWith("verification-failed")));
+  assert.match(v.prompts.find((p) => p.target === "name")!.text, /looks garbled/);
+
+  v = after(retest1010, 7);
+  assert.equal(v.verification.factors[1].state, "confirm", '"Hail Rode in Dallas" matches but was heard with low confidence');
+  assert.equal(v.verification.verified, false);
+  assert.equal(v.order.match, undefined);
+
+  // The agent heard both clearly and confirms them: the call carries on.
+  const at = events(retest1010)[6].endedAt + 500;
+  const actions: AgentAction[] = [{ type: "confirm", target: "name", at }, { type: "confirm", target: "address", at }];
+  v = after(retest1010, 8, actions);
+  assert.equal(v.verification.verified, true);
+  assert.equal(v.order.match?.order.id, "427");
+  v = after(retest1010, retest1010.length, actions);
+  assert.ok(v.prompts.some((p) => p.target === "choice" && p.askAgain), '"And you want these." asks again');
+  assert.equal(v.recommendation?.approval.state, "not-ready");
+});
+
+test("a clear wrong name still counts as a failed attempt", () => {
+  const s = script({ 5: { side: "caller", text: "John Smith." } });
+  const v = after(s, 6);
+  assert.equal(v.verification.factors[0].state, "failed");
+  assert.equal(v.verification.factors[0].attempts, 1);
+});

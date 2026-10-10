@@ -44,7 +44,8 @@ export function matchAddress(text: string, customer: Customer): FactorResult {
   }
   const [streetName, ...streetRest] = words(customer.address.street);
   const typeWords = streetRest.flatMap((w) => STREET_TYPES[w] ?? [w]);
-  const street = has(tokens, streetName) && (typeWords.length === 0 || tokens.some((t) => typeWords.includes(t)));
+  // The street type may sound alike too: "Hail Rode in Dallas" on the 10 Oct retest.
+  const street = has(tokens, streetName) && (typeWords.length === 0 || tokens.some((t) => typeWords.some((w) => soundsLike(t, w))));
   const city = words(customer.address.city).every((w) => has(tokens, w));
   if (street && city) return "match";
   const state = words(customer.address.state);

@@ -1,5 +1,6 @@
 import { findOrderMentions, matchOrder, type MentionMethod, type OrderMention } from "./orders";
 import { agentAsksChoice, agentAsksFor, agentCommits, agentDisclosesFactor, agentOffers, escalationWords, readChoice, readIntent, safetyWords, type Choice } from "./signals";
+import { repeatsItself } from "./text";
 import type { AgentAction, AuthorityBand, ClientPack, Customer, Order, Side, TranscriptEvent } from "./types";
 import { matchAddress, matchName, soundsLikeRecord } from "./verification";
 
@@ -36,8 +37,8 @@ export type Factor = {
   evidence?: Evidence;
   /** The answer as heard so far, across lines. */
   heard?: string;
-  /** Why the agent is asked to confirm: a doubtful line, or an answer that only sounds like the record. */
-  confirmReason?: "low-confidence" | "sounds-like";
+  /** Why the agent is asked to confirm: a doubtful line, a garbled one, or an answer that only sounds like the record. */
+  confirmReason?: "low-confidence" | "garbled" | "sounds-like";
 };
 
 export type OrderView = Order & { deliveredLabel: string; deliveredDate: string | null };
@@ -191,12 +192,16 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
 
   const addressMethod = (text: string) => (/\b(at|@)\b/.test(text.toLowerCase()) && !/\broad\b/i.test(text) ? "email" : "street and city");
 
-  function matched(factor: Factor, ev: Evidence, low: boolean, method?: string) {
+  /** Why an answer can't be trusted as heard, if it can't. */
+  const doubt = (evs: Evidence[], text: string): "low-confidence" | "garbled" | null =>
+    evs.some((e) => e.lowConfidence) ? "low-confidence" : repeatsItself(text) ? "garbled" : null;
+
+  function matched(factor: Factor, ev: Evidence, reason: "low-confidence" | "garbled" | null, method?: string) {
     factor.evidence = ev;
-    if (low) {
+    if (reason) {
       // A doubtful line never ticks a step on its own.
       factor.state = "confirm";
-      factor.confirmReason = "low-confidence";
+      factor.confirmReason = reason;
       return;
     }
     factor.state = "ok";
@@ -212,12 +217,12 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     pending.texts.push(line.text);
     pending.endedAt = line.endedAt;
     const heard = pending.texts.join(" ");
-    const low = pending.evs.some((e) => e.lowConfidence);
+    const reason = doubt(pending.evs, heard);
     const result = factor.id === "name" ? matchName(heard, customer) : matchAddress(heard, customer);
     factor.heard = heard;
     factor.evidence = ev;
     if (result === "match") {
-      matched(factor, ev, low, factor.id === "address" ? addressMethod(heard) : undefined);
+      matched(factor, ev, reason, factor.id === "address" ? addressMethod(heard) : undefined);
       pending = null;
     } else if (result === "partial") {
       factor.state = "partial";
@@ -237,12 +242,14 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
   /** The caller finished answering: a clear mismatch is now a failed attempt. */
   function closeAnswer() {
     if (!pending) return;
-    const { factor, evs, result } = pending;
+    const { factor, evs, texts, result } = pending;
     pending = null;
     if (result !== "mismatch" || locked) return;
-    if (evs.some((e) => e.lowConfidence)) {
+    // A wrong answer from a doubtful or garbled line is the agent's call, never a failed attempt.
+    const reason = doubt(evs, texts.join(" "));
+    if (reason) {
       factor.state = "confirm";
-      factor.confirmReason = "low-confidence";
+      factor.confirmReason = reason;
       return;
     }
     factor.attempts++;
@@ -305,9 +312,9 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
       if (!locked) {
         // The factor the agent asked for; the other only counts if volunteered as a clear match.
         if (expecting === "name") hear(name, line, ev);
-        else if (name.state !== "ok" && matchName(line.text, customer) === "match") matched(name, ev, ev.lowConfidence);
+        else if (name.state !== "ok" && matchName(line.text, customer) === "match") matched(name, ev, doubt([ev], line.text));
         if (expecting === "address") hear(address, line, ev);
-        else if (address.state !== "ok" && matchAddress(line.text, customer) === "match") matched(address, ev, ev.lowConfidence, addressMethod(line.text));
+        else if (address.state !== "ok" && matchAddress(line.text, customer) === "match") matched(address, ev, doubt([ev], line.text), addressMethod(line.text));
       }
 
       const wants = readChoice(line.text);
@@ -623,7 +630,9 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
         text:
           f.confirmReason === "sounds-like"
             ? `Heard "${f.heard}". It sounds like the ${f.id === "name" ? "name" : "address"} on the order but isn't a clear match. Ask the caller to repeat it, or confirm if you heard it clearly.`
-            : `Heard "${f.heard ?? f.evidence.text}" with low confidence. Ask the caller to repeat it, or confirm if you heard it clearly.`,
+            : f.confirmReason === "garbled"
+              ? `Heard "${f.heard}", which looks garbled (the same words repeated). Ask the caller to repeat it, or confirm if you heard it clearly.`
+              : `Heard "${f.heard ?? f.evidence.text}" with low confidence. Ask the caller to repeat it, or confirm if you heard it clearly.`,
         evidence: f.evidence,
       });
     }
