@@ -24,6 +24,12 @@ export type TranscriptEvent = {
   final: true;
   /** Mean word probability from recognition, or null when unknown. */
   confidence: number | null;
+  /** A key answer the second speech model is re-checking: the copilot waits for it. */
+  checking?: boolean;
+  /** What the fast model heard, when the second model's check replaced it. */
+  firstHeard?: string;
+  /** The check failed or timed out: the fast model's text stands, as a doubtful line. */
+  checkFailed?: boolean;
 };
 
 /** Things the agent does in the panel. Suggestions never act on their own. */

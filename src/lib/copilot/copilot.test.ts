@@ -579,3 +579,45 @@ test("a near-miss street never verifies on its own, and never counts as a failed
   assert.equal(v.verification.verified, true);
   assert.equal(v.order.match?.order.id, "427");
 });
+
+test("the copilot says which key answer it is waiting for, so that answer gets the second model's check", () => {
+  const s = script();
+  assert.equal(after(s, 2).awaiting, null);
+  const askName = s.findIndex((l) => l.side === "agent" && /full name/i.test(l.text)) + 1;
+  assert.equal(after(s, askName).awaiting, "name");
+  const askAddress = s.findIndex((l) => l.side === "agent" && /street|email/i.test(l.text)) + 1;
+  assert.equal(after(s, askAddress).awaiting, "address");
+  const v = after(s, s.length);
+  assert.ok(v.choice, "script v2 ends with a choice made");
+  assert.equal(v.awaiting, null);
+
+  // Call 3: whatever key question the agent asked last is the one awaited, the choice included,
+  // and an unreadable reply keeps it open.
+  const ev = events(call3);
+  const actions: AgentAction[] = [{ type: "confirm", target: "name", at: ev[4].endedAt + 2500 }];
+  assert.equal(analyze(sunlake, ev.slice(0, 6), actions, NOW).awaiting, "address");
+  assert.equal(analyze(sunlake, ev.slice(0, 13), actions, NOW).awaiting, "choice");
+  assert.equal(analyze(sunlake, ev.slice(0, 14), actions, NOW).awaiting, "choice", '"And you want please." is no answer');
+});
+
+test("a key answer waits for its check, and the checked text is what counts", () => {
+  const lines: Line[] = [
+    { side: "caller", text: "Hello, I need help with order 427. The tablet came yesterday and the screen is cracked." },
+    { side: "agent", text: "First, can I have your full name, please?" },
+    { side: "caller", text: "Sanmilis.", confidence: 0.4 },
+  ];
+  const ev = events(lines);
+
+  // While the second model checks it, the answer doesn't count either way.
+  let v = analyze(sunlake, [...ev.slice(0, 2), { ...ev[2], checking: true }], [], NOW);
+  assert.equal(v.verification.factors[0].state, "asking");
+  assert.ok(!v.prompts.some((p) => p.target === "name"));
+
+  // The check heard "Sam Miller.": the name is verified, and the fast text is kept for the screen.
+  v = analyze(sunlake, [...ev.slice(0, 2), { ...ev[2], text: "Sam Miller.", confidence: 0.9, firstHeard: "Sanmilis." }], [], NOW);
+  assert.equal(v.verification.factors[0].state, "ok");
+
+  // The check failed: the fast text stands, as a doubtful line that never verifies on its own.
+  v = analyze(sunlake, [...ev.slice(0, 2), { ...ev[2], text: "Sam Miller.", confidence: 0.9, checkFailed: true }], [], NOW);
+  assert.equal(v.verification.factors[0].state, "confirm");
+});

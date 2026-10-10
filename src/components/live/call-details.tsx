@@ -126,6 +126,7 @@ export function CallDetails({ className }: { className?: string }) {
           </Row>
           <Row label="Hardware">{health?.gpu ? "Apple GPU (Metal)" : "CPU"}</Row>
           <Row label="Speech detection">{health?.vad ? "On" : "Off"}</Row>
+          <Row label="Key answers checked by">{health?.check ? <Mono>whisper {health.checkModel ?? "large-v3-turbo"}</Mono> : "Off"}</Row>
           <Row label="Copilot">Rules ({pack.sop.id})</Row>
           {health?.assist === "local" && (
             <>

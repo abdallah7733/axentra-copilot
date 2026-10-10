@@ -113,6 +113,8 @@ export type CopilotView = {
   prompts: ConfirmPrompt[];
   steps: SopStep[];
   documentation: { label: string; value: string | null }[];
+  /** The key answer the copilot is waiting for: the caller's next line gets the second speech model's check. */
+  awaiting: "name" | "address" | "choice" | null;
 };
 
 const DAY = 86_400_000;
@@ -123,7 +125,7 @@ const evidenceOf = (l: TranscriptEvent): Evidence => ({
   side: l.side,
   text: l.text,
   at: l.startedAt,
-  lowConfidence: l.confidence !== null && l.confidence < LOW_CONFIDENCE,
+  lowConfidence: (l.confidence !== null && l.confidence < LOW_CONFIDENCE) || !!l.checkFailed,
 });
 
 export function orderView(order: Order, now: number): OrderView {
@@ -150,8 +152,9 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
   const idLengths = [...new Set(pack.orders.map((o) => o.id.length))];
   const firstName = customer.name.split(" ")[0];
 
-  // Speech order, not arrival order: the two sides are recognised separately.
-  const ordered = [...lines].sort((a, b) => a.startedAt - b.startedAt || a.seq - b.seq);
+  // Speech order, not arrival order: the two sides are recognised separately. A line still
+  // being checked by the second speech model is left out until its checked text arrives.
+  const ordered = lines.filter((l) => !l.checking).sort((a, b) => a.startedAt - b.startedAt || a.seq - b.seq);
   const timeline: ({ kind: "line"; at: number; line: TranscriptEvent } | { kind: "action"; at: number; action: AgentAction })[] = [
     ...ordered.map((line) => ({ kind: "line" as const, at: line.startedAt, line })),
     ...actions.map((action) => ({ kind: "action" as const, at: action.at, action })),
@@ -465,6 +468,16 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
   const safety = escalations.filter((e) => e.kind === "safety");
   const words = escalations.filter((e) => e.kind === "words");
   const escalate = escalations.length > 0 || failedChecks.length > 0;
+
+  const identityFactor = expecting === "name" ? name : expecting === "address" ? address : null;
+  const awaiting: CopilotView["awaiting"] =
+    locked || escalate
+      ? null
+      : identityFactor && identityFactor.state !== "ok"
+        ? identityFactor.id
+        : !choice && (choiceAsked || unreadChoice || lowConfidenceChoice)
+          ? "choice"
+          : null;
 
   /* ---------- Recommendation ---------- */
   let recommendation: Recommendation | null = null;
@@ -843,5 +856,6 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     prompts,
     steps,
     documentation,
+    awaiting,
   };
 }

@@ -68,10 +68,19 @@ export function LiveTranscript({ className }: { className?: string }) {
                     {t.side === "agent" ? "Agent" : "Caller"}
                   </span>
                   <div>
-                    <p>{t.text}</p>
+                    <p className={cn(t.checking && "text-muted-foreground")}>{t.text}</p>
                     <p className="text-[11px] text-muted-foreground">
                       {t.key.startsWith("replay-") ? "Replayed line" : <><Mono>{t.delay.toFixed(1)} s</Mono> after speech ended</>}
-                      {t.confidence !== null && t.confidence < 0.6 && <span> · low confidence</span>}
+                      {t.confidence !== null && t.confidence < 0.6 && !t.checking && <span> · low confidence</span>}
+                      {t.checking && <span> · checking with the second model…</span>}
+                      {t.checkSeconds !== undefined && !t.checkFailed && (
+                        <span>
+                          {" "}
+                          · checked in <Mono>{t.checkSeconds.toFixed(1)} s</Mono>
+                          {t.firstHeard && <>, first heard as “{t.firstHeard}”</>}
+                        </span>
+                      )}
+                      {t.checkFailed && <span> · check unavailable, treated as doubtful</span>}
                     </p>
                   </div>
                 </motion.li>
