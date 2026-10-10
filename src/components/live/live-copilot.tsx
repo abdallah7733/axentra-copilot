@@ -220,12 +220,14 @@ export function LiveCopilot({ className }: { className?: string }) {
               >
                 <LiveDot active className="mt-1 [&>span]:bg-amber-500" />
                 <div className="min-w-0 flex-1 space-y-1">
-                  <p className="text-sm font-medium">Please confirm</p>
+                  <p className="text-sm font-medium">{p.askAgain ? "Ask again" : "Please confirm"}</p>
                   <p className="text-xs leading-relaxed">{p.text}</p>
                 </div>
-                <Button size="sm" className="rounded-full bg-amber-600 text-white hover:bg-amber-700" onClick={() => confirm(p.target)}>
-                  Confirmed
-                </Button>
+                {!p.askAgain && (
+                  <Button size="sm" className="rounded-full bg-amber-600 text-white hover:bg-amber-700" onClick={() => confirm(p.target)}>
+                    Confirmed
+                  </Button>
+                )}
               </motion.div>
             ))}
           </div>

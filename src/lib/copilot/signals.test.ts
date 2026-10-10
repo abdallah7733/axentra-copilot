@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { agentAsksFor, agentCommits, agentDisclosesFactor, agentOffers, escalationWords, readChoice, readIntent, safetyWords } from "./signals";
+import { agentAsksChoice, agentAsksFor, agentCommits, agentDisclosesFactor, agentOffers, escalationWords, readChoice, readIntent, safetyWords } from "./signals";
 import { matchAddress, matchName, soundsLikeRecord } from "./verification";
 import { samMiller } from "@/lib/live/sunlake-data";
 
@@ -74,6 +74,44 @@ test("agent asks for identity details", () => {
   assert.equal(agentAsksFor("What's the email on the order?"), "address");
   assert.equal(agentAsksFor("Can you give me the order number?"), "order");
   assert.equal(agentAsksFor("Thank you for calling Sunlake. How can I help you today?"), null);
+});
+
+// Live call, 10 Oct: recognition dropped the question mark, so the copilot never listened for the address.
+test("a bare request for a detail counts only while the identity check is under way", () => {
+  const heard = "Thank you and the street and city for the delivery.";
+  assert.equal(agentAsksFor(heard), null);
+  assert.equal(agentAsksFor(heard, true), "address");
+  assert.equal(agentAsksFor("And your email address on the order.", true), "address");
+  assert.equal(agentAsksFor("Thank you, Sam. And the street and city.", true), "address");
+  assert.equal(agentAsksFor("First, your full name.", true), "name");
+  // Statements about a detail are not requests for it.
+  for (const text of [
+    "Sorry, the city doesn't match.",
+    "The street and city don't match what we have.",
+    "You'll get an email with a free return label for the damaged one.",
+    "I'll send the label to your email.",
+    "The address is on the order.",
+    "Your email is on file.",
+    "Thank you, Sam. I can see the tablet on order 427",
+    "The new tablet ships today.",
+    "Thank you for calling Sunlake.",
+  ]) {
+    assert.equal(agentAsksFor(text, true), null, text);
+  }
+});
+
+test("agent asks the customer to choose", () => {
+  assert.ok(agentAsksChoice("Which do you prefer?"));
+  assert.ok(agentAsksChoice("You can have either a new tablet ships today at no cost or a full refund in 3 to 5 business days."));
+  assert.ok(agentAsksChoice("Would you prefer the replacement?"));
+  assert.equal(agentAsksChoice("I'm sorry to hear that. I can send you a new one today."), false);
+  assert.equal(agentAsksChoice("Is the damage only on the screen?"), false);
+});
+
+test('"Anyone please?" is not read as a choice', () => {
+  // Heard for "A new one, please." on the 10 Oct call. It stays unresolved: the agent asks again.
+  assert.equal(readChoice("Anyone please?"), null);
+  assert.equal(readChoice("A new one, please.")?.choice, "replacement");
 });
 
 test("agent commits and discloses", () => {

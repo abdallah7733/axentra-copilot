@@ -1,5 +1,5 @@
 import { findOrderMentions, matchOrder, type MentionMethod, type OrderMention } from "./orders";
-import { agentAsksFor, agentCommits, agentDisclosesFactor, agentOffers, escalationWords, readChoice, readIntent, safetyWords, type Choice } from "./signals";
+import { agentAsksChoice, agentAsksFor, agentCommits, agentDisclosesFactor, agentOffers, escalationWords, readChoice, readIntent, safetyWords, type Choice } from "./signals";
 import type { AgentAction, AuthorityBand, ClientPack, Customer, Order, Side, TranscriptEvent } from "./types";
 import { matchAddress, matchName, soundsLikeRecord } from "./verification";
 
@@ -58,7 +58,13 @@ export type Alert = {
   resolved?: string;
 };
 
-export type ConfirmPrompt = { target: "issue" | "name" | "address" | "order" | "choice"; text: string; evidence?: Evidence };
+export type ConfirmPrompt = {
+  target: "issue" | "name" | "address" | "order" | "choice";
+  text: string;
+  evidence?: Evidence;
+  /** Nothing to confirm: the agent has to ask the caller again (an answer no rule could read). */
+  askAgain?: boolean;
+};
 
 export type Recommendation = {
   scenario: "A" | "B" | "C";
@@ -166,6 +172,9 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
   const disclosures: Evidence[] = [];
   const prompts: ConfirmPrompt[] = [];
   let lowConfidenceChoice: Evidence | null = null;
+  // The caller's answer to "Which do you prefer?" named neither option ("Anyone please?" for "A new one, please").
+  let choiceAsked = false;
+  let unreadChoice: Evidence | null = null;
   let orderConfirmedInPanel = false;
   let issueConfirmedInPanel = false;
   let approval: Recommendation["approval"] = { state: "not-ready" };
@@ -302,6 +311,9 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
       }
 
       const wants = readChoice(line.text);
+      if (wants) unreadChoice = null;
+      else if (choiceAsked && !choice) unreadChoice = ev;
+      choiceAsked = false;
       if (wants?.choice === "both") askedBoth = ev;
       else if (wants && ev.lowConfidence) lowConfidenceChoice = ev;
       else if (wants) {
@@ -318,8 +330,10 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
       if (offer && !verified()) earlyOffers.push(ev);
       if (offer && escalations.length) offersInEscalation.push(ev);
 
+      if (agentAsksChoice(line.text)) choiceAsked = true;
+
       closeAnswer();
-      const asks = agentAsksFor(line.text);
+      const asks = agentAsksFor(line.text, !verified() && !locked);
       if (!asks && (expecting === "name" || expecting === "address")) expecting = null;
       if (asks) {
         expecting = asks;
@@ -619,6 +633,13 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
   }
   if (lowConfidenceChoice) {
     prompts.push({ target: "choice", text: `Heard "${lowConfidenceChoice.text}" with low confidence. Confirm what the customer wants.`, evidence: lowConfidenceChoice });
+  } else if (unreadChoice && !escalate) {
+    prompts.push({
+      target: "choice",
+      text: `Heard "${unreadChoice.text}"${unreadChoice.lowConfidence ? " with low confidence" : ""}, which isn't a choice. Ask the customer again: replacement or refund?`,
+      evidence: unreadChoice,
+      askAgain: true,
+    });
   }
   if (intent?.certainty === "low" && intent.evidence[0]) {
     prompts.push({
@@ -681,9 +702,17 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     {
       id: "choice",
       label: "Customer's choice",
-      status: escalate ? "skipped" : choice ? "done" : "pending",
-      detail: escalate ? "Not offered: Scenario C" : choice ? (choice.value === "replacement" ? "Replacement" : "Refund") : askedBoth ? "Asked about both" : undefined,
-      evidence: choice?.evidence ?? askedBoth ?? undefined,
+      status: escalate ? "skipped" : choice ? "done" : unreadChoice ? "attention" : "pending",
+      detail: escalate
+        ? "Not offered: Scenario C"
+        : choice
+          ? choice.value === "replacement" ? "Replacement" : "Refund"
+          : unreadChoice
+            ? "Answer not understood; ask again"
+            : askedBoth
+              ? "Asked about both"
+              : undefined,
+      evidence: choice?.evidence ?? unreadChoice ?? askedBoth ?? undefined,
       sopRef: ref("Scenario A and B"),
     },
     {
@@ -744,6 +773,8 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
         `Thanks, ${firstName}, you're verified. I can see the ${o.shortName} on order ${o.id}, delivered ${o.deliveredLabel}. I can ship a replacement today at no cost, with a free return label for the damaged one, or give you a full refund if you'd prefer.`,
         "Scenario A"
       );
+    } else if (o && !choice && unreadChoice) {
+      suggestedReply = reply(`Sorry, I didn't catch that. Would you like the new ${o.noun}, or the refund?`, "Scenario A and B");
     } else if (o && !choice) {
       suggestedReply = reply(
         `You can have either. A new ${o.noun} ships today at no cost, or a full refund in ${pack.policy.refundTiming}. Which do you prefer?`,
