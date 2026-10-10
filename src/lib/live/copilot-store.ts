@@ -40,6 +40,8 @@ type CopilotState = {
   /** Milliseconds from a line appearing to the model's suggestion, this call. */
   assistTimes: number[];
   confirm: (target: "issue" | "name" | "address" | "order" | "choice") => void;
+  /** The agent types what the caller said on a line recognition got wrong. */
+  correct: (key: string, text: string) => void;
   approve: () => void;
   setHighlight: (key: string | null) => void;
 };
@@ -174,6 +176,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
     worded: null,
     assistTimes: [],
     confirm: (target) => act({ type: "confirm", target, at: Date.now() }),
+    correct: (key, text) => act({ type: "correct", key, text, at: Date.now() }),
     approve: () => act({ type: "approve", at: Date.now() }),
     setHighlight: (key) => set({ highlightKey: key }),
   };

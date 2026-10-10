@@ -25,7 +25,16 @@ export const LOW_CONFIDENCE = 0.6;
  */
 export const ANSWER_GAP_MS = 2000;
 
-export type Evidence = { key: string; seq: number; side: Side; text: string; at: number; lowConfidence: boolean };
+export type Evidence = {
+  key: string;
+  seq: number;
+  side: Side;
+  text: string;
+  at: number;
+  lowConfidence: boolean;
+  /** The agent typed this text; speech recognition heard this instead. */
+  typedFrom?: string;
+};
 
 export type FactorState = "idle" | "asking" | "partial" | "confirm" | "ok" | "failed";
 export type Factor = {
@@ -126,7 +135,22 @@ const evidenceOf = (l: TranscriptEvent): Evidence => ({
   text: l.text,
   at: l.startedAt,
   lowConfidence: (l.confidence !== null && l.confidence < LOW_CONFIDENCE) || !!l.checkFailed,
+  typedFrom: l.typedFrom,
 });
+
+/**
+ * The agent's typed corrections, applied to the caller lines they replace. What the agent
+ * typed is clear text: it is never low confidence, and it is judged word for word.
+ */
+function applyCorrections(lines: TranscriptEvent[], actions: AgentAction[]): TranscriptEvent[] {
+  const typed = new Map<string, string>();
+  for (const a of actions) if (a.type === "correct" && a.text.trim()) typed.set(a.key, a.text.trim());
+  if (!typed.size) return lines;
+  return lines.map((l) => {
+    const text = l.side === "caller" ? typed.get(l.key) : undefined;
+    return text === undefined ? l : { ...l, text, typedFrom: l.text, confidence: null, checking: false, checkFailed: false };
+  });
+}
 
 export function orderView(order: Order, now: number): OrderView {
   const d = order.deliveredDaysAgo;
@@ -154,7 +178,9 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
 
   // Speech order, not arrival order: the two sides are recognised separately. A line still
   // being checked by the second speech model is left out until its checked text arrives.
-  const ordered = lines.filter((l) => !l.checking).sort((a, b) => a.startedAt - b.startedAt || a.seq - b.seq);
+  const ordered = applyCorrections(lines, actions)
+    .filter((l) => !l.checking)
+    .sort((a, b) => a.startedAt - b.startedAt || a.seq - b.seq);
   const timeline: ({ kind: "line"; at: number; line: TranscriptEvent } | { kind: "action"; at: number; action: AgentAction })[] = [
     ...ordered.map((line) => ({ kind: "line" as const, at: line.startedAt, line })),
     ...actions.map((action) => ({ kind: "action" as const, at: action.at, action })),
@@ -208,7 +234,7 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
       return;
     }
     factor.state = "ok";
-    factor.method = method;
+    factor.method = ev.typedFrom === undefined ? method : [method, "typed by the agent"].filter(Boolean).join(", ");
     markVerified(ev);
   }
 
@@ -230,6 +256,10 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     } else if (result === "partial") {
       factor.state = "partial";
       pending.result = "partial";
+    } else if (result !== "none" && pending.evs.some((e) => e.typedFrom !== undefined)) {
+      // Typed by the agent: no sound-alike leniency. Anything short of a match is a wrong answer.
+      factor.state = "asking";
+      pending.result = "mismatch";
     } else if (result === "close" || soundsLikeRecord(factor.id, heard, customer)) {
       // Close to the record but not a clear match: the agent decides; never a failed attempt.
       factor.state = "confirm";

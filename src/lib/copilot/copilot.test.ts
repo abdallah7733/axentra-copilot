@@ -621,3 +621,61 @@ test("a key answer waits for its check, and the checked text is what counts", ()
   v = analyze(sunlake, [...ev.slice(0, 2), { ...ev[2], text: "Sam Miller.", confidence: 0.9, checkFailed: true }], [], NOW);
   assert.equal(v.verification.factors[0].state, "confirm");
 });
+
+test("the agent can type what the caller said; it is checked word for word against the order", () => {
+  // The turbo check heard the caller's "Hill Road, in Dallas" as "Wind Road in Dallas.": a wrong answer.
+  const lines: Line[] = [
+    { side: "caller", text: "Hello, I need help with order 427. The tablet came yesterday and the screen is cracked." },
+    { side: "agent", text: "First, can I have your full name, please?" },
+    { side: "caller", text: "Sam Miller." },
+    { side: "agent", text: "Thank you. And the street and city for the delivery?" },
+    { side: "caller", text: "Wind Road in Dallas." },
+    { side: "agent", text: "Sorry, could you give me the street and the city once more?" },
+    { side: "caller", text: "Wind Road in Dallas." },
+    { side: "agent", text: "Thank you." },
+  ];
+  const ev = events(lines);
+  const at = ev[7].endedAt + 500;
+
+  let v = after(lines, 8);
+  assert.equal(v.verification.locked, true, "two misheard answers lock the call");
+
+  // The agent heard "Hill Road, in Dallas" and types it on the first answer: verified, nothing locked.
+  const typed: AgentAction[] = [{ type: "correct", key: ev[4].key, text: "Hill Road, in Dallas", at }];
+  v = after(lines, 8, typed);
+  assert.equal(v.verification.locked, false);
+  assert.equal(v.verification.verified, true);
+  const address = v.verification.factors[1];
+  assert.equal(address.attempts, 0);
+  assert.equal(address.method, "street and city, typed by the agent");
+  assert.equal(address.evidence?.typedFrom, "Wind Road in Dallas.");
+  assert.equal(v.order.match?.order.id, "427");
+
+  // Typed text gets no sound-alike leniency: "Will Road" is a wrong answer, not "Please confirm".
+  v = after(lines.slice(0, 5), 5, [{ type: "correct", key: ev[4].key, text: "Will Road in Dallas", at }]);
+  assert.equal(v.verification.factors[1].state, "failed");
+  assert.equal(v.verification.factors[1].attempts, 1);
+
+  // The latest typed text for a line is the one that counts.
+  v = after(lines.slice(0, 6), 6, [
+    { type: "correct", key: ev[4].key, text: "Will Road in Dallas", at },
+    { type: "correct", key: ev[4].key, text: "Hill Road in Dallas", at: at + 1000 },
+  ]);
+  assert.equal(v.verification.verified, true);
+});
+
+test("the agent can type the customer's choice when recognition couldn't read it", () => {
+  const ev = events(call3);
+  const verifiedFirst: AgentAction[] = [
+    { type: "confirm", target: "name", at: ev[4].endedAt + 2500 },
+    { type: "correct", key: ev[6].key, text: "Hill Road, in Dallas.", at: ev[6].endedAt + 2500 },
+  ];
+  let v = after(call3, 14, verifiedFirst);
+  assert.equal(v.verification.verified, true);
+  assert.ok(v.prompts.some((p) => p.target === "choice" && p.askAgain), '"And you want please." asks again');
+
+  v = after(call3, 14, [...verifiedFirst, { type: "correct", key: ev[13].key, text: "A new one, please.", at: ev[13].endedAt + 2500 }]);
+  assert.equal(v.choice?.value, "replacement");
+  assert.equal(v.choice?.evidence.typedFrom, "And you want please.");
+  assert.ok(!v.prompts.some((p) => p.target === "choice"));
+});
