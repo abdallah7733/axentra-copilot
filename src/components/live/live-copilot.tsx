@@ -120,7 +120,9 @@ function AlertCard({ alert }: { alert: Alert }) {
         <div className="min-w-0 flex-1 space-y-1">
           <p className="text-sm font-medium leading-snug">{alert.title}</p>
           <p className="text-xs leading-relaxed">{alert.resolved ?? alert.detail}</p>
-          {alert.evidence.slice(0, 2).map((ev) => (
+          {/* The newest two quotes: the latest is the one the agent can still act on. */}
+          {alert.evidence.length > 2 && <p className="text-[11px] text-muted-foreground">{alert.evidence.length - 2} earlier, then:</p>}
+          {alert.evidence.slice(-2).map((ev) => (
             <Quote key={ev.key} ev={ev} className="flex" />
           ))}
         </div>

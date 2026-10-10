@@ -635,6 +635,14 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
               : `Heard "${f.heard ?? f.evidence.text}" with low confidence. Ask the caller to repeat it, or confirm if you heard it clearly.`,
         evidence: f.evidence,
       });
+    } else if (f.state === "partial" && f.evidence && !locked && pending?.factor !== f) {
+      // The caller has finished and only part of the answer matched: never a failed attempt, nothing to confirm.
+      prompts.push({
+        target: f.id,
+        text: `Heard "${f.heard}", which matches only part of the ${f.id === "name" ? "name" : "address"} on the order. Ask for the ${f.id === "name" ? "full name" : "street and city"} again, without saying which part didn't match.`,
+        evidence: f.evidence,
+        askAgain: true,
+      });
     }
   }
   if (match && match.needsConfirmation && !match.confirmed) {
@@ -642,7 +650,8 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
   }
   if (lowConfidenceChoice) {
     prompts.push({ target: "choice", text: `Heard "${lowConfidenceChoice.text}" with low confidence. Confirm what the customer wants.`, evidence: lowConfidenceChoice });
-  } else if (unreadChoice && !escalate) {
+  } else if (unreadChoice && !escalate && isVerified) {
+    // Before identity is verified the identity prompt comes first; the choice waits.
     prompts.push({
       target: "choice",
       text: `Heard "${unreadChoice.text}"${unreadChoice.lowConfidence ? " with low confidence" : ""}, which isn't a choice. Ask the customer again: replacement or refund?`,
@@ -711,12 +720,12 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     {
       id: "choice",
       label: "Customer's choice",
-      status: escalate ? "skipped" : choice ? "done" : unreadChoice ? "attention" : "pending",
+      status: escalate ? "skipped" : choice ? "done" : unreadChoice && isVerified ? "attention" : "pending",
       detail: escalate
         ? "Not offered: Scenario C"
         : choice
           ? choice.value === "replacement" ? "Replacement" : "Refund"
-          : unreadChoice
+          : unreadChoice && isVerified
             ? "Answer not understood; ask again"
             : askedBoth
               ? "Asked about both"

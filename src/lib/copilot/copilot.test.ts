@@ -493,3 +493,64 @@ test("a clear wrong name still counts as a failed attempt", () => {
   assert.equal(v.verification.factors[0].state, "failed");
   assert.equal(v.verification.factors[0].attempts, 1);
 });
+
+/** The second retest on 10 Oct (4.20 PM recording), as the console heard it. */
+const call3: Line[] = [
+  { side: "agent", text: "Thank you for calling Sunlake. How can I help you today.", confidence: 0.4 },
+  { side: "caller", text: "Hello, I need help with order 427. The tablet came yesterday and the screen cracked." },
+  { side: "agent", text: "I'm sorry to hear that. I can send you a new one today." },
+  { side: "agent", text: "First, can I have your full name please?" },
+  { side: "caller", text: "Sanmilis.", confidence: 0.4 },
+  { side: "agent", text: "Thank you and the street and city for the delivery." },
+  { side: "caller", text: "One road in Dallas." },
+  { side: "agent", text: "Thank you Sam. I can see the tablet on order 427." },
+  { side: "agent", text: "Is the damage only on the screen?" },
+  { side: "caller", text: "Yes, only the screen. Can I get a new one or my money back." },
+  { side: "agent", text: "You can have either a new tablet ships today at no cost." },
+  { side: "agent", text: "or a full refund in 3 to 5 business days." },
+  { side: "agent", text: "Which do you prefer?" },
+  { side: "caller", text: "And you want please." },
+  { side: "agent", text: "Done. The new tablet ships today. You'll get an email with a free return label for the damaged one." },
+];
+
+test("10 Oct second retest: a part-matched address asks again, and the choice waits for identity", () => {
+  const ev = events(call3);
+  const actions: AgentAction[] = [{ type: "confirm", target: "name", at: ev[4].endedAt + 2500 }];
+
+  // "One road in Dallas.": the city matches, the street doesn't. No card while the caller may still be talking.
+  let v = analyze(sunlake, ev.slice(0, 7), actions, ev[6].endedAt + 500);
+  assert.equal(v.verification.factors[1].state, "partial");
+  assert.ok(!v.prompts.some((p) => p.target === "address"));
+
+  v = analyze(sunlake, ev.slice(0, 7), actions, NOW);
+  const address = v.verification.factors[1];
+  assert.equal(address.state, "partial");
+  assert.equal(address.attempts, 0, "a part-matched answer is never a failed attempt");
+  const card = v.prompts.find((p) => p.target === "address")!;
+  assert.ok(card.askAgain, "nothing to confirm: ask again");
+  assert.match(card.text, /^Heard "One road in Dallas\.", which matches only part of the address on the order\. Ask for the street and city again/);
+  assert.doesNotMatch(card.text, /\bHill\b/, "the card never shows the record");
+
+  v = after(call3, 8, actions);
+  assert.equal(v.order.match, undefined, "order 427 stays locked");
+
+  // The unreadable choice waits until identity is verified; the identity card stays first.
+  v = after(call3, 14, actions);
+  assert.ok(!v.prompts.some((p) => p.target === "choice"));
+  assert.notEqual(step(v, "choice"), "attention");
+  assert.ok(v.prompts.some((p) => p.target === "address" && p.askAgain));
+
+  // "Done." before identity is counted with the earlier offers and approves nothing.
+  v = after(call3, 15, actions);
+  assert.deepEqual(alert(v, "offer-before-verification")!.evidence.map((e) => e.seq), [3, 11, 15]);
+  assert.equal(v.recommendation?.approval.state ?? "not-ready", "not-ready");
+
+  // The agent asks again and hears the street: verified, and the card goes away.
+  const retry: Line[] = [...call3.slice(0, 7), { side: "agent", text: "Sorry, could you give me the street and the city once more?" }, { side: "caller", text: "Hill Road, in Dallas." }];
+  v = after(retry, 8, actions);
+  assert.equal(v.verification.factors[1].state, "asking");
+  assert.ok(!v.prompts.some((p) => p.target === "address"));
+  v = after(retry, 9, actions);
+  assert.equal(v.verification.verified, true);
+  assert.equal(v.order.match?.order.id, "427");
+});
