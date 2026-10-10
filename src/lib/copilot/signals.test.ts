@@ -128,6 +128,10 @@ test("identity factors", () => {
   assert.equal(matchName("My name is Sam Millar.", samMiller), "close");
   assert.equal(matchName("Sam.", samMiller), "partial");
   assert.equal(matchName("John Smith.", samMiller), "mismatch");
+  // Heard by the second speech model on 10 Oct: a possessive "'s" is not an extra word.
+  assert.equal(matchName("Sam Miller's.", samMiller), "match");
+  assert.equal(matchName("John Smith's.", samMiller), "mismatch");
+  assert.equal(matchAddress("It's Hill Road in Dallas.", samMiller), "match");
   assert.equal(matchName("Sorry, what?", samMiller), "none");
   assert.equal(matchAddress("Hill Road, in Dallas.", samMiller), "match");
   assert.equal(matchAddress("It's Hill Road in Dallas, Texas.", samMiller), "match");

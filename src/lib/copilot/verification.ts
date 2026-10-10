@@ -23,8 +23,11 @@ const heardAs = (tokens: string[], expected: string): Heard =>
 const allHeard = (parts: Heard[]): "match" | "close" | null => (!parts.every(Boolean) ? null : parts.every((p) => p === "exact") ? "match" : "close");
 const has = (tokens: string[], expected: string) => heardAs(tokens, expected) !== null;
 
+/** The answer's words, with a possessive "'s" dropped: "Sam Miller's." was heard for "Sam Miller." on 10 Oct. */
+const answerWords = (text: string) => words(text).map((w) => w.replace(/'s$/, ""));
+
 export function matchName(text: string, customer: Customer): FactorResult {
-  const tokens = words(text);
+  const tokens = answerWords(text);
   const parts = words(customer.name);
   const heard = parts.map((p) => heardAs(tokens, p));
   const all = allHeard(heard);
@@ -43,7 +46,7 @@ const STATE_NAMES: Record<string, string[]> = { tx: ["texas"], ca: ["california"
 const STREET_TYPES: Record<string, string[]> = { road: ["road", "rd"], street: ["street", "st"], avenue: ["avenue", "ave"], drive: ["drive", "dr"], lane: ["lane", "ln"] };
 
 export function matchAddress(text: string, customer: Customer): FactorResult {
-  const tokens = words(text);
+  const tokens = answerWords(text);
   // Email: "s dot miller at example mail dot com".
   if (tokens.includes("at") && (tokens.includes("com") || tokens.includes("mail") || tokens.some((t) => t.includes("@")))) {
     const local = words(customer.emailFull.split("@")[0]);
