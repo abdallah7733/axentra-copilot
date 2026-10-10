@@ -1,11 +1,12 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useState, type FormEvent, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowSquareOutIcon, CheckCircleIcon, CheckIcon, LockSimpleIcon, PackageIcon, QuotesIcon, ShieldWarningIcon, WarningIcon, XIcon } from "@phosphor-icons/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Explain, LiveDot, Mono, PanelHeader, ease } from "@/components/workspace/bits";
 import type { Alert, Evidence, SopStep } from "@/lib/copilot/copilot";
 import { money } from "@/lib/demo-data";
@@ -39,10 +40,43 @@ function Quote({ ev, className }: { ev: Evidence; className?: string }) {
       <span>
         &ldquo;{ev.text}&rdquo; <span className="whitespace-nowrap">{ev.side === "agent" ? "Agent" : "Caller"}{startEpoch !== null && <> <Mono>{clock(ev.at - startEpoch)}</Mono></>}</span>
         {ev.lowConfidence && <span> · low confidence</span>}
+        {ev.typedFrom !== undefined && <span> · typed by the agent (heard as &ldquo;{ev.typedFrom}&rdquo;)</span>}
       </span>
     </span>
   );
 }
+
+/**
+ * When recognition got a caller's answer wrong, the agent types what the caller said. The
+ * copilot checks it word for word against the order; it never shows the agent the record.
+ */
+function TypeHeard({ lineKey }: { lineKey: string }) {
+  const correct = useCopilot((s) => s.correct);
+  const [text, setText] = useState("");
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!text.trim()) return;
+    correct(lineKey, text);
+    setText("");
+  };
+  return (
+    <form onSubmit={submit} className="flex items-center gap-1.5 pt-1">
+      <Input
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder="Heard it differently? Type what the caller said"
+        aria-label="Type what the caller said"
+        className="h-7 text-xs"
+      />
+      <Button type="submit" size="sm" variant="outline" className="h-7 rounded-full text-xs" disabled={!text.trim()}>
+        Check
+      </Button>
+    </form>
+  );
+}
+
+/** Answers the agent may type: identity answers and the customer's choice, on caller lines. */
+const typeable = (target: string, ev?: Evidence) => !!ev && ev.side === "caller" && (target === "name" || target === "address" || target === "choice");
 
 function Section({ label, meta, children }: { label: string; meta?: ReactNode; children: ReactNode }) {
   return (
@@ -120,9 +154,12 @@ function AlertCard({ alert }: { alert: Alert }) {
         <div className="min-w-0 flex-1 space-y-1">
           <p className="text-sm font-medium leading-snug">{alert.title}</p>
           <p className="text-xs leading-relaxed">{alert.resolved ?? alert.detail}</p>
-          {alert.evidence.slice(0, 2).map((ev) => (
+          {/* The newest two quotes: the latest is the one the agent can still act on. */}
+          {alert.evidence.length > 2 && <p className="text-[11px] text-muted-foreground">{alert.evidence.length - 2} earlier, then:</p>}
+          {alert.evidence.slice(-2).map((ev) => (
             <Quote key={ev.key} ev={ev} className="flex" />
           ))}
+          {/^verification-(failed|locked)/.test(alert.id) && alert.evidence[0]?.side === "caller" && <TypeHeard lineKey={alert.evidence[0].key} />}
         </div>
         <Mono className="shrink-0 text-[10px] text-muted-foreground">{alert.sopRef.replace(`${pack.sop.id} · `, "")}</Mono>
       </div>
@@ -220,12 +257,15 @@ export function LiveCopilot({ className }: { className?: string }) {
               >
                 <LiveDot active className="mt-1 [&>span]:bg-amber-500" />
                 <div className="min-w-0 flex-1 space-y-1">
-                  <p className="text-sm font-medium">Please confirm</p>
+                  <p className="text-sm font-medium">{p.askAgain ? "Ask again" : "Please confirm"}</p>
                   <p className="text-xs leading-relaxed">{p.text}</p>
+                  {typeable(p.target, p.evidence) && <TypeHeard lineKey={p.evidence!.key} />}
                 </div>
-                <Button size="sm" className="rounded-full bg-amber-600 text-white hover:bg-amber-700" onClick={() => confirm(p.target)}>
-                  Confirmed
-                </Button>
+                {!p.askAgain && (
+                  <Button size="sm" className="rounded-full bg-amber-600 text-white hover:bg-amber-700" onClick={() => confirm(p.target)}>
+                    Confirmed
+                  </Button>
+                )}
               </motion.div>
             ))}
           </div>

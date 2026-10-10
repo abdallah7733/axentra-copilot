@@ -25,6 +25,9 @@ export function LiveTranscript({ className }: { className?: string }) {
   const callStartedAt = useLive((s) => s.callStartedAt);
   const replaying = useLive((s) => s.replaying);
   const highlightKey = useCopilot((s) => s.highlightKey);
+  const actions = useCopilot((s) => s.actions);
+  // What the agent typed for a misheard caller line; the latest one counts.
+  const typed = new Map(actions.flatMap((a) => (a.type === "correct" ? [[a.key, a.text] as const] : [])));
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -68,10 +71,20 @@ export function LiveTranscript({ className }: { className?: string }) {
                     {t.side === "agent" ? "Agent" : "Caller"}
                   </span>
                   <div>
-                    <p>{t.text}</p>
+                    <p className={cn(t.checking && "text-muted-foreground", typed.has(t.key) && "line-through text-muted-foreground")}>{t.text}</p>
+                    {typed.has(t.key) && <p>{typed.get(t.key)} <span className="text-[11px] text-muted-foreground">(typed by the agent)</span></p>}
                     <p className="text-[11px] text-muted-foreground">
                       {t.key.startsWith("replay-") ? "Replayed line" : <><Mono>{t.delay.toFixed(1)} s</Mono> after speech ended</>}
-                      {t.confidence !== null && t.confidence < 0.6 && <span> · low confidence</span>}
+                      {t.confidence !== null && t.confidence < 0.6 && !t.checking && <span> · low confidence</span>}
+                      {t.checking && <span> · checking with the second model…</span>}
+                      {t.checkSeconds !== undefined && !t.checkFailed && (
+                        <span>
+                          {" "}
+                          · checked in <Mono>{t.checkSeconds.toFixed(1)} s</Mono>
+                          {t.firstHeard && <>, first heard as “{t.firstHeard}”</>}
+                        </span>
+                      )}
+                      {t.checkFailed && <span> · check unavailable, treated as doubtful</span>}
                     </p>
                   </div>
                 </motion.li>

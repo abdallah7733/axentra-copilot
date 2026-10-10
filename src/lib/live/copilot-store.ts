@@ -40,6 +40,8 @@ type CopilotState = {
   /** Milliseconds from a line appearing to the model's suggestion, this call. */
   assistTimes: number[];
   confirm: (target: "issue" | "name" | "address" | "order" | "choice") => void;
+  /** The agent types what the caller said on a line recognition got wrong. */
+  correct: (key: string, text: string) => void;
   approve: () => void;
   setHighlight: (key: string | null) => void;
 };
@@ -149,8 +151,14 @@ export const useCopilot = create<CopilotState>((set, get) => {
     if (event.type === "call-started") reset(event.callId);
     else if (event.type === "cleared") reset(null);
     else if (event.type === "line" && event.line.callId === get().callId) {
+      let line = event.line;
+      const known = get().lines.some((l) => l.key === line.key);
+      // A key answer (name, address or choice) waits for the second speech model's check:
+      // short answers heard on their own are where the fast model goes wrong.
+      if (!known && line.side === "caller" && get().view.awaiting && useLive.getState().checkLine(line.key)) line = { ...line, checking: true };
       lineArrivedAt = performance.now();
-      update([...get().lines, event.line], get().actions, get().hints);
+      // A checked line replaces the one it re-checked.
+      update([...get().lines.filter((l) => l.key !== line.key), line], get().actions, get().hints);
       clearTimeout(settleTimer);
       settleTimer = setTimeout(() => set(run(get().lines, get().actions, get().hints)), ANSWER_GAP_MS + 100);
     }
@@ -168,6 +176,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
     worded: null,
     assistTimes: [],
     confirm: (target) => act({ type: "confirm", target, at: Date.now() }),
+    correct: (key, text) => act({ type: "correct", key, text, at: Date.now() }),
     approve: () => act({ type: "approve", at: Date.now() }),
     setHighlight: (key) => set({ highlightKey: key }),
   };

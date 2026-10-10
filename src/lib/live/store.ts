@@ -45,6 +45,14 @@ export type LiveLine = {
   /** Seconds between the speaker stopping and the text appearing. */
   delay: number;
   confidence: number | null;
+  /** The second speech model is re-checking this key answer. */
+  checking?: boolean;
+  /** What the fast model heard first, when the check changed the text. */
+  firstHeard?: string;
+  /** Seconds the check took. */
+  checkSeconds?: number;
+  /** The check failed or timed out; the fast model's text stands. */
+  checkFailed?: boolean;
 };
 
 export type EngineState = "checking" | "offline" | "online";
@@ -82,6 +90,11 @@ type LiveState = {
   replay: (lines: ReplayLine[], msPerLine?: number) => void;
   stopReplay: () => void;
   setSop: (open: boolean) => void;
+  /**
+   * Re-checks a caller line with the engine's second speech model. Returns false (and does
+   * nothing) when there is no audio for it or the engine has no check model.
+   */
+  checkLine: (key: string) => boolean;
 };
 
 const MIC_KEY = "axentra-mic-label";
@@ -103,6 +116,9 @@ let epoch = 0;
 let callId = "";
 let seq = 0;
 let replayTimers: ReturnType<typeof setTimeout>[] = [];
+// The last few caller phrases, in memory only, so a key answer can be re-checked. Cleared with each call.
+const recentAudio = new Map<string, Float32Array>();
+const RECENT_AUDIO = 6;
 
 /** performance.now() time to epoch milliseconds. */
 const toEpoch = (t: number) => Math.round(performance.timeOrigin + t);
@@ -124,12 +140,7 @@ export const useLive = create<LiveState>((set, get) => {
     await get().refreshMics();
   }
 
-  function addLine(fields: Omit<LiveLine, "callId" | "seq" | "startedAtEpoch" | "endedAtEpoch">, endedAt: number) {
-    const line: LiveLine = { ...fields, callId, seq: ++seq, startedAtEpoch: toEpoch(fields.startedAt), endedAtEpoch: toEpoch(endedAt) };
-    // Order by when the speech began, not when recognition finished.
-    const lines = [...get().lines.filter((l) => l.key !== line.key), line].sort((a, b) => a.startedAt - b.startedAt);
-    // A replay has no recognition delay, so it must not count towards the median.
-    set({ lines: lines.slice(-200), delays: get().replaying ? get().delays : [...get().delays, line.delay] });
+  function emitLine(line: LiveLine) {
     liveEvents.emit({
       type: "line",
       line: {
@@ -142,13 +153,35 @@ export const useLive = create<LiveState>((set, get) => {
         endedAt: line.endedAtEpoch,
         final: true,
         confidence: line.confidence,
+        checking: line.checking,
+        firstHeard: line.firstHeard,
+        checkFailed: line.checkFailed,
       },
     });
+  }
+
+  function addLine(fields: Omit<LiveLine, "callId" | "seq" | "startedAtEpoch" | "endedAtEpoch">, endedAt: number) {
+    const line: LiveLine = { ...fields, callId, seq: ++seq, startedAtEpoch: toEpoch(fields.startedAt), endedAtEpoch: toEpoch(endedAt) };
+    // Order by when the speech began, not when recognition finished.
+    const lines = [...get().lines.filter((l) => l.key !== line.key), line].sort((a, b) => a.startedAt - b.startedAt);
+    // A replay has no recognition delay, so it must not count towards the median.
+    set({ lines: lines.slice(-200), delays: get().replaying ? get().delays : [...get().delays, line.delay] });
+    emitLine(line);
+  }
+
+  /** Replaces a line in place (same key and sequence number) and, unless told not to, tells the copilot. */
+  function updateLine(key: string, change: Partial<LiveLine>, emit = true) {
+    const current = get().lines.find((l) => l.key === key);
+    if (!current) return;
+    const line = { ...current, ...change };
+    set({ lines: get().lines.map((l) => (l.key === key ? line : l)) });
+    if (emit) emitLine(line);
   }
 
   function startCall(id: string) {
     callId = id;
     seq = 0;
+    recentAudio.clear();
     liveEvents.emit({ type: "call-started", callId, at: Date.now() });
   }
 
@@ -171,6 +204,10 @@ export const useLive = create<LiveState>((set, get) => {
         .then(async () => {
           const result = await recognize(side, samples);
           if (callEpoch !== epoch || !result.text) return;
+          if (side === "caller") {
+            recentAudio.set(`${side}-${phrase.id}`, samples);
+            for (const key of [...recentAudio.keys()].slice(0, -RECENT_AUDIO)) recentAudio.delete(key);
+          }
           addLine(
             {
               key: `${side}-${phrase.id}`,
@@ -221,6 +258,7 @@ export const useLive = create<LiveState>((set, get) => {
   function endCall(message: string) {
     currentCall = null;
     epoch++;
+    recentAudio.clear();
     set({ phase: "ready", status: message, callEndedAt: performance.now() });
     liveEvents.emit({ type: "call-ended", callId, at: Date.now() });
     void stopCaptures();
@@ -242,6 +280,35 @@ export const useLive = create<LiveState>((set, get) => {
     micId: "",
     replaying: false,
     sopOpen: false,
+
+    checkLine: (key) => {
+      const samples = recentAudio.get(key);
+      if (!samples || !get().health?.check) return false;
+      recentAudio.delete(key);
+      const callEpoch = epoch;
+      const began = performance.now();
+      const fast = get().lines.find((l) => l.key === key)?.text ?? "";
+      // The copilot asked for this check and already holds the line back; only the screen needs to know.
+      updateLine(key, { checking: true }, false);
+      recognize("caller", samples, true).then(
+        (result) => {
+          if (callEpoch !== epoch) return;
+          const checkSeconds = (performance.now() - began) / 1000;
+          if (!result.text) return updateLine(key, { checking: false, checkFailed: true, checkSeconds });
+          updateLine(key, {
+            checking: false,
+            text: result.text,
+            confidence: result.confidence,
+            firstHeard: result.text === fast ? undefined : fast,
+            checkSeconds,
+          });
+        },
+        () => {
+          if (callEpoch === epoch) updateLine(key, { checking: false, checkFailed: true, checkSeconds: (performance.now() - began) / 1000 });
+        }
+      );
+      return true;
+    },
 
     checkEngine: async () => {
       const health = await readEngineHealth();
@@ -323,6 +390,8 @@ export const useLive = create<LiveState>((set, get) => {
           call.on("accept", () => {
             set({ phase: "active", status: "Call connected", callStartedAt: performance.now() });
             void startCaptures(call, callEpoch);
+            // The check model loads after the fast one, so read the engine's state again for this call.
+            void readEngineHealth().then((health) => health && set({ health }));
           });
           call.on("disconnect", () => endCall("Call ended. Ready for another call."));
           call.on("cancel", () => endCall("Caller hung up. Ready for another call."));

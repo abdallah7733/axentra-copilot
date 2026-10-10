@@ -337,3 +337,345 @@ test("a wrong answer counts only when the caller has finished", () => {
   v = analyze(sunlake, withAgent, [], endedAt + 1000);
   assert.equal(v.verification.factors[1].attempts, 1);
 });
+
+/* ---------- Live call, 10 Oct 2026 (Script v2, read as written; lines as the console heard them) ---------- */
+
+const call1010: Line[] = [
+  { side: "agent", text: "Thank you for calling Sunlake. How can I help you today?" },
+  { side: "caller", text: "Hello, I need help with order 427. The tablet came yesterday and the screen is cracked." },
+  { side: "agent", text: "I'm sorry to hear that I can send you a new one today." },
+  { side: "agent", text: "First, can I have your full name please?" },
+  { side: "caller", text: "San milis.", confidence: 0.4 },
+  { side: "agent", text: "Thank you and the street and city for the delivery." },
+  { side: "caller", text: "HELLROOT INDONES" },
+  { side: "agent", text: "Thank you Sam. I can see the tablet on order 427" },
+  { side: "agent", text: "Is the damage only on the screen?" },
+  { side: "caller", text: "Yes, only the screen. Can I get a new one or my money back?" },
+  { side: "agent", text: "You can have either a new tablet ships today at no cost or a full refund in 3 to 5 business days." },
+  { side: "agent", text: "Which do you prefer?" },
+  { side: "caller", text: "Anyone please?", confidence: 0.4 },
+  { side: "agent", text: "Done." },
+  { side: "agent", text: "The new tablet strips today." },
+  { side: "agent", text: "You'll get an email with a free return label for the damaged one." },
+  { side: "caller", text: "Great. Thank you." },
+];
+const lineAt = (i: number) => events(call1010)[i].startedAt;
+
+test("10 Oct call: the address question without '?' still waits for the address", () => {
+  // The agent confirmed the name in the panel while asking for the address (both orders tested).
+  for (const nameConfirmedAt of [lineAt(5) + 1000, lineAt(6) + 1000]) {
+    const actions: AgentAction[] = [{ type: "confirm", target: "name", at: nameConfirmedAt }];
+    let v = after(call1010, 6, actions);
+    assert.equal(v.verification.factors[1].state, "asking");
+    assert.equal(step(v, "address"), "active");
+
+    v = after(call1010, 7, actions);
+    const address = v.verification.factors[1];
+    assert.equal(address.state, "confirm", "sounds like Hill Road in Dallas: the agent decides");
+    assert.equal(address.confirmReason, "sounds-like");
+    assert.equal(address.attempts, 0);
+    assert.ok(v.prompts.some((p) => p.target === "address" && p.text.includes("HELLROOT INDONES")));
+    assert.equal(v.verification.verified, false, "never a match on its own");
+    assert.equal(v.order.match, undefined, "order stays locked");
+
+    // Not confirmed: the order stays locked to the end and nothing is approved.
+    v = after(call1010, call1010.length, actions);
+    assert.equal(v.verification.verified, false);
+    assert.equal(v.order.match, undefined);
+    assert.equal(v.recommendation, null);
+    assert.equal(v.verification.factors[0].state, "ok");
+  }
+});
+
+test("10 Oct call: once the agent confirms the address, the flow continues; 'Anyone please?' asks again", () => {
+  const actions: AgentAction[] = [
+    { type: "confirm", target: "name", at: lineAt(5) + 1000 },
+    { type: "confirm", target: "address", at: lineAt(6) + 3500 },
+  ];
+  let v = after(call1010, 8, actions);
+  assert.equal(v.verification.verified, true);
+  assert.equal(v.verification.factors[1].method, "confirmed by the agent");
+  assert.equal(v.order.match?.order.id, "427");
+  assert.equal(v.order.match?.confirmed, true, "the agent read the order back");
+  assert.ok(alert(v, "offer-before-verification")!.resolved);
+
+  v = after(call1010, 12, actions);
+  assert.equal(alert(v, "offer-before-verification")!.evidence.length, 1, "the 00:50 offer came after verification");
+
+  v = after(call1010, 13, actions);
+  assert.equal(v.choice, null);
+  const ask = v.prompts.find((p) => p.target === "choice")!;
+  assert.ok(ask.askAgain);
+  assert.match(ask.text, /Anyone please\?/);
+  assert.equal(step(v, "choice"), "attention");
+  assert.equal(v.suggestedReply?.text, "Sorry, I didn't catch that. Would you like the new tablet, or the refund?");
+
+  // "Done." with no choice recorded approves nothing.
+  v = after(call1010, call1010.length, actions);
+  assert.equal(v.recommendation?.approval.state, "not-ready");
+  assert.ok(v.prompts.some((p) => p.target === "choice" && p.askAgain), "a later 'Great. Thank you.' doesn't clear it");
+
+  // Asked again, the caller answers clearly: the choice is recorded and the replacement is prepared.
+  const retry: Line[] = [
+    ...call1010.slice(0, 13),
+    { side: "agent", text: "Sorry, I didn't catch that. Would you like the new tablet, or the refund?" },
+    { side: "caller", text: "A new one, please." },
+    { side: "agent", text: "Done. The new tablet ships today." },
+  ];
+  v = after(retry, 15, actions);
+  assert.equal(v.choice?.value, "replacement");
+  assert.ok(!v.prompts.some((p) => p.target === "choice"));
+  assert.equal(v.recommendation?.prepared?.kind, "replacement");
+  v = after(retry, 16, actions);
+  assert.equal(v.recommendation?.approval.state, "approved");
+});
+
+test("an unreadable choice can still be answered with low confidence, then confirmed", () => {
+  const actions: AgentAction[] = [
+    { type: "confirm", target: "name", at: lineAt(5) + 1000 },
+    { type: "confirm", target: "address", at: lineAt(6) + 3500 },
+  ];
+  const lines: Line[] = [...call1010.slice(0, 13), { side: "agent", text: "Which would you like?" }, { side: "caller", text: "A new one please.", confidence: 0.4 }];
+  let v = after(lines, lines.length, actions);
+  assert.equal(v.choice, null);
+  const prompt = v.prompts.find((p) => p.target === "choice")!;
+  assert.ok(!prompt.askAgain, "now there is something to confirm");
+  v = after(lines, lines.length, [...actions, { type: "confirm", target: "choice", at: NOW - 1000 }]);
+  assert.equal(v.choice?.value, "replacement");
+});
+
+/* ---------- Retest on the fixed build, 10 Oct 2026 (lines as the console heard them) ---------- */
+
+const retest1010: Line[] = [
+  { side: "agent", text: "Thank you for calling Sunlake. How can I help you today.", confidence: 0.4 },
+  { side: "caller", text: "Hello, I need help with order 427. The tablet came yesterday and the screen cracked." },
+  { side: "agent", text: "I'm sorry to hear that I can send you a new one today. First can I have your full name please." },
+  { side: "caller", text: "Ten milis. Ten milis. Ten milis." },
+  { side: "agent", text: "Thank you." },
+  { side: "agent", text: "And the street and city for the delivery." },
+  { side: "caller", text: "Hail Rode in Dallas.", confidence: 0.4 },
+  { side: "agent", text: "Thank you Sam! I can see the tablet on 427", confidence: 0.4 },
+  { side: "caller", text: "Yes, only the screen. Can I get a new one or my money back?" },
+  { side: "agent", text: "You can have either and new tablet ships today at no cost or full refund in 3 to 5 business days", confidence: 0.4 },
+  { side: "agent", text: "Which do you prefer?" },
+  { side: "caller", text: "And you want these." },
+  { side: "agent", text: "Done. New tablet ships today.", confidence: 0.4 },
+];
+
+test("10 Oct retest: a garbled name is the agent's call, never a failed attempt", () => {
+  let v = after(retest1010, 5);
+  const name = v.verification.factors[0];
+  assert.equal(name.state, "confirm");
+  assert.equal(name.confirmReason, "garbled");
+  assert.equal(name.attempts, 0);
+  assert.ok(!v.alerts.some((a) => a.id.startsWith("verification-failed")));
+  assert.match(v.prompts.find((p) => p.target === "name")!.text, /looks garbled/);
+
+  v = after(retest1010, 7);
+  assert.equal(v.verification.factors[1].state, "confirm", '"Hail Rode in Dallas" matches but was heard with low confidence');
+  assert.equal(v.verification.verified, false);
+  assert.equal(v.order.match, undefined);
+
+  // The agent heard both clearly and confirms them: the call carries on.
+  const at = events(retest1010)[6].endedAt + 500;
+  const actions: AgentAction[] = [{ type: "confirm", target: "name", at }, { type: "confirm", target: "address", at }];
+  v = after(retest1010, 8, actions);
+  assert.equal(v.verification.verified, true);
+  assert.equal(v.order.match?.order.id, "427");
+  v = after(retest1010, retest1010.length, actions);
+  assert.ok(v.prompts.some((p) => p.target === "choice" && p.askAgain), '"And you want these." asks again');
+  assert.equal(v.recommendation?.approval.state, "not-ready");
+});
+
+test("a clear wrong name still counts as a failed attempt", () => {
+  const s = script({ 5: { side: "caller", text: "John Smith." } });
+  const v = after(s, 6);
+  assert.equal(v.verification.factors[0].state, "failed");
+  assert.equal(v.verification.factors[0].attempts, 1);
+});
+
+/** The second retest on 10 Oct (4.20 PM recording), as the console heard it. */
+const call3: Line[] = [
+  { side: "agent", text: "Thank you for calling Sunlake. How can I help you today.", confidence: 0.4 },
+  { side: "caller", text: "Hello, I need help with order 427. The tablet came yesterday and the screen cracked." },
+  { side: "agent", text: "I'm sorry to hear that. I can send you a new one today." },
+  { side: "agent", text: "First, can I have your full name please?" },
+  { side: "caller", text: "Sanmilis.", confidence: 0.4 },
+  { side: "agent", text: "Thank you and the street and city for the delivery." },
+  { side: "caller", text: "One road in Dallas." },
+  { side: "agent", text: "Thank you Sam. I can see the tablet on order 427." },
+  { side: "agent", text: "Is the damage only on the screen?" },
+  { side: "caller", text: "Yes, only the screen. Can I get a new one or my money back." },
+  { side: "agent", text: "You can have either a new tablet ships today at no cost." },
+  { side: "agent", text: "or a full refund in 3 to 5 business days." },
+  { side: "agent", text: "Which do you prefer?" },
+  { side: "caller", text: "And you want please." },
+  { side: "agent", text: "Done. The new tablet ships today. You'll get an email with a free return label for the damaged one." },
+];
+
+test("10 Oct second retest: a part-matched address asks again, and the choice waits for identity", () => {
+  const ev = events(call3);
+  const actions: AgentAction[] = [{ type: "confirm", target: "name", at: ev[4].endedAt + 2500 }];
+
+  // "One road in Dallas.": the city matches, the street doesn't. No card while the caller may still be talking.
+  let v = analyze(sunlake, ev.slice(0, 7), actions, ev[6].endedAt + 500);
+  assert.equal(v.verification.factors[1].state, "partial");
+  assert.ok(!v.prompts.some((p) => p.target === "address"));
+
+  v = analyze(sunlake, ev.slice(0, 7), actions, NOW);
+  const address = v.verification.factors[1];
+  assert.equal(address.state, "partial");
+  assert.equal(address.attempts, 0, "a part-matched answer is never a failed attempt");
+  const card = v.prompts.find((p) => p.target === "address")!;
+  assert.ok(card.askAgain, "nothing to confirm: ask again");
+  assert.match(card.text, /^Heard "One road in Dallas\.", which matches only part of the address on the order\. Ask for the street and city again/);
+  assert.doesNotMatch(card.text, /\bHill\b/, "the card never shows the record");
+
+  v = after(call3, 8, actions);
+  assert.equal(v.order.match, undefined, "order 427 stays locked");
+
+  // The unreadable choice waits until identity is verified; the identity card stays first.
+  v = after(call3, 14, actions);
+  assert.ok(!v.prompts.some((p) => p.target === "choice"));
+  assert.notEqual(step(v, "choice"), "attention");
+  assert.ok(v.prompts.some((p) => p.target === "address" && p.askAgain));
+
+  // "Done." before identity is counted with the earlier offers and approves nothing.
+  v = after(call3, 15, actions);
+  assert.deepEqual(alert(v, "offer-before-verification")!.evidence.map((e) => e.seq), [3, 11, 15]);
+  assert.equal(v.recommendation?.approval.state ?? "not-ready", "not-ready");
+
+  // The agent asks again and hears the street: verified, and the card goes away.
+  const retry: Line[] = [...call3.slice(0, 7), { side: "agent", text: "Sorry, could you give me the street and the city once more?" }, { side: "caller", text: "Hill Road, in Dallas." }];
+  v = after(retry, 8, actions);
+  assert.equal(v.verification.factors[1].state, "asking");
+  assert.ok(!v.prompts.some((p) => p.target === "address"));
+  v = after(retry, 9, actions);
+  assert.equal(v.verification.verified, true);
+  assert.equal(v.order.match?.order.id, "427");
+});
+
+test("a near-miss street never verifies on its own, and never counts as a failed attempt", () => {
+  // Offline Whisper heard the caller's correct "Hill Road" as "Will Road" and "Wind Road" (4.20 PM call).
+  const lines: Line[] = [
+    { side: "caller", text: "Hello, I need help with order 427. The tablet came yesterday and the screen is cracked." },
+    { side: "agent", text: "First, can I have your full name, please?" },
+    { side: "caller", text: "Sam Miller." },
+    { side: "agent", text: "Thank you. And the street and city for the delivery?" },
+    { side: "caller", text: "Will Road in Dallas." },
+    { side: "agent", text: "Thank you, Sam. I can see the tablet on order 427." },
+  ];
+  let v = after(lines, 6);
+  const address = v.verification.factors[1];
+  assert.equal(address.state, "confirm");
+  assert.equal(address.confirmReason, "sounds-like");
+  assert.equal(address.attempts, 0);
+  assert.equal(v.verification.verified, false);
+  assert.equal(v.order.match, undefined, "order 427 stays locked");
+  assert.ok(v.prompts.some((p) => p.target === "address" && !p.askAgain));
+
+  // Said word for word, the same answer verifies.
+  v = after([...lines.slice(0, 4), { side: "caller", text: "Hill Road in Dallas." }, lines[5]], 6);
+  assert.equal(v.verification.verified, true);
+  assert.equal(v.order.match?.order.id, "427");
+});
+
+test("the copilot says which key answer it is waiting for, so that answer gets the second model's check", () => {
+  const s = script();
+  assert.equal(after(s, 2).awaiting, null);
+  const askName = s.findIndex((l) => l.side === "agent" && /full name/i.test(l.text)) + 1;
+  assert.equal(after(s, askName).awaiting, "name");
+  const askAddress = s.findIndex((l) => l.side === "agent" && /street|email/i.test(l.text)) + 1;
+  assert.equal(after(s, askAddress).awaiting, "address");
+  const v = after(s, s.length);
+  assert.ok(v.choice, "script v2 ends with a choice made");
+  assert.equal(v.awaiting, null);
+
+  // Call 3: whatever key question the agent asked last is the one awaited, the choice included,
+  // and an unreadable reply keeps it open.
+  const ev = events(call3);
+  const actions: AgentAction[] = [{ type: "confirm", target: "name", at: ev[4].endedAt + 2500 }];
+  assert.equal(analyze(sunlake, ev.slice(0, 6), actions, NOW).awaiting, "address");
+  assert.equal(analyze(sunlake, ev.slice(0, 13), actions, NOW).awaiting, "choice");
+  assert.equal(analyze(sunlake, ev.slice(0, 14), actions, NOW).awaiting, "choice", '"And you want please." is no answer');
+});
+
+test("a key answer waits for its check, and the checked text is what counts", () => {
+  const lines: Line[] = [
+    { side: "caller", text: "Hello, I need help with order 427. The tablet came yesterday and the screen is cracked." },
+    { side: "agent", text: "First, can I have your full name, please?" },
+    { side: "caller", text: "Sanmilis.", confidence: 0.4 },
+  ];
+  const ev = events(lines);
+
+  // While the second model checks it, the answer doesn't count either way.
+  let v = analyze(sunlake, [...ev.slice(0, 2), { ...ev[2], checking: true }], [], NOW);
+  assert.equal(v.verification.factors[0].state, "asking");
+  assert.ok(!v.prompts.some((p) => p.target === "name"));
+
+  // The check heard "Sam Miller.": the name is verified, and the fast text is kept for the screen.
+  v = analyze(sunlake, [...ev.slice(0, 2), { ...ev[2], text: "Sam Miller.", confidence: 0.9, firstHeard: "Sanmilis." }], [], NOW);
+  assert.equal(v.verification.factors[0].state, "ok");
+
+  // The check failed: the fast text stands, as a doubtful line that never verifies on its own.
+  v = analyze(sunlake, [...ev.slice(0, 2), { ...ev[2], text: "Sam Miller.", confidence: 0.9, checkFailed: true }], [], NOW);
+  assert.equal(v.verification.factors[0].state, "confirm");
+});
+
+test("the agent can type what the caller said; it is checked word for word against the order", () => {
+  // The turbo check heard the caller's "Hill Road, in Dallas" as "Wind Road in Dallas.": a wrong answer.
+  const lines: Line[] = [
+    { side: "caller", text: "Hello, I need help with order 427. The tablet came yesterday and the screen is cracked." },
+    { side: "agent", text: "First, can I have your full name, please?" },
+    { side: "caller", text: "Sam Miller." },
+    { side: "agent", text: "Thank you. And the street and city for the delivery?" },
+    { side: "caller", text: "Wind Road in Dallas." },
+    { side: "agent", text: "Sorry, could you give me the street and the city once more?" },
+    { side: "caller", text: "Wind Road in Dallas." },
+    { side: "agent", text: "Thank you." },
+  ];
+  const ev = events(lines);
+  const at = ev[7].endedAt + 500;
+
+  let v = after(lines, 8);
+  assert.equal(v.verification.locked, true, "two misheard answers lock the call");
+
+  // The agent heard "Hill Road, in Dallas" and types it on the first answer: verified, nothing locked.
+  const typed: AgentAction[] = [{ type: "correct", key: ev[4].key, text: "Hill Road, in Dallas", at }];
+  v = after(lines, 8, typed);
+  assert.equal(v.verification.locked, false);
+  assert.equal(v.verification.verified, true);
+  const address = v.verification.factors[1];
+  assert.equal(address.attempts, 0);
+  assert.equal(address.method, "street and city, typed by the agent");
+  assert.equal(address.evidence?.typedFrom, "Wind Road in Dallas.");
+  assert.equal(v.order.match?.order.id, "427");
+
+  // Typed text gets no sound-alike leniency: "Will Road" is a wrong answer, not "Please confirm".
+  v = after(lines.slice(0, 5), 5, [{ type: "correct", key: ev[4].key, text: "Will Road in Dallas", at }]);
+  assert.equal(v.verification.factors[1].state, "failed");
+  assert.equal(v.verification.factors[1].attempts, 1);
+
+  // The latest typed text for a line is the one that counts.
+  v = after(lines.slice(0, 6), 6, [
+    { type: "correct", key: ev[4].key, text: "Will Road in Dallas", at },
+    { type: "correct", key: ev[4].key, text: "Hill Road in Dallas", at: at + 1000 },
+  ]);
+  assert.equal(v.verification.verified, true);
+});
+
+test("the agent can type the customer's choice when recognition couldn't read it", () => {
+  const ev = events(call3);
+  const verifiedFirst: AgentAction[] = [
+    { type: "confirm", target: "name", at: ev[4].endedAt + 2500 },
+    { type: "correct", key: ev[6].key, text: "Hill Road, in Dallas.", at: ev[6].endedAt + 2500 },
+  ];
+  let v = after(call3, 14, verifiedFirst);
+  assert.equal(v.verification.verified, true);
+  assert.ok(v.prompts.some((p) => p.target === "choice" && p.askAgain), '"And you want please." asks again');
+
+  v = after(call3, 14, [...verifiedFirst, { type: "correct", key: ev[13].key, text: "A new one, please.", at: ev[13].endedAt + 2500 }]);
+  assert.equal(v.choice?.value, "replacement");
+  assert.equal(v.choice?.evidence.typedFrom, "And you want please.");
+  assert.ok(!v.prompts.some((p) => p.target === "choice"));
+});

@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { agentAsksFor, agentCommits, agentDisclosesFactor, agentOffers, escalationWords, readChoice, readIntent, safetyWords } from "./signals";
+import { agentAsksChoice, agentAsksFor, agentCommits, agentDisclosesFactor, agentOffers, escalationWords, readChoice, readIntent, safetyWords } from "./signals";
 import { matchAddress, matchName, soundsLikeRecord } from "./verification";
+import { repeatsItself } from "./text";
 import { samMiller } from "@/lib/live/sunlake-data";
 
 const damaged = (text: string) => readIntent(text).find((i) => i.id === "damaged");
@@ -76,6 +77,44 @@ test("agent asks for identity details", () => {
   assert.equal(agentAsksFor("Thank you for calling Sunlake. How can I help you today?"), null);
 });
 
+// Live call, 10 Oct: recognition dropped the question mark, so the copilot never listened for the address.
+test("a bare request for a detail counts only while the identity check is under way", () => {
+  const heard = "Thank you and the street and city for the delivery.";
+  assert.equal(agentAsksFor(heard), null);
+  assert.equal(agentAsksFor(heard, true), "address");
+  assert.equal(agentAsksFor("And your email address on the order.", true), "address");
+  assert.equal(agentAsksFor("Thank you, Sam. And the street and city.", true), "address");
+  assert.equal(agentAsksFor("First, your full name.", true), "name");
+  // Statements about a detail are not requests for it.
+  for (const text of [
+    "Sorry, the city doesn't match.",
+    "The street and city don't match what we have.",
+    "You'll get an email with a free return label for the damaged one.",
+    "I'll send the label to your email.",
+    "The address is on the order.",
+    "Your email is on file.",
+    "Thank you, Sam. I can see the tablet on order 427",
+    "The new tablet ships today.",
+    "Thank you for calling Sunlake.",
+  ]) {
+    assert.equal(agentAsksFor(text, true), null, text);
+  }
+});
+
+test("agent asks the customer to choose", () => {
+  assert.ok(agentAsksChoice("Which do you prefer?"));
+  assert.ok(agentAsksChoice("You can have either a new tablet ships today at no cost or a full refund in 3 to 5 business days."));
+  assert.ok(agentAsksChoice("Would you prefer the replacement?"));
+  assert.equal(agentAsksChoice("I'm sorry to hear that. I can send you a new one today."), false);
+  assert.equal(agentAsksChoice("Is the damage only on the screen?"), false);
+});
+
+test('"Anyone please?" is not read as a choice', () => {
+  // Heard for "A new one, please." on the 10 Oct call. It stays unresolved: the agent asks again.
+  assert.equal(readChoice("Anyone please?"), null);
+  assert.equal(readChoice("A new one, please.")?.choice, "replacement");
+});
+
 test("agent commits and discloses", () => {
   assert.ok(agentCommits("Done. The new tablet ships today. You'll get an email with a free return label for the damaged one."));
   assert.ok(agentDisclosesFactor("Sorry, the city doesn't match what we have."));
@@ -85,9 +124,14 @@ test("agent commits and discloses", () => {
 
 test("identity factors", () => {
   assert.equal(matchName("Sam Miller.", samMiller), "match");
-  assert.equal(matchName("My name is Sam Millar.", samMiller), "match");
+  // Heard only by sound: close, for the agent to confirm, never a match on its own.
+  assert.equal(matchName("My name is Sam Millar.", samMiller), "close");
   assert.equal(matchName("Sam.", samMiller), "partial");
   assert.equal(matchName("John Smith.", samMiller), "mismatch");
+  // Heard by the second speech model on 10 Oct: a possessive "'s" is not an extra word.
+  assert.equal(matchName("Sam Miller's.", samMiller), "match");
+  assert.equal(matchName("John Smith's.", samMiller), "mismatch");
+  assert.equal(matchAddress("It's Hill Road in Dallas.", samMiller), "match");
   assert.equal(matchName("Sorry, what?", samMiller), "none");
   assert.equal(matchAddress("Hill Road, in Dallas.", samMiller), "match");
   assert.equal(matchAddress("It's Hill Road in Dallas, Texas.", samMiller), "match");
@@ -97,8 +141,17 @@ test("identity factors", () => {
   assert.equal(matchAddress("Hill Road, in Houston.", samMiller), "mismatch");
   assert.equal(matchAddress("Hill Street, Dallas.", samMiller), "mismatch");
   assert.equal(matchAddress("Dallas.", samMiller), "partial");
+  assert.equal(matchAddress("s dot miler at example mail dot com", samMiller), "close");
   // Heard on the Milestone 3 accuracy read (27 Sep): "Hill Road" came out as "Hel Road".
-  assert.equal(matchAddress("Hel Road in Dallas.", samMiller), "match");
+  assert.equal(matchAddress("Hel Road in Dallas.", samMiller), "close");
+  // Heard on the 10 Oct retest: the street type can sound alike too.
+  assert.equal(matchAddress("Hail Rode in Dallas.", samMiller), "close");
+  // A street one letter away is a different street as far as the record knows: never a match.
+  assert.equal(matchAddress("Will Road in Dallas.", samMiller), "close");
+  assert.equal(matchAddress("Mill Road, in Dallas.", samMiller), "close");
+  assert.equal(matchAddress("Hill Road in Dalas.", samMiller), "close");
+  assert.equal(matchAddress("Hill Street, in Dallas.", samMiller), "mismatch");
+  assert.equal(matchAddress("Hill Drive in Dallas.", samMiller), "mismatch");
   assert.equal(matchAddress("Lake Road, in Dallas.", samMiller), "mismatch");
 });
 
@@ -109,4 +162,13 @@ test("answers that only sound like the record", () => {
   assert.equal(soundsLikeRecord("address", "Hill Road, in Houston.", samMiller), false);
   assert.equal(soundsLikeRecord("name", "Semiler.", samMiller), true);
   assert.equal(soundsLikeRecord("name", "John Smith.", samMiller), false);
+});
+
+test("a line that is one phrase repeated is garbled", () => {
+  // Heard for "Sam Miller." on the 10 Oct retest.
+  assert.ok(repeatsItself("Ten milis. Ten milis. Ten milis."));
+  assert.ok(repeatsItself("Sam Miller. Sam Miller."));
+  assert.equal(repeatsItself("Sam Miller."), false);
+  assert.equal(repeatsItself("Hill Road, in Dallas."), false);
+  assert.equal(repeatsItself("It's Sam, Sam Miller."), false);
 });
