@@ -977,3 +977,77 @@ test("typed identity text naming two candidates is asked again too, and wrappers
   v = analyze(sunlake, [...ev.slice(0, 4), { ...ev[4], text: "John Smith.", firstHeard: "It's John Smith." }, ev[5]], [], NOW);
   assert.equal(v.verification.factors[0].attempts, 1);
 });
+
+/* ---------- 12 Oct call (fifth call), as the console heard it ---------- */
+
+/**
+ * Call-clock seconds from the recording. Speech ends are estimated from the line lengths; first-pass
+ * delays and check times are the ones the transcript showed ("0.9 s after speech ended · checked in 2.0 s").
+ */
+const call5: { s: number; end: number; side: "caller" | "agent"; text: string; first?: string; delay: number; check?: number; low?: boolean }[] = [
+  { s: 2, end: 5, side: "agent", text: "Thank you for calling Sunlake. How can I help you today?", delay: 1.2 },
+  { s: 6, end: 12, side: "caller", text: "Hello, I need help with order 427. The tablet came yesterday and the screen is cracked.", first: "Hello, I need help with order 427, the table came yesterday and the screen is cracked.", delay: 1.1, check: 3.0 },
+  { s: 14, end: 17, side: "agent", text: "I'm sorry to hear that I can send you a new one today.", delay: 1.2 },
+  { s: 19, end: 19.5, side: "agent", text: "First.", delay: 0.9 },
+  { s: 20, end: 22, side: "agent", text: "Can I have your full name please?", delay: 1.0 },
+  { s: 23, end: 24, side: "caller", text: "Sam Miller", first: "Sam Miller. Sam Miller.", delay: 0.8, check: 2.1 },
+  { s: 27, end: 27.6, side: "agent", text: "Thank you.", delay: 0.8 },
+  { s: 28, end: 30, side: "agent", text: "And the street and city for the delivery.", delay: 0.9 },
+  { s: 32, end: 33.5, side: "caller", text: "Hill Road in Dallas.", first: "Hill wrote in Dallas.", delay: 3.8, check: 2.2 },
+  { s: 36, end: 37, side: "agent", text: "Thank you Sam.", delay: 0.9 },
+  { s: 38, end: 41, side: "agent", text: "I can see the tablet on order 4 to 7.", delay: 1.1 },
+  { s: 43, end: 45, side: "agent", text: "Is the damage only on the screen?", delay: 1.0 },
+  { s: 47, end: 48.5, side: "caller", text: "Yes, only the screen.", delay: 0.9 },
+  { s: 49, end: 51.5, side: "caller", text: "Can I get a new one or my money back?", delay: 0.9 },
+  { s: 53, end: 54.5, side: "agent", text: "You can have either.", delay: 0.9 },
+  { s: 55, end: 58, side: "agent", text: "new tablet ships today at no coast.", delay: 0.9, low: true },
+  { s: 59, end: 62, side: "agent", text: "Or a full refund in 3 to 5 business days.", delay: 0.9 },
+  { s: 63, end: 64.5, side: "agent", text: "Which do you prefer?", delay: 0.9 },
+  { s: 66, end: 67.5, side: "caller", text: "A new one, please.", first: "And you want tea.", delay: 0.9, check: 2.0 },
+  { s: 69, end: 69.6, side: "agent", text: "Done.", delay: 0.8, low: true },
+  { s: 70, end: 72, side: "agent", text: "The new tablet ships today.", delay: 0.8 },
+  { s: 73, end: 77, side: "agent", text: "You'll get an email with a free return label for the damaged one.", delay: 1.0 },
+  { s: 79, end: 80.5, side: "caller", text: "Great, thank you.", delay: 0.8 },
+  { s: 82, end: 83, side: "agent", text: "You are welcome.", delay: 0.8 },
+];
+const call5Start = NOW - 120_000;
+const call5Events = (shift: (i: number) => number = () => 0): TranscriptEvent[] =>
+  call5.map((l, i) => {
+    const startedAt = call5Start + (l.s + shift(i)) * 1000;
+    const endedAt = call5Start + (l.end + shift(i)) * 1000;
+    return {
+      callId: "CA-call5",
+      seq: i + 1,
+      key: `c5-${i + 1}`,
+      side: l.side,
+      text: l.text,
+      startedAt,
+      endedAt,
+      final: true,
+      confidence: l.low ? 0.45 : 0.85,
+      firstHeard: l.first,
+      availableAt: endedAt + (l.delay + (l.check ?? 0)) * 1000,
+    };
+  });
+
+test("the 12 Oct call as heard still passes on the new rules, approved on the call", () => {
+  const v = analyze(sunlake, call5Events(), [], NOW);
+  assert.equal(v.intent?.certainty, "high");
+  assert.equal(v.verification.verified, true);
+  assert.equal(v.order.match?.order.id, "427");
+  assert.equal(v.choice?.value, "replacement");
+  assert.equal(v.recommendation?.approval.state, "approved");
+  assert.equal(v.recommendation?.approval.via, "call");
+  assert.equal(v.recommendation?.approval.evidence?.text, "The new tablet ships today.");
+  assert.match(v.documentation.find((d) => d.label === "Case summary")!.value!, /damage: "screen is cracked"; the caller said "Yes, only the screen\." to "Is the damage only on the screen\?"/);
+});
+
+test("on the 12 Oct call, a 'Done.' said before the checked choice arrived would need the panel's approval", () => {
+  // The same call, with the agent's two commitment lines 2 s earlier: before "A new one, please." came back from the check.
+  const v = analyze(sunlake, call5Events((i) => (i === 19 || i === 20 ? -2 : 0)), [], NOW);
+  assert.equal(v.recommendation?.approval.state, "awaiting");
+  assert.equal(v.recommendation?.staleApproval?.reason, "the customer's choice wasn't known yet");
+  const approved = analyze(sunlake, call5Events((i) => (i === 19 || i === 20 ? -2 : 0)), [{ type: "approve", at: call5Start + 75_000 }], NOW);
+  assert.equal(approved.recommendation?.approval.state, "approved");
+  assert.equal(approved.recommendation?.approval.via, "panel");
+});
