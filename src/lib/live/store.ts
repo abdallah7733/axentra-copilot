@@ -120,8 +120,13 @@ let replayTimers: ReturnType<typeof setTimeout>[] = [];
 const recentAudio = new Map<string, Float32Array>();
 const RECENT_AUDIO = 6;
 
-/** performance.now() time to epoch milliseconds. */
-const toEpoch = (t: number) => Math.round(performance.timeOrigin + t);
+/**
+ * performance.now() time to epoch milliseconds, measured back from the wall clock now.
+ * Not performance.timeOrigin + t: on macOS performance.now() stops while the Mac sleeps,
+ * so that sum fell 6.5 hours behind Date.now() on the 11 Oct call ("verified at 04:46 PM",
+ * approved at 11:15 PM) and every panel action sorted after every line.
+ */
+export const toEpoch = (t: number) => Math.round(Date.now() - (performance.now() - t));
 
 const readSavedMic = () => {
   try {

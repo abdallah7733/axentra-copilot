@@ -133,6 +133,10 @@ test("identity factors", () => {
   assert.equal(matchName("John Smith's.", samMiller), "mismatch");
   assert.equal(matchAddress("It's Hill Road in Dallas.", samMiller), "match");
   assert.equal(matchName("Sorry, what?", samMiller), "none");
+  // The right words, denied: never a match. A leading "No," corrects the agent and is fine.
+  assert.equal(matchName("I am not Sam Miller.", samMiller), "mismatch");
+  assert.equal(matchAddress("Not Hill Road in Dallas.", samMiller), "mismatch");
+  assert.equal(matchName("No, it's Sam Miller.", samMiller), "match");
   assert.equal(matchAddress("Hill Road, in Dallas.", samMiller), "match");
   assert.equal(matchAddress("It's Hill Road in Dallas, Texas.", samMiller), "match");
   assert.equal(matchAddress("The street is Hill Road and the city is Dallas.", samMiller), "match");

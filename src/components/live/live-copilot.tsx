@@ -8,10 +8,10 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Explain, LiveDot, Mono, PanelHeader, ease } from "@/components/workspace/bits";
-import type { Alert, Evidence, SopStep } from "@/lib/copilot/copilot";
+import { isAcknowledgement, type Alert, type Evidence, type SopStep } from "@/lib/copilot/copilot";
 import { money } from "@/lib/demo-data";
 import { pack, useCopilot } from "@/lib/live/copilot-store";
-import { useLive } from "@/lib/live/store";
+import { toEpoch, useLive } from "@/lib/live/store";
 import { cn } from "@/lib/utils";
 
 /*
@@ -29,7 +29,7 @@ const clock = (ms: number) => {
 function Quote({ ev, className }: { ev: Evidence; className?: string }) {
   const setHighlight = useCopilot((s) => s.setHighlight);
   const callStartedAt = useLive((s) => s.callStartedAt);
-  const startEpoch = callStartedAt === null ? null : performance.timeOrigin + callStartedAt;
+  const startEpoch = callStartedAt === null ? null : toEpoch(callStartedAt);
   return (
     <span
       className={cn("inline-flex items-baseline gap-1.5 rounded-sm text-xs text-muted-foreground hover:text-foreground cursor-default", className)}
@@ -46,31 +46,48 @@ function Quote({ ev, className }: { ev: Evidence; className?: string }) {
   );
 }
 
+/** What the agent types in each field: the caller's words, never "checked". */
+const TYPE_LABEL: Record<string, string> = {
+  name: "Caller's full name, exactly as you heard it",
+  address: "Caller's street and city (or email), exactly as you heard it",
+  choice: "What the caller asked for, in their words",
+};
+
 /**
  * When recognition got a caller's answer wrong, the agent types what the caller said. The
  * copilot checks it word for word against the order; it never shows the agent the record.
  */
-function TypeHeard({ lineKey }: { lineKey: string }) {
+function TypeHeard({ lineKey, target }: { lineKey: string; target: string }) {
   const correct = useCopilot((s) => s.correct);
   const [text, setText] = useState("");
+  const [refused, setRefused] = useState(false);
   const submit = (e: FormEvent) => {
     e.preventDefault();
     if (!text.trim()) return;
+    // "Checked" replaced the caller's name on the 11 Oct call.
+    if (isAcknowledgement(text)) return setRefused(true);
     correct(lineKey, text);
     setText("");
   };
   return (
-    <form onSubmit={submit} className="flex items-center gap-1.5 pt-1">
-      <Input
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder="Heard it differently? Type what the caller said"
-        aria-label="Type what the caller said"
-        className="h-7 text-xs"
-      />
-      <Button type="submit" size="sm" variant="outline" className="h-7 rounded-full text-xs" disabled={!text.trim()}>
-        Check
-      </Button>
+    <form onSubmit={submit} className="space-y-1 pt-1">
+      <p className="text-[11px] text-muted-foreground">Heard it differently? Type the caller&rsquo;s words, not &ldquo;checked&rdquo; or &ldquo;confirmed&rdquo;.</p>
+      <div className="flex items-center gap-1.5">
+        <Input
+          value={text}
+          onChange={(e) => {
+            setText(e.target.value);
+            setRefused(false);
+          }}
+          placeholder={TYPE_LABEL[target] ?? "What the caller said"}
+          aria-label={TYPE_LABEL[target] ?? "What the caller said"}
+          className="h-7 text-xs"
+        />
+        <Button type="submit" size="sm" variant="outline" className="h-7 rounded-full text-xs" disabled={!text.trim()}>
+          Use these words
+        </Button>
+      </div>
+      {refused && <p className="text-[11px] text-amber-700 dark:text-amber-500">That&rsquo;s an acknowledgement, not what the caller said. Type their words.</p>}
     </form>
   );
 }
@@ -159,7 +176,9 @@ function AlertCard({ alert }: { alert: Alert }) {
           {alert.evidence.slice(-2).map((ev) => (
             <Quote key={ev.key} ev={ev} className="flex" />
           ))}
-          {/^verification-(failed|locked)/.test(alert.id) && alert.evidence[0]?.side === "caller" && <TypeHeard lineKey={alert.evidence[0].key} />}
+          {/^verification-(failed|locked)/.test(alert.id) && alert.evidence[0]?.side === "caller" && (
+            <TypeHeard lineKey={alert.evidence[0].key} target={alert.id.endsWith("address") ? "address" : "name"} />
+          )}
         </div>
         <Mono className="shrink-0 text-[10px] text-muted-foreground">{alert.sopRef.replace(`${pack.sop.id} · `, "")}</Mono>
       </div>
@@ -201,12 +220,15 @@ export function LiveCopilot({ className }: { className?: string }) {
           meta={
             intent && (
               <span className="inline-flex items-center gap-1.5">
-                {intent.certainty === "low" ? (
+                {/* Where the reading comes from, not a percentage: the rule and model scores aren't calibrated. */}
+                {intent.source === "model" ? (
+                  <span className="text-amber-600">Model suggestion: needs confirmation</span>
+                ) : intent.certainty === "low" ? (
                   <span className="text-amber-600">Low certainty: confirm with the caller</span>
+                ) : intent.source === "agent" ? (
+                  "Chosen by the agent"
                 ) : (
-                  <>
-                    <Mono className="font-medium text-foreground">{Math.round(intent.confidence * 100)}%</Mono> confidence
-                  </>
+                  "From the caller's words"
                 )}
               </span>
             )
@@ -221,7 +243,15 @@ export function LiveCopilot({ className }: { className?: string }) {
                 </div>
                 <Explain label="Why this intent">
                   <ul className="list-disc pl-4 space-y-1">
-                    <li>Phrases heard: {intent.phrases.map((p) => `“${p}”`).join(", ")}</li>
+                    <li>
+                      {intent.phrases.length
+                        ? `Phrases heard: ${intent.phrases.map((p) => `“${p}”`).join(", ")}`
+                        : intent.source === "model"
+                          ? "No rule matched the caller's words; the local model read the line below."
+                          : intent.source === "agent"
+                            ? "The agent chose the issue from what the caller said."
+                            : "From the caller's answer to the agent's question."}
+                    </li>
                     {intent.evidence.map((ev) => (
                       <li key={ev.key}>
                         <Quote ev={ev} />
@@ -259,9 +289,20 @@ export function LiveCopilot({ className }: { className?: string }) {
                 <div className="min-w-0 flex-1 space-y-1">
                   <p className="text-sm font-medium">{p.askAgain ? "Ask again" : "Please confirm"}</p>
                   <p className="text-xs leading-relaxed">{p.text}</p>
-                  {typeable(p.target, p.evidence) && <TypeHeard lineKey={p.evidence!.key} />}
+                  {typeable(p.target, p.evidence) && <TypeHeard lineKey={p.evidence!.key} target={p.target} />}
+                  {/* The agent says what the caller's problem is; the copilot's guess is never just confirmed. */}
+                  {p.target === "issue" && (
+                    <div className="flex flex-wrap gap-1.5 pt-1">
+                      <Button size="sm" className="h-7 rounded-full bg-amber-600 text-xs text-white hover:bg-amber-700" onClick={() => confirm("issue", "damaged")}>
+                        Arrived damaged
+                      </Button>
+                      <Button size="sm" variant="outline" className="h-7 rounded-full text-xs" onClick={() => confirm("issue", "other")}>
+                        Something else
+                      </Button>
+                    </div>
+                  )}
                 </div>
-                {!p.askAgain && (
+                {!p.askAgain && p.target !== "issue" && (
                   <Button size="sm" className="rounded-full bg-amber-600 text-white hover:bg-amber-700" onClick={() => confirm(p.target)}>
                     Confirmed
                   </Button>

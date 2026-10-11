@@ -26,8 +26,17 @@ const has = (tokens: string[], expected: string) => heardAs(tokens, expected) !=
 /** The answer's words, with a possessive "'s" dropped: "Sam Miller's." was heard for "Sam Miller." on 10 Oct. */
 const answerWords = (text: string) => words(text).map((w) => w.replace(/'s$/, ""));
 
+/**
+ * "I am not Sam Miller", "Not Hill Road in Dallas": the right words, denied. Never a match.
+ * A leading "No," is left alone: "No, it's Sam Miller" corrects the agent.
+ */
+const denies = (tokens: string[]) => tokens.some((t) => /^(not|never|isn't|isnt|wasn't|wasnt|don't|dont|doesn't|doesnt|didn't|didnt|ain't|aint)$/.test(t));
+
+export const deniesIdentity = (text: string) => denies(answerWords(text));
+
 export function matchName(text: string, customer: Customer): FactorResult {
   const tokens = answerWords(text);
+  if (denies(tokens)) return "mismatch";
   const parts = words(customer.name);
   const heard = parts.map((p) => heardAs(tokens, p));
   const all = allHeard(heard);
@@ -47,6 +56,7 @@ const STREET_TYPES: Record<string, string[]> = { road: ["road", "rd"], street: [
 
 export function matchAddress(text: string, customer: Customer): FactorResult {
   const tokens = answerWords(text);
+  if (denies(tokens)) return "mismatch";
   // Email: "s dot miller at example mail dot com".
   if (tokens.includes("at") && (tokens.includes("com") || tokens.includes("mail") || tokens.some((t) => t.includes("@")))) {
     const local = words(customer.emailFull.split("@")[0]);

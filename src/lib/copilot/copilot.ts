@@ -1,8 +1,8 @@
 import { findOrderMentions, matchOrder, type MentionMethod, type OrderMention } from "./orders";
 import { agentAsksChoice, agentAsksFor, agentCommits, agentDisclosesFactor, agentOffers, escalationWords, readChoice, readIntent, safetyWords, type Choice } from "./signals";
-import { repeatsItself } from "./text";
+import { repeatsItself, words as textWords } from "./text";
 import type { AgentAction, AuthorityBand, ClientPack, Customer, Order, Side, TranscriptEvent } from "./types";
-import { matchAddress, matchName, soundsLikeRecord } from "./verification";
+import { deniesIdentity, matchAddress, matchName, soundsLikeRecord } from "./verification";
 
 /*
   The copilot's rules layer. `analyze` rebuilds the whole copilot view from the
@@ -96,7 +96,8 @@ export type CopilotView = {
   callId: string | null;
   lineCount: number;
   intent: {
-    id: "damaged" | "order-status";
+    /** "other": the agent heard a problem this SOP doesn't cover. */
+    id: "damaged" | "order-status" | "other";
     label: string;
     category: string;
     sopId: string | null;
@@ -104,8 +105,8 @@ export type CopilotView = {
     confidence: number;
     phrases: string[];
     evidence: Evidence[];
-    /** "model" when only the local model could read the line; always low certainty. */
-    source: "rules" | "model";
+    /** "model" when only the local model could read the line (always low certainty); "agent" when the agent chose the issue. */
+    source: "rules" | "model" | "agent";
   } | null;
   verification: { factors: Factor[]; verified: boolean; verifiedAt?: Evidence; locked: boolean; attemptsLeft: number };
   order: {
@@ -139,12 +140,21 @@ const evidenceOf = (l: TranscriptEvent): Evidence => ({
 });
 
 /**
+ * Only an acknowledgement ("Checked", "Confirmed", "OK"), not the caller's words. On the 11 Oct
+ * call the agent typed "Checked" into the name field; it must never stand in for an answer.
+ */
+export const isAcknowledgement = (text: string) => {
+  const w = textWords(text);
+  return w.length > 0 && w.every((t) => /^(checked|check|confirmed|confirm|ok|okay|yes|yeah|yep|correct|right|done|verified|matched|match|fine|good|same)$/.test(t));
+};
+
+/**
  * The agent's typed corrections, applied to the caller lines they replace. What the agent
  * typed is clear text: it is never low confidence, and it is judged word for word.
  */
 function applyCorrections(lines: TranscriptEvent[], actions: AgentAction[]): TranscriptEvent[] {
   const typed = new Map<string, string>();
-  for (const a of actions) if (a.type === "correct" && a.text.trim()) typed.set(a.key, a.text.trim());
+  for (const a of actions) if (a.type === "correct" && a.text.trim() && !isAcknowledgement(a.text)) typed.set(a.key, a.text.trim());
   if (!typed.size) return lines;
   return lines.map((l) => {
     const text = l.side === "caller" ? typed.get(l.key) : undefined;
@@ -166,6 +176,18 @@ const clock = (at: number) => new Date(at).toLocaleTimeString("en-US", { hour: "
 
 /** What the optional local model read in lines the rules could not. It never ticks a step. */
 export type ModelHints = { intent?: { id: "damaged" | "order-status"; key: string } };
+
+const DAMAGED_LABEL = "Order issue: damaged on arrival";
+
+/**
+ * The agent asks whether the item is damaged ("Is the damage only on the screen?"). Recognition
+ * drops question marks, so a question word at the start counts as well.
+ */
+const asksAboutDamage = (text: string) =>
+  /\b(damage[ds]?|cracked|crack|broken|scratched|shattered|smashed)\b/i.test(text) &&
+  (/\?/.test(text) || /^(so |and |just to confirm,? )?(is|was|are|were|did|does|has|have|can you|could you)\b/i.test(text.trim()));
+/** The caller says yes to it ("Yes, only the screen."). */
+const saysYes = (text: string) => /^(yes|yeah|yep|yup|correct|that's right|that is right|right|exactly|it is|it was)\b/i.test(text.trim());
 
 /** The rules in one pass over the call. `now` fixes "delivered yesterday" and approval times for tests. */
 export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[] = [], now = Date.now(), hints: ModelHints = {}): CopilotView {
@@ -207,7 +229,25 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
   let unreadChoice: Evidence | null = null;
   let orderConfirmedInPanel = false;
   let issueConfirmedInPanel = false;
+  // What the agent chose on the issue card; caller words that arrive later replace "other".
+  let issueChoice: "damaged" | "other" | null = null;
+  // The agent's damage question, and the caller's yes to it.
+  let damageQuestion: Evidence | null = null;
+  let damageAnswer: { question: Evidence; answer: Evidence } | null = null;
   let approval: Recommendation["approval"] = { state: "not-ready" };
+
+  /**
+   * The problem is one this SOP covers (damaged on arrival) and it's established: from the
+   * caller's own words, their yes to the agent's damage question, or the agent's choice.
+   * An unconfirmed model reading never counts (on the 11 Oct call an "Order status" reading
+   * the agent confirmed still led to an approved replacement).
+   */
+  const issueSupported = () =>
+    issueChoice === "damaged" ||
+    (issueChoice === null &&
+      ((intent?.id === "damaged" && (intent.certainty === "high" || issueConfirmedInPanel)) || (!intent && hints.intent?.id === "damaged" && issueConfirmedInPanel)));
+  /** Everything an approval needs, at the moment it is given: a stale or early approval doesn't count. */
+  const readyToApprove = () => verified() && !!choice && choice.value !== "both" && issueSupported();
 
   const verified = () => name.state === "ok" && address.state === "ok";
   const markVerified = (ev: Evidence) => {
@@ -260,7 +300,7 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
       // Typed by the agent: no sound-alike leniency. Anything short of a match is a wrong answer.
       factor.state = "asking";
       pending.result = "mismatch";
-    } else if (result === "close" || soundsLikeRecord(factor.id, heard, customer)) {
+    } else if (!deniesIdentity(heard) && (result === "close" || soundsLikeRecord(factor.id, heard, customer))) {
       // Close to the record but not a clear match: the agent decides; never a failed attempt.
       factor.state = "confirm";
       factor.confirmReason = "sounds-like";
@@ -268,7 +308,7 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     } else {
       // More may be coming; a wrong answer counts only once the caller has finished (closeAnswer).
       factor.state = "asking";
-      pending.result = result;
+      pending.result = result === "close" ? "mismatch" : result;
     }
   }
 
@@ -303,14 +343,15 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
           markVerified(factor.evidence);
         }
       } else if (a.type === "confirm" && a.target === "issue") {
-        issueConfirmedInPanel = true;
+        if (a.issue) issueChoice = a.issue;
+        else issueConfirmedInPanel = true;
       } else if (a.type === "confirm" && a.target === "order") {
         orderConfirmedInPanel = true;
       } else if (a.type === "confirm" && a.target === "choice" && lowConfidenceChoice) {
         const found = readChoice(lowConfidenceChoice.text);
         if (found) choice = { value: found.choice, evidence: lowConfidenceChoice };
         lowConfidenceChoice = null;
-      } else if (a.type === "approve" && approval.state !== "approved") {
+      } else if (a.type === "approve" && approval.state !== "approved" && readyToApprove()) {
         approval = { state: "approved", at: a.at, via: "panel" };
       }
       continue;
@@ -327,9 +368,10 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
         if (prev && prev.id !== found.id && found.score <= prev.confidence) continue;
         const same = prev?.id === found.id ? prev : null;
         const certainHere = found.score >= 0.8 && !ev.lowConfidence;
+        if (found.id === "damaged" && certainHere && issueChoice === "other") issueChoice = null;
         intent = {
           id: found.id,
-          label: found.id === "damaged" ? "Order issue: damaged on arrival" : "Order status",
+          label: found.id === "damaged" ? DAMAGED_LABEL : "Order status",
           category: "Orders and delivery",
           sopId: found.id === "damaged" ? sopId : null,
           certainty: same?.certainty === "high" || certainHere ? "high" : "low",
@@ -339,6 +381,26 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
           source: "rules",
         };
       }
+
+      if (damageQuestion && saysYes(line.text) && !ev.lowConfidence) {
+        // "Is the damage only on the screen?" "Yes, only the screen.": the caller confirmed damage.
+        damageAnswer = { question: damageQuestion, answer: ev };
+        if (issueChoice === "other") issueChoice = null;
+        const prior = intent as CopilotView["intent"];
+        const same = prior?.id === "damaged" ? prior : null;
+        intent = {
+          id: "damaged",
+          label: DAMAGED_LABEL,
+          category: "Orders and delivery",
+          sopId,
+          certainty: "high",
+          confidence: Math.max(same?.confidence ?? 0, 0.9),
+          phrases: same?.phrases ?? [],
+          evidence: [...(same?.evidence ?? []), damageQuestion, ev].slice(-3),
+          source: "rules",
+        };
+      }
+      damageQuestion = null;
 
       for (const mention of findOrderMentions(line.text, idLengths, expecting === "order")) callerMentions.push({ mention, ev });
 
@@ -371,6 +433,7 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
       if (offer && escalations.length) offersInEscalation.push(ev);
 
       if (agentAsksChoice(line.text)) choiceAsked = true;
+      damageQuestion = asksAboutDamage(line.text) && !ev.lowConfidence ? ev : null;
 
       closeAnswer();
       const asks = agentAsksFor(line.text, !verified() && !locked);
@@ -391,7 +454,7 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
         const commit = agentCommits(line.text);
         const fitsChoice =
           choice.value === "refund" ? /\b(refund|money)\b/i.test(line.text) || /\b(done|all set)\b/i.test(line.text) : !/\brefund\b/i.test(line.text);
-        if (commit && fitsChoice && ev.at > choice.evidence.at) approval = { state: "approved", at: line.endedAt, via: "call", evidence: ev };
+        if (commit && fitsChoice && ev.at > choice.evidence.at && readyToApprove()) approval = { state: "approved", at: line.endedAt, via: "call", evidence: ev };
       }
     }
   }
@@ -401,17 +464,27 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     const damaged = hints.intent.id === "damaged";
     intent = {
       id: hints.intent.id,
-      label: damaged ? "Order issue: damaged on arrival" : "Order status",
+      label: damaged ? DAMAGED_LABEL : "Order status",
       category: "Orders and delivery",
       sopId: damaged ? sopId : null,
       certainty: "low",
       confidence: 0.5,
-      phrases: ["read by the local model"],
+      // No caller phrase backs a model reading; provenance is in `source`, never in the facts.
+      phrases: [],
       evidence: [evidenceOf(hinted)],
       source: "model",
     };
   }
-  if (intent && issueConfirmedInPanel) intent = { ...intent, certainty: "high" };
+  const intentEvidence: Evidence[] = (intent as CopilotView["intent"])?.evidence ?? [];
+  if (issueChoice === "damaged" && intent?.id !== "damaged") {
+    intent = { id: "damaged", label: DAMAGED_LABEL, category: "Orders and delivery", sopId, certainty: "high", confidence: 1, phrases: [], evidence: intentEvidence, source: "agent" };
+  } else if (issueChoice === "damaged" && intent) {
+    intent = { ...intent, certainty: "high" };
+  } else if (issueChoice === "other") {
+    intent = { id: "other", label: "Another issue (not damage on arrival)", category: "Orders and delivery", sopId: null, certainty: "high", confidence: 1, phrases: [], evidence: intentEvidence, source: "agent" };
+  } else if (intent && issueConfirmedInPanel) intent = { ...intent, certainty: "high" };
+  const supported = intent?.id === "damaged" && intent.certainty === "high";
+  const damageSource = damageAnswer ? "confirmed by the caller" : intent?.source === "rules" ? "described by the caller" : "confirmed by the agent";
   if (pending && now - pending.endedAt >= ANSWER_GAP_MS) closeAnswer();
   const isVerified = verified();
   const attemptsLeft = Math.max(0, pack.policy.maxVerificationAttempts - Math.max(name.attempts, address.attempts));
@@ -532,7 +605,7 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
       agentCanApprove: false,
       approval: { state: "not-ready" },
     };
-  } else if (isVerified && match && band) {
+  } else if (isVerified && match && band && supported) {
     const o = match.order;
     const refund = choice?.value === "refund" || !o.inStock;
     const scenario = refund ? "B" : "A";
@@ -707,9 +780,19 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
       target: "issue",
       text:
         intent.source === "model"
-          ? `Only the local model read this as "${intent.label}". Confirm the problem with the caller.`
+          ? `The local model suggests "${intent.label}", but no rule found it in the caller's words. Ask the caller what happened, then choose what they said.`
           : `The issue was heard with low certainty ("${intent.phrases[0]}"). Confirm the damage with the caller.`,
       evidence: intent.evidence[0],
+    });
+  } else if (!escalate && !locked && ((intent && !supported) || (!intent && isVerified))) {
+    // Nothing to offer under this SOP until the problem is established as damage on arrival.
+    prompts.push({
+      target: "issue",
+      text: intent
+        ? `"${intent.label}" isn't covered by ${sopId}, so don't offer a replacement or refund. Ask the caller what happened; if the item arrived damaged, choose that.`
+        : `The caller's problem isn't in the transcript. Ask what happened to the item before offering anything, then choose what they said.`,
+      evidence: intent?.evidence[0],
+      askAgain: true,
     });
   }
 
@@ -723,8 +806,8 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     {
       id: "issue",
       label: "Identify the issue",
-      status: !intent ? "pending" : intent.certainty === "high" ? "done" : "attention",
-      detail: intent ? intent.label : undefined,
+      status: !intent ? "pending" : supported ? "done" : "attention",
+      detail: intent ? (intent.sopId ? intent.label : `${intent.label}: no SOP`) : undefined,
       evidence: intent?.evidence[0],
       sopRef: sopId,
     },
@@ -748,9 +831,12 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     {
       id: "confirm",
       label: "Confirm the item and the damage",
-      status: match?.confirmed ? "done" : "pending",
-      detail: match?.confirmed ? (match.confirmedBy === "panel" ? "Confirmed by the agent" : "Order read back by the agent") : undefined,
-      evidence: typeof match?.confirmedBy === "object" ? match.confirmedBy : undefined,
+      // Reading the order number back confirms the item, not the damage (both ticked it on 11 Oct).
+      status: match?.confirmed && supported ? "done" : match?.confirmed ? "attention" : "pending",
+      detail: match?.confirmed
+        ? `${match.confirmedBy === "panel" ? "Item confirmed by the agent" : "Order read back"}; ${supported ? `damage ${damageSource}` : "damage not confirmed"}`
+        : undefined,
+      evidence: damageAnswer?.answer ?? (typeof match?.confirmedBy === "object" ? match.confirmedBy : undefined),
       sopRef: ref("Claim rules"),
     },
     {
@@ -807,7 +893,7 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
       `I understand, and I want this handled properly. I'm opening a case with a senior colleague who can review it. I can transfer you now, or they can call you back within ${pack.policy.escalationCallbackHours} business hours.`,
       "Scenario C"
     );
-  } else if (intent || earlyOffers.length) {
+  } else if (intent || earlyOffers.length || isVerified) {
     if (name.state === "failed" || address.state === "failed") {
       suggestedReply = reply("I wasn't able to match those details. Could you check them and try once more?", "Verification");
     } else if (name.state === "confirm") {
@@ -829,6 +915,8 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
       suggestedReply = reply(`Thanks, ${firstName}, you're verified. Could you give me the order number, please?`, "Verification");
     } else if (isVerified && o && match && !orderReady) {
       suggestedReply = reply(`Thanks, ${firstName}, you're verified. Just to confirm, is it order ${o.id}, the ${o.shortName} delivered ${o.deliveredLabel}?`, "Verification");
+    } else if (isVerified && o && !supported) {
+      suggestedReply = reply(`Thanks, ${firstName}, you're verified. Can you tell me what's wrong with the ${o.noun}?`, "Claim rules");
     } else if (isVerified && o && match && !match.confirmed && !choice && !askedBoth) {
       suggestedReply = reply(
         `Thanks, ${firstName}, you're verified. I can see the ${o.shortName} on order ${o.id}, delivered ${o.deliveredLabel}. I can ship a replacement today at no cost, with a free return label for the damaged one, or give you a full refund if you'd prefer.`,
@@ -855,13 +943,20 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
   }
 
   /* ---------- Documentation (filled once approved; nothing is sent) ---------- */
-  const damage = intent?.phrases[0];
+  // Only what the caller said goes in as the damage; never a placeholder or the model's provenance.
+  const damage = !supported
+    ? null
+    : damageAnswer
+      ? `the caller said "${damageAnswer.answer.text}" to "${damageAnswer.question.text}"`
+      : intent?.source === "rules" && intent.phrases[0]
+        ? `"${intent.phrases[0]}"`
+        : "confirmed by the agent; description not captured in the transcript, clarification required";
   const documentation = [
     {
       label: "Case summary",
       value:
         isVerified && o
-          ? `${customer.name} (${customer.id}), order ${o.id} ${o.shortName}${damage ? `, damage: "${damage}"` : ""}, verified by full name and ${address.method ?? "second factor"}`
+          ? `${customer.name} (${customer.id}), order ${o.id} ${o.shortName}, damage: ${damage ?? "not established"}, verified by full name${name.method ? ` (${name.method})` : ""} and ${address.method ?? "second factor"}`
           : null,
     },
     { label: "Resolution", value: approved && recommendation?.prepared ? `${recommendation.prepared.kind === "replacement" ? "Replacement order" : "Refund"} ${recommendation.prepared.reference}` : null },

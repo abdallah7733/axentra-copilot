@@ -679,3 +679,101 @@ test("the agent can type the customer's choice when recognition couldn't read it
   assert.equal(v.choice?.evidence.typedFrom, "And you want please.");
   assert.ok(!v.prompts.some((p) => p.target === "choice"));
 });
+
+/* ---------- 11 Oct call: the caller's damage sentence was lost ---------- */
+
+/** Time of script line n (1-based), plus a little. */
+const at = (n: number, plus = 100) => NOW - 600_000 + (n - 1) * 5000 + plus;
+// "The tablet came yesterday, and the screen is cracked" never reached the transcript.
+const lostDamage = { 2: { side: "caller" as const, text: "Hello, I need help with order 427" } };
+
+test("an unsupported issue never leads to a replacement, even when the agent confirms the model's reading (11 Oct)", () => {
+  const s = script({ ...lostDamage, 8: { side: "agent", text: "Thank you, Sam. I can see the tablet on order 427." }, 9: { side: "caller", text: "Can I get a new one, or my money back?" } });
+  const hints = { intent: { id: "order-status" as const, key: "k2" } };
+  const actions: AgentAction[] = [{ type: "confirm", target: "issue", at: at(3) }, { type: "approve", at: NOW - 1000 }];
+  const v = analyze(sunlake, events(s), actions, NOW, hints);
+  assert.equal(v.verification.verified, true);
+  assert.equal(v.intent?.id, "order-status");
+  assert.equal(v.recommendation, null, "no Scenario A or B without damage on arrival");
+  assert.equal(step(v, "issue"), "attention");
+  assert.equal(step(v, "approval"), "pending");
+  assert.ok(v.prompts.some((p) => p.target === "issue" && p.askAgain && /isn't covered/.test(p.text)));
+  assert.match(v.suggestedReply?.text ?? "", /what's wrong with the tablet/);
+  assert.ok(!v.documentation.some((d) => d.value?.includes("local model")));
+});
+
+test("the caller's yes to the agent's damage question establishes the issue (11 Oct)", () => {
+  const s = script(lostDamage);
+  const hints = { intent: { id: "order-status" as const, key: "k2" } };
+  const v = analyze(sunlake, events(s), [], NOW, hints);
+  assert.equal(v.intent?.id, "damaged");
+  assert.equal(v.intent?.source, "rules");
+  assert.equal(step(v, "issue"), "done");
+  assert.equal(step(v, "confirm"), "done");
+  assert.match(v.steps.find((x) => x.id === "confirm")!.detail!, /damage confirmed by the caller/);
+  assert.equal(v.recommendation?.scenario, "A");
+  assert.equal(v.recommendation?.approval.state, "approved");
+  const summary = v.documentation.find((d) => d.label === "Case summary")!.value!;
+  assert.match(summary, /the caller said "Yes, only the screen\./);
+  assert.ok(!/local model/.test(summary));
+});
+
+test("reading the order back confirms the item, not the damage", () => {
+  const s = script({ ...lostDamage, 8: { side: "agent", text: "Thank you, Sam. I can see the tablet on order 427." }, 9: { side: "caller", text: "Okay." } });
+  let v = after(s, 9);
+  assert.equal(v.order.match?.confirmed, true);
+  assert.equal(step(v, "confirm"), "attention");
+  assert.match(v.steps.find((x) => x.id === "confirm")!.detail!, /damage not confirmed/);
+  assert.equal(v.recommendation, null);
+
+  // The agent heard the damage the transcript lost, and says so.
+  v = after(s, 9, [{ type: "confirm", target: "issue", issue: "damaged", at: at(9, 2000) }]);
+  assert.equal(v.intent?.source, "agent");
+  assert.equal(step(v, "confirm"), "done");
+  assert.equal(v.recommendation?.scenario, "A");
+  v = after(s, s.length, [{ type: "confirm", target: "issue", issue: "damaged", at: at(9, 2000) }]);
+  assert.match(v.documentation.find((d) => d.label === "Case summary")!.value!, /description not captured in the transcript, clarification required/);
+});
+
+test("the agent choosing 'Something else' stops the offer; the caller's own damage words bring it back", () => {
+  const s = script();
+  let v = after(s, s.length, [{ type: "confirm", target: "issue", issue: "other", at: at(9, 2000) }]);
+  assert.equal(v.intent?.id, "other");
+  assert.equal(v.recommendation, null);
+  v = after(s, s.length, [{ type: "confirm", target: "issue", issue: "other", at: at(1) }]);
+  assert.equal(v.intent?.id, "damaged", "the caller described the damage after the agent's choice");
+  assert.equal(v.recommendation?.scenario, "A");
+});
+
+test("an approval given before its prerequisites doesn't count; a fresh one does", () => {
+  const s = script({ 12: null });
+  let v = after(s, s.length, [{ type: "approve", at: at(9) }]);
+  assert.equal(v.recommendation?.approval.state, "awaiting", "approved before the customer chose");
+  v = after(s, s.length, [{ type: "approve", at: at(9) }, { type: "approve", at: NOW - 1000 }]);
+  assert.equal(v.recommendation?.approval.state, "approved");
+  assert.equal(v.recommendation?.approval.at, NOW - 1000);
+});
+
+test("'Checked' typed into the name field is not the caller's answer (11 Oct)", () => {
+  const s = script({ 5: { side: "caller", text: "Send me." } });
+  let v = after(s, 6, [{ type: "correct", key: "k5", text: "Checked", at: at(6) }]);
+  assert.notEqual(v.verification.factors[0].state, "ok");
+  assert.equal(v.verification.factors[0].evidence?.typedFrom, undefined);
+  v = after(s, 6, [
+    { type: "correct", key: "k5", text: "Checked", at: at(6) },
+    { type: "correct", key: "k5", text: "Sam Miller", at: at(6, 3000) },
+    { type: "correct", key: "k5", text: "OK.", at: at(6, 4000) },
+  ]);
+  assert.equal(v.verification.factors[0].state, "ok");
+  assert.equal(v.verification.factors[0].method, "typed by the agent");
+  v = after(s, s.length, [{ type: "correct", key: "k5", text: "Sam Miller", at: at(6, 3000) }]);
+  assert.match(v.documentation.find((d) => d.label === "Case summary")!.value!, /verified by full name \(typed by the agent\)/);
+});
+
+test("a denied identity answer never verifies or asks the agent to confirm it", () => {
+  const s = script({ 5: { side: "caller", text: "I am not Sam Miller." } });
+  const v = after(s, 6);
+  assert.notEqual(v.verification.factors[0].state, "ok");
+  assert.notEqual(v.verification.factors[0].state, "confirm");
+  assert.ok(!v.prompts.some((p) => p.target === "name" && !p.askAgain));
+});

@@ -36,7 +36,13 @@ export type TranscriptEvent = {
 
 /** Things the agent does in the panel. Suggestions never act on their own. */
 export type AgentAction =
-  | { type: "confirm"; target: "issue" | "name" | "address" | "order" | "choice"; at: number }
+  | {
+      type: "confirm";
+      target: "issue" | "name" | "address" | "order" | "choice";
+      at: number;
+      /** For the issue: what the agent heard the problem is. Without it, the copilot's reading is confirmed as it stands. */
+      issue?: "damaged" | "other";
+    }
   /** The agent types what the caller actually said, in place of what recognition heard. The latest one per line counts. */
   | { type: "correct"; key: string; text: string; at: number }
   | { type: "approve"; at: number };
