@@ -16,6 +16,8 @@ export type FactorResult = "match" | "close" | "partial" | "mismatch" | "none" |
 
 /** Words that mean the caller did not answer (so a line of them is not a failed attempt). */
 const NOT_AN_ANSWER = /^(sorry|what|pardon|hello|hi|yes|yeah|no|okay|ok|sure|one|second|moment|hold|on|um|uh|hmm|can|you|repeat|that|please|say|again|it|is|its|it's|the|a|of|my|i|am|i'm|this|name|in|at|and|on|to|for|from|full|speaking|calling|here|called|thanks|thank|street|city|address|delivery|delivered|email|e|mail)$/;
+/** A word that carries no identity on its own ("my", "name", "is", "the"). */
+export const isFiller = (word: string) => NOT_AN_ANSWER.test(word);
 
 /** How one part of the record was heard: word for word, only by sound, or not at all. */
 type Heard = "exact" | "close" | null;
@@ -41,14 +43,14 @@ export const deniesIdentity = (text: string) => denies(answerWords(text));
  *   else denied. Rather than guess the scope, ask again.
  * - "Sam Miller or John Smith": two candidates. Ask again.
  */
-function frame(tokens: string[], expected: string[]): FactorResult | null {
+function frame(tokens: string[], expected: string[], recordWords: string[] = []): FactorResult | null {
   const isExpected = (t: string | undefined) => !!t && expected.some((e) => soundsLike(t, e));
   const denials = tokens.flatMap((t, i) => (DENIAL.test(t) ? [i] : []));
   if (denials.some((i) => isExpected(tokens[i + 1]))) return "mismatch";
   const anyExpected = tokens.some((t) => isExpected(t));
   if (!anyExpected) return null;
   if (denials.length) return "ambiguous";
-  const others = tokens.filter((t) => t !== "or" && !NOT_AN_ANSWER.test(t) && !isExpected(t));
+  const others = tokens.filter((t) => t !== "or" && !NOT_AN_ANSWER.test(t) && !isExpected(t) && !recordWords.includes(t));
   if (tokens.includes("or") && others.length) return "ambiguous";
   return null;
 }
@@ -76,8 +78,10 @@ const STREET_TYPES: Record<string, string[]> = { road: ["road", "rd"], street: [
 
 export function matchAddress(text: string, customer: Customer): FactorResult {
   const tokens = answerWords(text);
+  // Street types ("road") and the state ("Texas") are said with every address, so they don't tell two candidates apart.
   const record = [...words(customer.address.street), ...words(customer.address.city), ...words(customer.emailFull.split("@")[0])];
-  const framed = frame(tokens, record.filter((w) => !Object.keys(STREET_TYPES).includes(w)));
+  const shared = [...Object.values(STREET_TYPES).flat(), ...words(customer.address.state), ...Object.values(STATE_NAMES).flat()];
+  const framed = frame(tokens, record.filter((w) => !shared.includes(w)), shared);
   if (framed) return framed;
   // Email: "s dot miller at example mail dot com".
   if (tokens.includes("at") && (tokens.includes("com") || tokens.includes("mail") || tokens.some((t) => t.includes("@")))) {

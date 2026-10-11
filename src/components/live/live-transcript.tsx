@@ -85,6 +85,7 @@ export function LiveTranscript({ className }: { className?: string }) {
                         </span>
                       )}
                       {t.checkFailed && <span> · check unavailable, treated as doubtful</span>}
+                      {t.checkSkipped && <span> · not double-checked ({t.checkSkipped === "no-model" ? "no check model running" : "audio no longer held"})</span>}
                     </p>
                   </div>
                 </motion.li>

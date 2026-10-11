@@ -25,6 +25,8 @@ const clock = (ms: number) => {
   return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 };
 
+const timeOfDay = (at: number) => new Date(at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+
 /** A quoted transcript line. Hovering it highlights the line in the transcript. */
 function Quote({ ev, className }: { ev: Evidence; className?: string }) {
   const setHighlight = useCopilot((s) => s.setHighlight);
@@ -393,7 +395,16 @@ export function LiveCopilot({ className }: { className?: string }) {
                     </p>
                   ) : (
                     <div className="flex items-center justify-between gap-2 pt-1">
-                      <span className="text-xs text-muted-foreground">Waiting for your approval.</span>
+                      <span className="text-xs text-muted-foreground">
+                        {/* An earlier approval stays in the history but doesn't carry over to a changed decision. */}
+                        {rec.staleApproval && (
+                          <span className="block text-amber-700 dark:text-amber-500">
+                            The approval {rec.staleApproval.via === "call" ? "given on the call" : "given in the panel"} at {timeOfDay(rec.staleApproval.at)} doesn&rsquo;t
+                            cover this: {rec.staleApproval.reason}.
+                          </span>
+                        )}
+                        {rec.staleApproval ? "Approve again if this is right." : "Waiting for your approval."}
+                      </span>
                       <Button size="xs" className="rounded-full" onClick={approve}>
                         Approve
                       </Button>

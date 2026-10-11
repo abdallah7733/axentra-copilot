@@ -32,6 +32,14 @@ export type TranscriptEvent = {
   checkFailed?: boolean;
   /** The agent typed what the caller said; this is what speech recognition heard instead. */
   typedFrom?: string;
+  /** Epoch milliseconds when the agent typed it. */
+  typedAt?: number;
+  /**
+   * Epoch milliseconds when this text reached the copilot: when the line arrived, or when the
+   * second model's check finished. Defaults to `endedAt`. Speech time places a line in the
+   * conversation; this is when it could first be used for a decision.
+   */
+  availableAt?: number;
 };
 
 /** Things the agent does in the panel. Suggestions never act on their own. */

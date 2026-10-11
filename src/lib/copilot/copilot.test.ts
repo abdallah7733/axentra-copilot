@@ -704,20 +704,50 @@ test("an unsupported issue never leads to a replacement, even when the agent con
   assert.ok(!v.documentation.some((d) => d.value?.includes("local model")));
 });
 
-test("the caller's yes to the agent's damage question establishes the issue (11 Oct)", () => {
+test("the caller's yes to where the damage is needs the agent to confirm it arrived damaged (11 Oct, review 12 Oct §7)", () => {
   const s = script(lostDamage);
   const hints = { intent: { id: "order-status" as const, key: "k2" } };
-  const v = analyze(sunlake, events(s), [], NOW, hints);
+  let v = analyze(sunlake, events(s), [], NOW, hints);
   assert.equal(v.intent?.id, "damaged");
-  assert.equal(v.intent?.source, "rules");
+  assert.equal(v.intent?.certainty, "low", '"Is the damage only on the screen?" doesn\'t ask whether it arrived damaged');
+  assert.equal(v.recommendation, null);
+  const card = v.prompts.find((p) => p.target === "issue")!;
+  assert.match(card.text, /said "Yes, only the screen\..*" to ".*Is the damage only on the screen\?", but hasn't said it arrived damaged/);
+
+  // The agent heard it arrived damaged and chooses that before saying "Done.".
+  v = analyze(sunlake, events(s), [{ type: "confirm", target: "issue", issue: "damaged", at: at(9, 2000) }], NOW, hints);
   assert.equal(step(v, "issue"), "done");
   assert.equal(step(v, "confirm"), "done");
-  assert.match(v.steps.find((x) => x.id === "confirm")!.detail!, /damage confirmed by the caller/);
+  assert.match(v.steps.find((x) => x.id === "confirm")!.detail!, /damage confirmed by the agent/);
   assert.equal(v.recommendation?.scenario, "A");
   assert.equal(v.recommendation?.approval.state, "approved");
+  assert.equal(v.recommendation?.approval.via, "call");
   const summary = v.documentation.find((d) => d.label === "Case summary")!.value!;
-  assert.match(summary, /the caller said "Yes, only the screen\./);
+  assert.match(summary, /the caller said "Yes, only the screen\..*" to ".*"; arrival damage confirmed by the agent/);
   assert.ok(!/local model/.test(summary));
+
+  // Asked whether it arrived damaged, the caller's yes is enough on its own.
+  const arrival = script({ ...lostDamage, 8: { side: "agent", text: "Thank you, Sam. I can see the tablet on order 427. Did it arrive damaged?" }, 9: { side: "caller", text: "Yes, the screen is broken." } });
+  v = analyze(sunlake, events(arrival), [], NOW, hints);
+  assert.equal(v.intent?.certainty, "high");
+  assert.equal(v.recommendation?.approval.state, "approved");
+});
+
+test("damage the caller caused after delivery isn't damage on arrival unless the agent chooses it (review 12 Oct §7)", () => {
+  const s = script({ 9: { side: "caller", text: "Yes, only the screen. I dropped it this morning, can I get a new one, or my money back?" } });
+  let v = after(s, s.length);
+  assert.equal(v.intent?.certainty, "low");
+  assert.equal(v.recommendation, null);
+  assert.ok(v.prompts.some((p) => p.target === "issue" && /"I dropped it"/.test(p.text) && /isn't covered/.test(p.text)));
+  v = after(s, s.length, [{ type: "confirm", target: "issue", issue: "damaged", at: at(10) }]);
+  assert.equal(v.recommendation?.scenario, "A");
+});
+
+test("the summary keeps the caller's own damage words and adds their answer to the agent's question", () => {
+  const v = after(script(), 15);
+  const summary = v.documentation.find((d) => d.label === "Case summary")!.value!;
+  assert.match(summary, /damage: "screen is cracked"; the caller said "Yes, only the screen\./);
+  assert.match(v.steps.find((x) => x.id === "confirm")!.detail!, /damage described by the caller/);
 });
 
 test("reading the order back confirms the item, not the damage", () => {
@@ -911,4 +941,39 @@ test("the copilot lists the caller lines that are key answers, whatever order th
   assert.ok(v.keyAnswers.includes("k7"), "the address answer");
   assert.ok(v.keyAnswers.includes("k2"), "the opening problem");
   assert.ok(!v.keyAnswers.includes("k1"));
+});
+
+test("each changed decision needs a fresh approval: refund to replacement, a broken correction, a late escalation (review 12 Oct §5–6)", () => {
+  // Refund first, then a replacement.
+  const refund = [
+    ...script({ 11: { side: "caller", text: "The refund, please." }, 12: { side: "agent", text: "Done. Your refund is set up." } }).slice(0, 12),
+    { side: "caller" as const, text: "Actually, a new one would be better." },
+  ];
+  let v = after(refund, refund.length);
+  assert.equal(v.recommendation?.prepared?.kind, "replacement");
+  assert.equal(v.recommendation?.approval.state, "awaiting");
+  assert.match(v.recommendation?.staleApproval?.reason ?? "", /it was for a refund/);
+
+  // A later correction that breaks the address: no recommendation, so nothing approved.
+  const s = script();
+  v = after(s, s.length, [{ type: "correct", key: "k7", text: "Lake Road in Boston.", at: NOW - 2000 }]);
+  assert.equal(v.verification.verified, false);
+  assert.equal(v.recommendation?.approval.state === "approved", false);
+
+  // Escalation words after the approval: Scenario C, never approved.
+  const late = [...s.slice(0, 12), { side: "caller" as const, text: "If this isn't sorted I'll do a chargeback." }];
+  v = after(late, late.length);
+  assert.equal(v.recommendation?.scenario, "C");
+  assert.equal(v.recommendation?.approval.state, "not-ready");
+});
+
+test("typed identity text naming two candidates is asked again too, and wrappers don't hide agreement (review 12 Oct §8, §10)", () => {
+  const s = script({ 5: { side: "caller", text: "Send me." } });
+  let v = after(s, 6, [{ type: "correct", key: "k5", text: "Sam Miller or John Smith", at: at(6) }]);
+  assert.equal(v.verification.factors[0].confirmReason, "ambiguous");
+  assert.equal(v.verification.factors[0].attempts, 0);
+  // Both models heard "John Smith", one with "It's" in front: they agree, so it is a wrong answer.
+  const ev = events(script());
+  v = analyze(sunlake, [...ev.slice(0, 4), { ...ev[4], text: "John Smith.", firstHeard: "It's John Smith." }, ev[5]], [], NOW);
+  assert.equal(v.verification.factors[0].attempts, 1);
 });
