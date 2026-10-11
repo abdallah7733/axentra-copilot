@@ -176,3 +176,14 @@ test("a line that is one phrase repeated is garbled", () => {
   assert.equal(repeatsItself("Hill Road, in Dallas."), false);
   assert.equal(repeatsItself("It's Sam, Sam Miller."), false);
 });
+
+test("identity answers with two candidates or a denial of something else are ambiguous (review 12 Oct)", () => {
+  assert.equal(matchName("Sam Miller or John Smith.", samMiller), "ambiguous");
+  assert.equal(matchAddress("Hill Road in Dallas or Lake Road in Boston.", samMiller), "ambiguous");
+  assert.equal(matchName("My name is Sam Miller, not John Smith.", samMiller), "ambiguous");
+  assert.equal(matchAddress("Not Boston, Hill Road in Dallas.", samMiller), "ambiguous");
+  assert.equal(matchName("I am not Sam Miller.", samMiller), "mismatch");
+  assert.equal(matchAddress("Not Hill Road in Dallas.", samMiller), "mismatch");
+  assert.equal(matchName("It's Sam Miller.", samMiller), "match");
+  assert.equal(matchAddress("Hill Road, in Dallas, Texas.", samMiller), "match");
+});

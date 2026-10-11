@@ -7,10 +7,12 @@ import type { Customer } from "./types";
   A match needs every part (first and last name; street and city); one part alone
   asks for the rest rather than counting as a failure. Every part has to be heard word
   for word: a part heard only by sound ("Will Road" for "Hill Road") makes the answer
-  "close", which the agent confirms and which never verifies on its own.
+  "close", which the agent confirms and which never verifies on its own. An answer that
+  names two candidates or denies something else is "ambiguous": asked again, never a
+  match and never a failed attempt.
 */
 
-export type FactorResult = "match" | "close" | "partial" | "mismatch" | "none";
+export type FactorResult = "match" | "close" | "partial" | "mismatch" | "none" | "ambiguous";
 
 /** Words that mean the caller did not answer (so a line of them is not a failed attempt). */
 const NOT_AN_ANSWER = /^(sorry|what|pardon|hello|hi|yes|yeah|no|okay|ok|sure|one|second|moment|hold|on|um|uh|hmm|can|you|repeat|that|please|say|again|it|is|its|it's|the|a|of|my|i|am|i'm|this|name|in|at|and|on|to|for|from|full|speaking|calling|here|called|thanks|thank|street|city|address|delivery|delivered|email|e|mail)$/;
@@ -26,18 +28,36 @@ const has = (tokens: string[], expected: string) => heardAs(tokens, expected) !=
 /** The answer's words, with a possessive "'s" dropped: "Sam Miller's." was heard for "Sam Miller." on 10 Oct. */
 const answerWords = (text: string) => words(text).map((w) => w.replace(/'s$/, ""));
 
-/**
- * "I am not Sam Miller", "Not Hill Road in Dallas": the right words, denied. Never a match.
- * A leading "No," is left alone: "No, it's Sam Miller" corrects the agent.
- */
-const denies = (tokens: string[]) => tokens.some((t) => /^(not|never|isn't|isnt|wasn't|wasnt|don't|dont|doesn't|doesnt|didn't|didnt|ain't|aint)$/.test(t));
+const DENIAL = /^(not|never|isn't|isnt|wasn't|wasnt|don't|dont|doesn't|doesnt|didn't|didnt|ain't|aint)$/;
+const denies = (tokens: string[]) => tokens.some((t) => DENIAL.test(t));
 
 export const deniesIdentity = (text: string) => denies(answerWords(text));
 
+/**
+ * How the answer is framed, before its words are compared with the record:
+ * - "I am not Sam Miller", "Not Hill Road in Dallas": the record itself denied, a wrong answer.
+ *   A leading "No," is left alone: "No, it's Sam Miller" corrects the agent.
+ * - "My name is Sam Miller, not John Smith", "Not Boston, Hill Road in Dallas": something
+ *   else denied. Rather than guess the scope, ask again.
+ * - "Sam Miller or John Smith": two candidates. Ask again.
+ */
+function frame(tokens: string[], expected: string[]): FactorResult | null {
+  const isExpected = (t: string | undefined) => !!t && expected.some((e) => soundsLike(t, e));
+  const denials = tokens.flatMap((t, i) => (DENIAL.test(t) ? [i] : []));
+  if (denials.some((i) => isExpected(tokens[i + 1]))) return "mismatch";
+  const anyExpected = tokens.some((t) => isExpected(t));
+  if (!anyExpected) return null;
+  if (denials.length) return "ambiguous";
+  const others = tokens.filter((t) => t !== "or" && !NOT_AN_ANSWER.test(t) && !isExpected(t));
+  if (tokens.includes("or") && others.length) return "ambiguous";
+  return null;
+}
+
 export function matchName(text: string, customer: Customer): FactorResult {
   const tokens = answerWords(text);
-  if (denies(tokens)) return "mismatch";
   const parts = words(customer.name);
+  const framed = frame(tokens, parts);
+  if (framed) return framed;
   const heard = parts.map((p) => heardAs(tokens, p));
   const all = allHeard(heard);
   if (all) return all;
@@ -56,7 +76,9 @@ const STREET_TYPES: Record<string, string[]> = { road: ["road", "rd"], street: [
 
 export function matchAddress(text: string, customer: Customer): FactorResult {
   const tokens = answerWords(text);
-  if (denies(tokens)) return "mismatch";
+  const record = [...words(customer.address.street), ...words(customer.address.city), ...words(customer.emailFull.split("@")[0])];
+  const framed = frame(tokens, record.filter((w) => !Object.keys(STREET_TYPES).includes(w)));
+  if (framed) return framed;
   // Email: "s dot miller at example mail dot com".
   if (tokens.includes("at") && (tokens.includes("com") || tokens.includes("mail") || tokens.some((t) => t.includes("@")))) {
     const local = words(customer.emailFull.split("@")[0]);

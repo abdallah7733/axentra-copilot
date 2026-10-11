@@ -798,3 +798,117 @@ test("a wrong answer the two speech models heard differently is not a failed att
   v = analyze(sunlake, [...ev.slice(0, 4), { ...heard, text: "John Smith.", firstHeard: "John Smith." }, ev[5]], [], NOW);
   assert.equal(v.verification.factors[0].attempts, 1);
 });
+
+/* ---------- 12 Oct outside review: decisions bound to what was known at the time ---------- */
+
+test("a late correction doesn't turn an earlier 'Done.' into an approval (review 12 Oct §5)", () => {
+  const s = script({ 7: { side: "caller", text: "Wind Road in Dallas." } });
+  const fix: AgentAction = { type: "correct", key: "k7", text: "Hill Road in Dallas.", at: NOW - 2000 };
+  let v = after(s, s.length);
+  assert.notEqual(v.recommendation?.approval.state, "approved");
+  v = after(s, s.length, [fix]);
+  assert.equal(v.verification.verified, true);
+  assert.equal(v.verification.verifiedKnownAt, NOW - 2000, "verified when the correction was typed, not when the caller spoke");
+  assert.equal(v.recommendation?.approval.state, "awaiting", "the old commitment isn't authorised retroactively");
+  assert.ok(v.recommendation?.staleApproval, "the earlier approval is kept in history");
+  v = after(s, s.length, [fix, { type: "approve", at: NOW - 1000 }]);
+  assert.equal(v.recommendation?.approval.state, "approved");
+  assert.equal(v.recommendation?.approval.at, NOW - 1000);
+});
+
+test("a second-model result that arrives after the agent's 'Done.' needs a fresh approval", () => {
+  const ev = events(script());
+  // The checked choice reached the copilot only after the agent had finished "Done. …".
+  const lines = ev.map((l) => (l.key === "k11" ? { ...l, availableAt: ev[11].endedAt + 500, firstHeard: "And you want tea." } : l));
+  const v = analyze(sunlake, lines, [], NOW);
+  assert.equal(v.choice?.value, "replacement");
+  assert.equal(v.recommendation?.approval.state, "awaiting");
+});
+
+test("an approval doesn't carry over when the customer changes their mind (review 12 Oct §6)", () => {
+  const s = [...script(), { side: "caller" as const, text: "Actually, I want a refund instead." }];
+  let v = after(s, s.length);
+  assert.equal(v.recommendation?.scenario, "B");
+  assert.equal(v.recommendation?.approval.state, "awaiting", "the replacement approval doesn't cover a refund");
+  v = after(s, s.length, [{ type: "approve", at: NOW - 1000 }]);
+  assert.equal(v.recommendation?.approval.state, "approved");
+  assert.equal(v.recommendation?.approval.via, "panel");
+});
+
+test("an approval doesn't carry over to an order found after it (review 12 Oct §6)", () => {
+  const s: Line[] = [
+    ...script({
+      2: { side: "caller", text: "Hello. The tablet came yesterday, and the screen is cracked." },
+      8: { side: "agent", text: "Thank you, Sam. Is the damage only on the screen?" },
+    }).slice(0, 12),
+    { side: "caller", text: "It's order 427." },
+  ];
+  const v = after(s, s.length);
+  assert.equal(v.order.match?.order.id, "427");
+  assert.notEqual(v.recommendation?.approval.state, "approved");
+});
+
+test("only a clear yes to a real damage question counts, and only an arrival question proves arrival (review 12 Oct §7)", () => {
+  const base = (q: string, a: string) =>
+    [...script({ 2: { side: "caller", text: "Hello, I need help with order 427" } }).slice(0, 7), { side: "agent" as const, text: q }, { side: "caller" as const, text: a }];
+  const intentAfter = (q: string, a: string) => {
+    const s = base(q, a);
+    return after(s, s.length).intent;
+  };
+  assert.equal(intentAfter("Is the screen not damaged?", "Yes, it is not damaged.")?.id, undefined);
+  assert.equal(intentAfter("Do you have a photo of the damage?", "Yes.")?.id, undefined);
+  assert.equal(intentAfter("Is the damage only on the screen?", "Yes, but it is not damaged.")?.id, undefined);
+  assert.notEqual(intentAfter("Is anything damaged?", "No, only the packaging is damaged.")?.certainty, "high");
+  // Where the damage is, with no damage reported before: the agent confirms it arrived that way.
+  const extent = intentAfter("Is the damage only on the screen?", "Yes, only the screen.");
+  assert.equal(extent?.id, "damaged");
+  assert.equal(extent?.certainty, "low");
+  // Asked whether it arrived damaged: the caller's yes establishes it.
+  const arrival = intentAfter("Did the tablet arrive damaged?", "Yes, it did.");
+  assert.equal(arrival?.id, "damaged");
+  assert.equal(arrival?.certainty, "high");
+  // After the caller's own damage words, the same extent question confirms them.
+  const s = script();
+  assert.equal(after(s, 9).intent?.certainty, "high");
+});
+
+test("an identity answer naming two candidates, or denying something else, is asked again (review 12 Oct §8)", () => {
+  for (const [n, text] of [
+    [5, "Sam Miller or John Smith."],
+    [5, "My name is Sam Miller, not John Smith."],
+    [7, "Hill Road in Dallas or Lake Road in Boston."],
+    [7, "Not Boston, Hill Road in Dallas."],
+  ] as const) {
+    const s = script({ [n]: { side: "caller", text } });
+    const v = after(s, n + 1);
+    const f = v.verification.factors[n === 5 ? 0 : 1];
+    assert.notEqual(f.state, "ok", text);
+    assert.equal(f.attempts, 0, `${text}: never a failed attempt`);
+    const card = v.prompts.find((p) => p.target === (n === 5 ? "name" : "address"));
+    assert.equal(card?.askAgain, true, `${text}: ask again, nothing to confirm`);
+  }
+  // A plain denial is still a wrong answer.
+  const s = script({ 5: { side: "caller", text: "I am not Sam Miller." } });
+  assert.equal(after(s, 6).verification.factors[0].attempts, 1);
+});
+
+test("models that agree only on the wrapper words still disagree on the name (review 12 Oct §10)", () => {
+  const ev = events(script());
+  const heard = { ...ev[4], text: "My name is John Smith.", firstHeard: "My name is Sam Miller." };
+  let v = analyze(sunlake, [...ev.slice(0, 4), heard, ev[5]], [], NOW);
+  assert.equal(v.verification.factors[0].attempts, 0);
+  assert.equal(v.verification.factors[0].confirmReason, "disagree");
+  // Same street, different city: still a disagreement about the answer.
+  const addr = { ...ev[6], text: "Hill Road in Boston.", firstHeard: "Hill Road in Dallas." };
+  v = analyze(sunlake, [...ev.slice(0, 6), addr, ev[7]], [], NOW);
+  assert.equal(v.verification.factors[1].attempts, 0);
+});
+
+test("the copilot lists the caller lines that are key answers, whatever order they arrived in (review 12 Oct §9)", () => {
+  const s = script();
+  const v = after(s, 7);
+  assert.ok(v.keyAnswers.includes("k5"), "the name answer");
+  assert.ok(v.keyAnswers.includes("k7"), "the address answer");
+  assert.ok(v.keyAnswers.includes("k2"), "the opening problem");
+  assert.ok(!v.keyAnswers.includes("k1"));
+});
