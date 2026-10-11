@@ -582,7 +582,9 @@ test("a near-miss street never verifies on its own, and never counts as a failed
 
 test("the copilot says which key answer it is waiting for, so that answer gets the second model's check", () => {
   const s = script();
+  assert.equal(after(s, 1).awaiting, "issue", "the opening problem gets the second model's check");
   assert.equal(after(s, 2).awaiting, null);
+  assert.equal(after(script(lostDamage), 2).awaiting, "issue", "a cut-off opening line keeps the next caller line checked");
   const askName = s.findIndex((l) => l.side === "agent" && /full name/i.test(l.text)) + 1;
   assert.equal(after(s, askName).awaiting, "name");
   const askAddress = s.findIndex((l) => l.side === "agent" && /street|email/i.test(l.text)) + 1;

@@ -129,8 +129,12 @@ export type CopilotView = {
   prompts: ConfirmPrompt[];
   steps: SopStep[];
   documentation: { label: string; value: string | null }[];
-  /** The key answer the copilot is waiting for: the caller's next line gets the second speech model's check. */
-  awaiting: "name" | "address" | "choice" | null;
+  /**
+   * The key answer the copilot is waiting for: the caller's next line gets the second speech model's
+   * check. "issue": no problem heard yet. On 11 Oct the small model cut the opening line off after
+   * "order 427" and the damage sentence was lost; the second model heard all of it.
+   */
+  awaiting: "issue" | "name" | "address" | "choice" | null;
 };
 
 const DAY = 86_400_000;
@@ -597,7 +601,9 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
         ? identityFactor.id
         : !choice && (choiceAsked || unreadChoice || lowConfidenceChoice)
           ? "choice"
-          : null;
+          : !intent
+            ? "issue"
+            : null;
 
   /* ---------- Recommendation ---------- */
   let recommendation: Recommendation | null = null;
