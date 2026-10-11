@@ -34,6 +34,8 @@ export type Evidence = {
   lowConfidence: boolean;
   /** The agent typed this text; speech recognition heard this instead. */
   typedFrom?: string;
+  /** What the fast speech model heard, when the second model's check replaced it. */
+  firstHeard?: string;
 };
 
 export type FactorState = "idle" | "asking" | "partial" | "confirm" | "ok" | "failed";
@@ -46,8 +48,12 @@ export type Factor = {
   evidence?: Evidence;
   /** The answer as heard so far, across lines. */
   heard?: string;
-  /** Why the agent is asked to confirm: a doubtful line, a garbled one, or an answer that only sounds like the record. */
-  confirmReason?: "low-confidence" | "garbled" | "sounds-like";
+  /**
+   * Why the agent is asked to confirm: a doubtful line, a garbled one, or an answer that only sounds
+   * like the record. "disagree": a wrong answer the two speech models heard differently; the agent
+   * asks again or types the caller's words, and can't just confirm it.
+   */
+  confirmReason?: "low-confidence" | "garbled" | "sounds-like" | "disagree";
 };
 
 export type OrderView = Order & { deliveredLabel: string; deliveredDate: string | null };
@@ -137,7 +143,18 @@ const evidenceOf = (l: TranscriptEvent): Evidence => ({
   at: l.startedAt,
   lowConfidence: (l.confidence !== null && l.confidence < LOW_CONFIDENCE) || !!l.checkFailed,
   typedFrom: l.typedFrom,
+  firstHeard: l.firstHeard,
 });
+
+/**
+ * The two speech models share no real word ("Sen bilir." then "Send me." for "Sam Miller" on
+ * 11 Oct): the words are a recognition problem, not the caller's wrong answer.
+ */
+const modelsDisagree = (ev: Evidence) => {
+  if (ev.firstHeard === undefined || ev.typedFrom !== undefined) return false;
+  const checked = textWords(ev.text);
+  return !textWords(ev.firstHeard).some((w) => w.length > 2 && checked.includes(w));
+};
 
 /**
  * Only an acknowledgement ("Checked", "Confirmed", "OK"), not the caller's words. On the 11 Oct
@@ -318,8 +335,8 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     const { factor, evs, texts, result } = pending;
     pending = null;
     if (result !== "mismatch" || locked) return;
-    // A wrong answer from a doubtful or garbled line is the agent's call, never a failed attempt.
-    const reason = doubt(evs, texts.join(" "));
+    // A wrong answer from a doubtful, garbled or disputed line is the agent's call, never a failed attempt.
+    const reason = doubt(evs, texts.join(" ")) ?? (evs.some(modelsDisagree) ? "disagree" : null);
     if (reason) {
       factor.state = "confirm";
       factor.confirmReason = reason;
@@ -336,7 +353,7 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
       const a = item.action;
       if (a.type === "confirm" && (a.target === "name" || a.target === "address")) {
         const factor = a.target === "name" ? name : address;
-        if (factor.state === "confirm" && factor.evidence && !locked) {
+        if (factor.state === "confirm" && factor.confirmReason !== "disagree" && factor.evidence && !locked) {
           if (pending?.factor === factor) pending = null;
           factor.state = "ok";
           factor.method = factor.method ?? (a.target === "address" ? "confirmed by the agent" : undefined);
@@ -743,8 +760,11 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     if (f.state === "confirm" && f.evidence) {
       prompts.push({
         target: f.id,
+        askAgain: f.confirmReason === "disagree" || undefined,
         text:
-          f.confirmReason === "sounds-like"
+          f.confirmReason === "disagree"
+            ? `Heard "${f.heard}", first heard as "${f.evidence.firstHeard}". The two speech models disagree, so this isn't counted as a wrong answer. Ask the caller to repeat it, or type what they said.`
+            : f.confirmReason === "sounds-like"
             ? `Heard "${f.heard}". It sounds like the ${f.id === "name" ? "name" : "address"} on the order but isn't a clear match. Ask the caller to repeat it, or confirm if you heard it clearly.`
             : f.confirmReason === "garbled"
               ? `Heard "${f.heard}", which looks garbled (the same words repeated). Ask the caller to repeat it, or confirm if you heard it clearly.`

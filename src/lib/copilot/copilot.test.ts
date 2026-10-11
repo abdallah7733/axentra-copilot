@@ -777,3 +777,22 @@ test("a denied identity answer never verifies or asks the agent to confirm it", 
   assert.notEqual(v.verification.factors[0].state, "confirm");
   assert.ok(!v.prompts.some((p) => p.target === "name" && !p.askAgain));
 });
+
+test("a wrong answer the two speech models heard differently is not a failed attempt (11 Oct)", () => {
+  const ev = events(script());
+  // The fast model heard "Sen bilir.", the second model "Send me.", for "Sam Miller".
+  const heard = { ...ev[4], text: "Send me.", confidence: 0.8, firstHeard: "Sen bilir." };
+  let v = analyze(sunlake, [...ev.slice(0, 4), heard, ev[5]], [], NOW);
+  const name = v.verification.factors[0];
+  assert.equal(name.attempts, 0);
+  assert.equal(name.confirmReason, "disagree");
+  assert.ok(!v.alerts.some((a) => a.id.startsWith("verification-failed")));
+  const card = v.prompts.find((p) => p.target === "name")!;
+  assert.equal(card.askAgain, true, "nothing to confirm: ask again or type the caller's words");
+  // Confirming it anyway (an old panel) verifies nothing.
+  v = analyze(sunlake, [...ev.slice(0, 4), heard, ev[5]], [{ type: "confirm", target: "name", at: NOW - 1000 }], NOW);
+  assert.notEqual(v.verification.factors[0].state, "ok");
+  // Both models hearing the same wrong name is still a failed attempt.
+  v = analyze(sunlake, [...ev.slice(0, 4), { ...heard, text: "John Smith.", firstHeard: "John Smith." }, ev[5]], [], NOW);
+  assert.equal(v.verification.factors[0].attempts, 1);
+});
