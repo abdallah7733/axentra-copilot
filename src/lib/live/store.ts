@@ -121,9 +121,9 @@ let epoch = 0;
 let callId = "";
 let seq = 0;
 let replayTimers: ReturnType<typeof setTimeout>[] = [];
-// The last few caller phrases, in memory only, so a key answer can be re-checked. Cleared with each call.
+// The last few phrases from both sides, in memory only, so a key line can be re-checked. Cleared with each call.
 const recentAudio = new Map<string, Float32Array>();
-const RECENT_AUDIO = 6;
+const RECENT_AUDIO = 12;
 
 /**
  * performance.now() time to epoch milliseconds, from one anchor per call: the wall clock and
@@ -224,10 +224,9 @@ export const useLive = create<LiveState>((set, get) => {
         .then(async () => {
           const result = await recognize(side, samples);
           if (callEpoch !== epoch || !result.text) return;
-          if (side === "caller") {
-            recentAudio.set(`${side}-${phrase.id}`, samples);
-            for (const key of [...recentAudio.keys()].slice(0, -RECENT_AUDIO)) recentAudio.delete(key);
-          }
+          // Kept for the second model's check: caller answers, and agent lines the copilot may ask about.
+          recentAudio.set(`${side}-${phrase.id}`, samples);
+          for (const key of [...recentAudio.keys()].slice(0, -RECENT_AUDIO)) recentAudio.delete(key);
           addLine(
             {
               key: `${side}-${phrase.id}`,
@@ -314,10 +313,11 @@ export const useLive = create<LiveState>((set, get) => {
       recentAudio.delete(key);
       const callEpoch = epoch;
       const began = performance.now();
-      const fast = get().lines.find((l) => l.key === key)?.text ?? "";
+      const heard = get().lines.find((l) => l.key === key);
+      const fast = heard?.text ?? "";
       // The copilot asked for this check and already holds the line back; only the screen needs to know.
       updateLine(key, { checking: true }, false);
-      recognize("caller", samples, true).then(
+      recognize(heard?.side ?? "caller", samples, true).then(
         (result) => {
           if (callEpoch !== epoch) return;
           const checkSeconds = (performance.now() - began) / 1000;

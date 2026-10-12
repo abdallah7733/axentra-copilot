@@ -67,12 +67,15 @@ export const useCopilot = create<CopilotState>((set, get) => {
   let healthCheckedAt = 0;
   // Re-check once the caller has been quiet long enough for an identity answer to be complete.
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
-  // Caller lines already sent for the second model's check (or found uncheckable) this call: each at most once.
+  // Lines already sent for the second model's check (or found uncheckable) this call: each at most once.
   let requested = new Set<string>();
 
-  /** Asks for the check on a caller line, once; the line is held back while it runs. */
-  const requestCheck = (line: TranscriptEvent): TranscriptEvent => {
-    if (requested.has(line.key) || line.side !== "caller" || line.firstHeard !== undefined || line.checkFailed) return line;
+  /**
+   * Asks for the check on a line, once; the line is held back while it runs. Caller lines while an answer is
+   * awaited; agent lines only when the rules name them (an approval or terms that may have been misheard).
+   */
+  const requestCheck = (line: TranscriptEvent, named = false): TranscriptEvent => {
+    if (requested.has(line.key) || (line.side !== "caller" && !named) || line.firstHeard !== undefined || line.checkFailed) return line;
     requested.add(line.key);
     return useLive.getState().checkLine(line.key) === "started" ? { ...line, checking: true } : line;
   };
@@ -173,7 +176,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
       // The two sides are transcribed separately, so an answer can arrive before the agent's question.
       // Once the conversation in speech order shows a line is a key answer, it gets its check too.
       const late = run(lines, get().actions, get().hints).view.keyAnswers.filter((key) => !requested.has(key));
-      if (late.length) lines = lines.map((l) => (late.includes(l.key) ? requestCheck(l) : l));
+      if (late.length) lines = lines.map((l) => (late.includes(l.key) ? requestCheck(l, true) : l));
       update(lines, get().actions, get().hints);
       clearTimeout(settleTimer);
       settleTimer = setTimeout(() => set(run(get().lines, get().actions, get().hints)), ANSWER_GAP_MS + 100);

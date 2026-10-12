@@ -55,3 +55,38 @@ test("a caller answer that arrives before the agent's question still gets its ch
   assert.equal(useCopilot.getState().view.verification.verified, true);
   liveEvents.emit({ type: "cleared" });
 });
+
+test("an agent line about the chosen outcome with no approval heard in it gets the second check, then approves (call 7 review)", () => {
+  const asked: string[] = [];
+  // Caller lines are used as heard here; agent lines go to the check.
+  useLive.setState({ checkLine: (key) => (asked.push(key), key.startsWith("a") ? "started" : "no-audio") });
+  liveEvents.emit({ type: "call-started", callId: "CA-store", at: T0 });
+  const said: [string, "caller" | "agent", string][] = [
+    ["a1", "agent", "Thank you for calling Sunlake. How can I help you today?"],
+    ["c1", "caller", "Hello. I need help with order 427. The tablet came yesterday, and the screen is cracked."],
+    ["a2", "agent", "First, can I have your full name, please?"],
+    ["c2", "caller", "Sam Miller."],
+    ["a3", "agent", "Thank you. And the street and city for the delivery?"],
+    ["c3", "caller", "Hill Road, in Dallas."],
+    ["a4", "agent", "Thank you, Sam. I can see the tablet on order 427. Is the damage only on the screen?"],
+    ["c4", "caller", "Yes, only the screen."],
+    ["a5", "agent", "You can have either. A new tablet ships today at no cost, or a full refund. Which do you prefer?"],
+    ["c5", "caller", "The refund, please."],
+  ];
+  said.forEach(([key, side, text], i) => emit(line(i + 1, key, side, text, i * 5000)));
+  assert.equal(useCopilot.getState().view.recommendation?.approval.state, "awaiting");
+  assert.ok(!asked.some((k) => k.startsWith("a")), "no agent line checked before the outcome waits for approval");
+
+  const misheard = line(11, "a6", "agent", "offset a full refund of $329 to your visa ending to 208", 55_000);
+  emit(misheard);
+  assert.ok(asked.includes("a6"));
+  assert.equal(useCopilot.getState().lines.find((l) => l.key === "a6")?.checking, true, "held back while it is checked");
+  assert.equal(useCopilot.getState().view.recommendation?.approval.state, "awaiting");
+
+  emit({ ...misheard, text: "I've set up a full refund of $329 to your Visa ending 2208.", firstHeard: misheard.text });
+  const approval = useCopilot.getState().view.recommendation?.approval;
+  assert.equal(approval?.state, "approved");
+  assert.equal(approval?.via, "call");
+  assert.equal(asked.filter((k) => k === "a6").length, 1, "checked once");
+  liveEvents.emit({ type: "cleared" });
+});

@@ -1,6 +1,6 @@
 import { findOrderMentions, matchOrder, type MentionMethod, type OrderMention } from "./orders";
 import { agentAsksChoice, agentAsksFor, agentCommits, agentDisclosesFactor, agentOffers, escalationWords, readChoice, readIntent, safetyWords, type Choice } from "./signals";
-import { repeatsItself, soundsLike, words as textWords } from "./text";
+import { findPhrase, normalize, repeatsItself, soundsLike, words as textWords } from "./text";
 import type { AgentAction, AuthorityBand, ClientPack, Customer, Order, Side, TranscriptEvent } from "./types";
 import { deniesIdentity, isFiller, matchAddress, matchName, soundsLikeRecord } from "./verification";
 
@@ -107,6 +107,11 @@ export type Recommendation = {
    * known, or for a different outcome or order. Kept so the history shows it; a fresh approval is needed.
    */
   staleApproval?: { at: number; via: "call" | "panel"; evidence?: Evidence; reason: string };
+  /**
+   * The agent's line about this outcome, while it waits for approval, with no approval heard in it:
+   * "offset a full refund…" for "I've set up a full refund…" (call 7). Never approves; the agent decides.
+   */
+  unheardApproval?: Evidence;
 };
 
 export type CopilotView = {
@@ -341,6 +346,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
   let causedAfter: { phrase: string; ev: Evidence } | null = null;
   // Every approval given, checked against what was known at its moment once the recommendation is built.
   const given: GivenApproval[] = [];
+  let unheardApproval: { ev: Evidence; value: "replacement" | "refund" } | null = null;
   const keyAnswers: string[] = [];
 
   /**
@@ -580,11 +586,25 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
 
       // "Done. The new tablet ships today." after the customer chose is the agent's approval on the call.
       const offeringOptions = /\?/.test(line.text) && /\bor\b/i.test(line.text);
-      if (choice && !offeringOptions && !ev.lowConfidence && verified() && !escalations.length) {
-        const commit = agentCommits(line.text);
+      if (choice && !offeringOptions && verified() && !escalations.length && ev.at > choice.evidence.at) {
+        const commit = ev.lowConfidence ? null : agentCommits(line.text);
         const fitsChoice =
           choice.value === "refund" ? /\b(refund|money)\b/i.test(line.text) || /\b(done|all set)\b/i.test(line.text) : !/\brefund\b/i.test(line.text);
-        if (commit && fitsChoice && ev.at > choice.evidence.at && readyToApprove()) given.push({ at: line.endedAt, via: "call", evidence: ev });
+        const aboutChoice =
+          choice.value === "refund"
+            ? /\b(refund|money|dollars|visa|card)\b|\$\d/i.test(line.text)
+            : /\b(ships?|shipping|replacement|new (one|\w+))\b/i.test(line.text) && !/\brefund\b/i.test(line.text);
+        if (commit && fitsChoice && readyToApprove()) {
+          given.push({ at: line.endedAt, via: "call", evidence: ev });
+          unheardApproval = null;
+        } else if (aboutChoice && readyToApprove() && !given.some((g) => g.at > choice!.evidence.at)) {
+          // About the chosen outcome, but no approval heard in it: flag it, and let the second speech model
+          // hear it again (call 7: "offset a full refund" for "I've set up a full refund").
+          unheardApproval = { ev, value: choice.value === "refund" ? "refund" : "replacement" };
+          keyAnswers.push(line.key);
+        }
+        // An unclear agent line once the customer has chosen may carry the approval or the terms: check it too.
+        if (ev.lowConfidence && !keyAnswers.includes(line.key)) keyAnswers.push(line.key);
       }
     }
   }
@@ -808,6 +828,9 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
         }
         const reason = notCovered(then, prepared.kind, o.id);
         recommendation.staleApproval = { ...a, reason: changedSince && reason === "the outcome has changed since" ? "the customer changed their choice after it" : reason };
+      }
+      if (recommendation.approval.state === "awaiting" && unheardApproval?.value === prepared.kind && choice && unheardApproval.ev.at > choice.evidence.at) {
+        recommendation.unheardApproval = unheardApproval.ev;
       }
       if (lowConfidenceChoice) {
         // A possible change of mind: nothing is approved until the agent confirms what the customer wants.
@@ -1113,25 +1136,42 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
             );
     } else if (o && approved && recommendation?.prepared && choice) {
       // Approval isn't the customer hearing the terms: keep what the agent hasn't said yet since the choice,
-      // across split lines (outside review of call 6, §6). Only then the closing question.
+      // across split lines (outside review of call 6, §6). Each term counts only with its facts right, not
+      // negated and heard clearly: keywords alone passed "a refund of 999 dollars… we do not need a scan"
+      // (outside review of call 7, §6). Only then the closing question.
       const since = choice.evidence.at;
-      const told = ordered
-        .filter((l) => l.side === "agent" && l.startedAt >= since)
-        .map((l) => l.text.toLowerCase())
-        .join(" ");
+      const told = normalize(
+        ordered
+          .filter((l) => l.side === "agent" && l.startedAt >= since && !evidenceOf(l).lowConfidence)
+          .map((l) => l.text)
+          .join(" ")
+      );
+      const says = (pattern: RegExp) => {
+        const found = findPhrase(told, pattern);
+        return !!found && !found.negated;
+      };
+      // Every amount and card number said must be the record's, and the record's must be said.
+      const cents = Math.round((o.price % 1) * 100);
+      const amounts = [...told.matchAll(/\$ ?(\d+)(?: (\d{2})\b)?|\b(\d+) dollars\b/g)].map((m) => ({ whole: Number(m[1] ?? m[3]), cents: Number(m[2] ?? 0) }));
+      const rightAmount = amounts.length > 0 && amounts.every((a) => a.whole === Math.floor(o.price) && a.cents === cents);
+      const last4 = o.payment?.match(/\d{4}$/)?.[0];
+      const cards = [...told.matchAll(/\bending (?:in )?(\d[\d ]*\d)\b/g)].map((m) => m[1].replace(/ /g, ""));
+      const rightCard = last4 ? cards.length > 0 && cards.every((c) => c === last4) : says(/\boriginal payment\b/);
+      const spelled = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+      const [low, high] = (pack.policy.refundTiming.match(/\d+/g) ?? []).map((n) => `(${n}|${spelled[Number(n)] ?? n})`);
       const terms =
         recommendation.prepared.kind === "refund"
           ? [
-              { said: /\brefund/.test(told) && /(\d{3}|dollars|visa|card|payment)/.test(told), text: `I've set up a full refund of ${money(o.price)} to your ${o.payment ?? "original payment method"}.` },
+              { said: says(/\brefund/) && rightAmount && rightCard, text: `I've set up a full refund of ${money(o.price)} to your ${o.payment ?? "original payment method"}.` },
               {
-                said: /\bscan/.test(told) && /(business days|\b3\s*(-|to)\s*5\b|three to five)/.test(told),
+                said: says(/\bscan/) && says(new RegExp(`\\b${low} to ${high} (business )?days\\b`)),
                 text: `It's issued when the carrier scans the return and takes ${pack.policy.refundTiming} to appear.`,
               },
-              { said: /\blabel\b/.test(told), text: "You'll get an email with a free return label." },
+              { said: says(/\blabel\b/), text: "You'll get an email with a free return label." },
             ]
           : [
-              { said: /\bships?\b/.test(told), text: `The new ${o.noun} ships today.` },
-              { said: /\blabel\b/.test(told), text: "You'll get an email with a free return label for the damaged one." },
+              { said: says(/\bships?\b/), text: `The new ${o.noun} ships today.` },
+              { said: says(/\blabel\b/), text: "You'll get an email with a free return label for the damaged one." },
             ];
       const unsaid = terms.filter((t) => !t.said).map((t) => t.text);
       suggestedReply = unsaid.length

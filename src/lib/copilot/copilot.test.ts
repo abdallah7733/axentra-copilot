@@ -1132,9 +1132,13 @@ test("approving doesn't hide the refund terms the agent hasn't said yet, even sp
   v = call6After(19, pressed);
   assert.equal(v.suggestedReply?.text, "Is there anything else I can help with?");
 
-  // The replacement on call 6: "Done. The new shop, the new tablet ships today." without the return label.
+  // The replacement on call 6: "Done." approved it; "The new shop, the new tablet ships today." was heard with low
+  // confidence, so it doesn't count as said (outside review of call 7, §6). It goes to the second check instead.
   v = call6After(15);
   assert.equal(v.recommendation?.approval.state, "approved");
+  assert.equal(v.suggestedReply?.text, "The new tablet ships today. You'll get an email with a free return label for the damaged one.");
+  assert.ok(v.keyAnswers.includes("c6-15"));
+  v = call6With([...call6.slice(0, 14), { ...call6[14], low: false }]);
   assert.equal(v.suggestedReply?.text, "You'll get an email with a free return label for the damaged one.");
 });
 
@@ -1219,4 +1223,121 @@ test("an unclear change of mind puts the approved outcome on hold until it's con
   v = call6With([...unclear, caller6(100, "The new one is fine.")]);
   assert.equal(v.choice?.value, "replacement");
   assert.equal(v.recommendation?.approval.state, "approved");
+});
+
+/* ---------- 12 Oct call 7 (9 PM, build 62a5d5a), as the console heard it ---------- */
+
+// Start and end times from the recording's audio (the call clock runs about 21.2 s behind it).
+const call7: Call6Line[] = [
+  { s: 1.3, end: 3.8, side: "agent", text: "Thank you for calling Sunlake. How can I help you today.", delay: 1.1 },
+  { s: 5.4, end: 12.3, side: "caller", text: "Hello, I need help with order 427. The tablet came yesterday and the screen is cracked.", first: "Hello, I need help with order 4227", delay: 1.0, check: 4.2 },
+  { s: 14.1, end: 20.2, side: "agent", text: "I'm sorry to hear that I can send you a new one today. First, can I have your full name please?", delay: 1.2 },
+  { s: 22.3, end: 23.1, side: "caller", text: "Send me, Lerf.", first: "Sen bilir, sen bilir.", delay: 0.8, check: 2.1 },
+  { s: 25.1, end: 28.2, side: "agent", text: "Thank you and the street and city for delivery.", delay: 0.9 },
+  { s: 30.0, end: 31.3, side: "caller", text: "Hill Road in Dallas.", delay: 3.5, check: 2.1 },
+  { s: 38.4, end: 39.2, side: "agent", text: "Thank you Sam.", delay: 0.8 },
+  { s: 40.5, end: 45.2, side: "agent", text: "I can see the tablet on order 427. Is the damage only the screen?", delay: 1.1 },
+  { s: 46.6, end: 50.8, side: "caller", text: "Yes, only the screen. Can I get a new one or my money back?", delay: 1.1 },
+  { s: 52.0, end: 61.2, side: "agent", text: "You can have either a new tablet ships today at no coast or a full refund in 3 to 5 business days.", delay: 1.3 },
+  { s: 61.9, end: 63.0, side: "agent", text: "Which do you prefer?", delay: 0.9 },
+  { s: 64.7, end: 65.7, side: "caller", text: "A new one, please.", delay: 0.9, check: 2.3 },
+  { s: 75.3, end: 82.4, side: "agent", text: "Done the new tablet ships today you'll get an email with a free return label for the damaged one.", delay: 1.2 },
+  { s: 84.7, end: 88.0, side: "caller", text: "Actually, I'd rather have my money back. A refund, please.", first: "Actually I'd rather have my money back. A refund please.", delay: 1.0, check: 2.4 },
+  // Said: "I've set up a full refund of $329.00 to your Visa ending 2208." (confirmed by the agent).
+  { s: 95.0, end: 101.8, side: "agent", text: "offset a full refund of $329 to your visa ending to 208", delay: 1.1 },
+  // Said: "It's issued when the carrier scans the return and takes 3 to 5 business days to appear." One
+  // stretch of speech with no pause; the fast model dropped the middle.
+  { s: 102.5, end: 108.7, side: "agent", text: "It's 3-5 Business Days to Appear", delay: 1.0, low: true },
+  { s: 109.9, end: 112.6, side: "agent", text: "You'll get an email with a free return label.", delay: 0.9 },
+  { s: 114.7, end: 116.2, side: "caller", text: "Great. Thank you.", delay: 0.9 },
+  { s: 117.0, end: 120.4, side: "agent", text: "You are welcome. If there is anything else I can help you with.", delay: 1.0 },
+  { s: 122.2, end: 123.7, side: "caller", text: "No, that's all. Bye.", delay: 0.9 },
+];
+// The agent typed the name at about 00:35 ("Sam Miller", typed by the agent).
+const call7Fix: AgentAction = { type: "correct", key: "c6-4", text: "Sam Miller", at: call6Start + 35_000 };
+const call7After = (n: number, actions: AgentAction[] = [call7Fix], lines: Call6Line[] = call7) =>
+  analyze(sunlake, call6Events(lines).slice(0, n), actions, call6Start + (lines[n - 1].end + 4) * 1000);
+
+test("call 7 as heard: the misheard refund approval is flagged and sent for the second check, never approved as heard", () => {
+  let v = call7After(13);
+  assert.equal(v.recommendation?.approval.state, "approved", "the replacement was approved on the call");
+  v = call7After(14);
+  assert.equal(v.choice?.value, "refund");
+  assert.equal(v.recommendation?.approval.state, "awaiting");
+  assert.equal(v.recommendation?.staleApproval?.reason, "it was for a replacement");
+
+  // "offset a full refund…" for "I've set up a full refund…": no approval, but the panel says one may have been missed,
+  // and the line goes to the second speech model.
+  v = call7After(15);
+  assert.equal(v.recommendation?.approval.state, "awaiting");
+  assert.equal(v.recommendation?.unheardApproval?.text, "offset a full refund of $329 to your visa ending to 208");
+  assert.ok(v.keyAnswers.includes("c6-15"), "an agent line about the outcome with no approval heard in it gets the check");
+  // An unclear agent line after the choice is checked too: here the fast model dropped the return-scan clause.
+  v = call7After(16);
+  assert.ok(v.keyAnswers.includes("c6-16"));
+
+  // As heard, nothing approves the refund: the call ended with it waiting (as it did).
+  v = call7After(20);
+  assert.equal(v.recommendation?.approval.state, "awaiting");
+  assert.equal(v.documentation.find((d) => d.label === "Resolution")!.value, null);
+
+  // The second check hears the sentence as said: the refund is approved on the call, and the warning goes.
+  const checked = call7.map((l, i) =>
+    i === 14 ? { ...l, text: "I've set up a full refund of $329 to your Visa ending 2208.", first: l.text, check: 2.5 } : l
+  );
+  v = call7After(15, [call7Fix], checked);
+  assert.equal(v.recommendation?.approval.state, "approved");
+  assert.equal(v.recommendation?.approval.via, "call");
+  assert.equal(v.recommendation?.unheardApproval, undefined);
+
+  // Or the agent approves in the panel: recorded as a panel approval. The terms that weren't heard clearly stay
+  // on screen ("visa ending to 208"; the unclear line), the return label was heard.
+  v = call7After(20, [call7Fix, { type: "approve", at: call6Start + 118_000 }]);
+  assert.equal(v.recommendation?.approval.state, "approved");
+  assert.equal(v.recommendation?.approval.via, "panel");
+  assert.equal(
+    v.suggestedReply?.text,
+    "I've set up a full refund of $329.00 to your Visa ending 2208. It's issued when the carrier scans the return and takes 3 to 5 business days to appear."
+  );
+});
+
+test("the refund terms count only when the facts are right and not negated (outside review of call 7, §6)", () => {
+  const refund = [...call6.slice(0, 12), caller6(78, "The refund, please.")];
+  const approve: AgentAction[] = [call6Fix, { type: "approve", at: call6Start + 81_000 }];
+  const terms = (...said: string[]) => call6With([...refund, ...said.map((t, i) => agent6(84 + i * 4, t))], approve).suggestedReply?.text;
+  const amount = "I've set up a full refund of $329.00 to your Visa ending 2208.";
+  const issued = "It's issued when the carrier scans the return and takes 3 to 5 business days to appear.";
+  const label = "You'll get an email with a free return label.";
+
+  // The outside review's probe: every keyword is there, every fact is wrong.
+  assert.equal(
+    terms("A refund of 999 dollars to Visa ending 1111. We do not need a scan. It takes 30 business days. There is no return label."),
+    `${amount} ${issued} ${label}`
+  );
+  // Right amount, wrong card; right card, wrong amount.
+  assert.equal(terms("I've set up a full refund of $329 to your Visa ending 1111.", issued, label), amount);
+  assert.equal(terms("I've set up a full refund of $299 to your Visa ending 2208.", issued, label), amount);
+  // The scan named but negated, or the wrong delay.
+  assert.equal(terms(amount, "It's issued without a scan and takes 3 to 5 business days.", label), issued);
+  assert.equal(terms(amount, "It's issued when the carrier scans the return and takes 10 business days.", label), issued);
+  // Split across lines the way recognition cuts them, with the facts right: done.
+  assert.equal(terms("I've set up a full refund of $329", "to your visa ending 2208. It's issued when the carriers scan", "the return and take 3-5 days.", label), "Is there anything else I can help with?");
+  // An unclear line doesn't count as said.
+  const unclear = call6With([...refund, agent6(84, amount), { ...agent6(88, issued), low: true }, agent6(92, label)], approve);
+  assert.equal(unclear.suggestedReply?.text, issued);
+});
+
+test("a replacement line misheard while the approval waits is flagged, and a clear one approves (call 7 review)", () => {
+  const chose = call6.slice(0, 13);
+  let v = call6With([...chose, agent6(82, "Then the new tablet ships tomorrow.")]);
+  assert.equal(v.recommendation?.approval.state, "awaiting");
+  assert.equal(v.recommendation?.unheardApproval?.text, "Then the new tablet ships tomorrow.");
+  assert.ok(v.keyAnswers.includes("c6-14"));
+  // A question about the options isn't an approval, and isn't flagged as a missed one.
+  v = call6With([...chose, agent6(82, "Would you like the new tablet, or a refund?")]);
+  assert.equal(v.recommendation?.unheardApproval, undefined);
+  // A change of mind after the flagged line clears it: it was about the old outcome.
+  v = call6With([...chose, agent6(82, "Then the new tablet ships tomorrow."), caller6(88, "Actually, a refund please.")]);
+  assert.equal(v.recommendation?.prepared?.kind, "refund");
+  assert.equal(v.recommendation?.unheardApproval, undefined);
 });

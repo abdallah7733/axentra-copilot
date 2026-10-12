@@ -403,6 +403,12 @@ export function LiveCopilot({ className }: { className?: string }) {
                             cover this: {rec.staleApproval.reason}.
                           </span>
                         )}
+                        {/* Never approves by itself: a misheard approval is the agent's call to make. */}
+                        {rec.approval.state === "awaiting" && rec.unheardApproval && (
+                          <span className="block text-amber-700 dark:text-amber-500">
+                            Approval not heard in &ldquo;{rec.unheardApproval.text}&rdquo;. If you told the customer, approve here; if not, say it again.
+                          </span>
+                        )}
                         {rec.approval.state === "not-ready"
                           ? "Confirm the customer's choice first."
                           : rec.staleApproval
