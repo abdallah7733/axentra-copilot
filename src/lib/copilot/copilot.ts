@@ -311,7 +311,15 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
   let expecting: "name" | "address" | "order" | null = null;
   const callerMentions: { mention: OrderMention; ev: Evidence }[] = [];
   const agentMentionsAfterVerify: { mention: OrderMention; ev: Evidence }[] = [];
-  let choice: CopilotView["choice"] = null;
+  // Assigned through setChoice too, so declared wide: TypeScript doesn't follow assignments in closures.
+  let choice = null as CopilotView["choice"];
+  // When a different choice became known. An approval given before a change never comes back, even if
+  // the customer returns to the first outcome (outside review of call 6, 12 Oct §4).
+  const choiceChanges: number[] = [];
+  const setChoice = (value: NonNullable<CopilotView["choice"]>["value"], evidence: Evidence, knownAt: number) => {
+    if (choice && choice.value !== value) choiceChanges.push(knownAt);
+    choice = { value, evidence };
+  };
   let askedBoth: Evidence | null = null;
   const escalations: { kind: "words" | "safety"; phrase: string; ev: Evidence }[] = [];
   const earlyOffers: Evidence[] = [];
@@ -346,7 +354,8 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
     (issueChoice === null &&
       ((intent?.id === "damaged" && (intent.certainty === "high" || issueConfirmedInPanel)) || (!intent && hints.intent?.id === "damaged" && issueConfirmedInPanel)));
   /** Everything an approval needs, at the moment it is given: a stale or early approval doesn't count. */
-  const readyToApprove = () => verified() && !!choice && choice.value !== "both" && issueSupported();
+  // A possible change of mind heard with low confidence puts the outcome on hold until it's confirmed.
+  const readyToApprove = () => verified() && !!choice && choice.value !== "both" && issueSupported() && !lowConfidenceChoice;
 
   const verified = () => name.state === "ok" && address.state === "ok";
   const markVerified = (ev: Evidence) => {
@@ -455,7 +464,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
         orderConfirmedInPanel = true;
       } else if (a.type === "confirm" && a.target === "choice" && lowConfidenceChoice) {
         const found = readChoice(lowConfidenceChoice.text);
-        if (found) choice = { value: found.choice, evidence: lowConfidenceChoice };
+        if (found) setChoice(found.choice, lowConfidenceChoice, a.at);
         lowConfidenceChoice = null;
       } else if (a.type === "approve" && readyToApprove()) {
         given.push({ at: a.at, via: "panel" });
@@ -468,7 +477,10 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
 
     if (line.side === "caller") {
       // Judged before this line changes anything: what the copilot was waiting for when it was said.
-      if (!locked && (!intent || expecting === "name" || expecting === "address" || (!choice && (choiceAsked || unreadChoice || lowConfidenceChoice)))) {
+      // After a choice, a line that reads as a different one, or the answer to the choice asked again, is a key answer too.
+      const heardChoice = readChoice(line.text)?.choice;
+      const changesChoice = !!choice && !!heardChoice && heardChoice !== "both" && heardChoice !== choice.value;
+      if (!locked && (!intent || expecting === "name" || expecting === "address" || lowConfidenceChoice || (!choice && (choiceAsked || unreadChoice)) || (choice && (choiceAsked || changesChoice)))) {
         keyAnswers.push(line.key);
       }
       const caused = CAUSED_AFTER.exec(line.text);
@@ -532,9 +544,11 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
       else if (choiceAsked && !choice) unreadChoice = ev;
       choiceAsked = false;
       if (wants?.choice === "both") askedBoth = ev;
-      else if (wants && ev.lowConfidence) lowConfidenceChoice = ev;
-      else if (wants) {
-        choice = { value: wants.choice, evidence: ev };
+      else if (wants && ev.lowConfidence) {
+        // The same choice again, unclear, changes nothing; a different one is a possible change of mind.
+        if (!choice || wants.choice !== choice.value) lowConfidenceChoice = ev;
+      } else if (wants) {
+        setChoice(wants.choice, ev, ev.knownAt);
         lowConfidenceChoice = null;
       }
 
@@ -699,7 +713,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
       ? null
       : identityFactor && identityFactor.state !== "ok"
         ? identityFactor.id
-        : !choice && (choiceAsked || unreadChoice || lowConfidenceChoice)
+        : lowConfidenceChoice || (!choice && (choiceAsked || unreadChoice))
           ? "choice"
           : !intent
             ? "issue"
@@ -786,12 +800,22 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
       for (const a of [...given].sort((x, y) => x.at - y.at)) {
         const then = rules(pack, lines.filter((l) => (l.availableAt ?? l.endedAt) <= a.at), actions.filter((x) => x.at <= a.at), a.at, hints, true);
         const r = then.recommendation;
-        if (r?.prepared && r.scenario === scenario && r.prepared.kind === prepared.kind && then.order.match?.order.id === o.id) {
+        const changedSince = choiceChanges.some((t) => t > a.at);
+        if (!changedSince && r?.prepared && r.scenario === scenario && r.prepared.kind === prepared.kind && then.order.match?.order.id === o.id) {
           recommendation.approval = { state: "approved", ...a, by: `${pack.agent.name} (${pack.agent.id})` };
           recommendation.staleApproval = undefined;
           break;
         }
-        recommendation.staleApproval = { ...a, reason: notCovered(then, prepared.kind, o.id) };
+        const reason = notCovered(then, prepared.kind, o.id);
+        recommendation.staleApproval = { ...a, reason: changedSince && reason === "the outcome has changed since" ? "the customer changed their choice after it" : reason };
+      }
+      if (lowConfidenceChoice) {
+        // A possible change of mind: nothing is approved until the agent confirms what the customer wants.
+        const held = recommendation.approval.state === "approved" ? recommendation.approval : recommendation.staleApproval;
+        recommendation.approval = { state: "not-ready" };
+        if (held?.at !== undefined && held.via) {
+          recommendation.staleApproval = { at: held.at, via: held.via, evidence: held.evidence, reason: "the customer may have changed their mind" };
+        }
       }
     }
   }
@@ -997,11 +1021,11 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
     {
       id: "choice",
       label: "Customer's choice",
-      status: escalate ? "skipped" : choice ? "done" : unreadChoice && isVerified ? "attention" : "pending",
+      status: escalate ? "skipped" : choice && lowConfidenceChoice ? "attention" : choice ? "done" : unreadChoice && isVerified ? "attention" : "pending",
       detail: escalate
         ? "Not offered: Scenario C"
         : choice
-          ? choice.value === "replacement" ? "Replacement" : "Refund"
+          ? `${choice.value === "replacement" ? "Replacement" : "Refund"}${lowConfidenceChoice ? "; may have changed, confirm" : ""}`
           : unreadChoice && isVerified
             ? "Answer not understood; ask again"
             : askedBoth
@@ -1074,9 +1098,11 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
       suggestedReply = reply(`Sorry, I didn't catch that. Would you like the new ${o.noun}, or the refund?`, "Scenario A and B");
     } else if (o && !choice) {
       suggestedReply = reply(
-        `You can have either. A new ${o.noun} ships today at no cost, or a full refund in ${pack.policy.refundTiming}. Which do you prefer?`,
+        `You can have either. A new ${o.noun} ships today at no cost, or a full refund once the carrier scans your return; it takes ${pack.policy.refundTiming} to appear. Which do you prefer?`,
         "Scenario A and B"
       );
+    } else if (o && choice && lowConfidenceChoice) {
+      suggestedReply = reply(`Sorry, just to be sure: would you like the new ${o.noun}, or the refund?`, "Scenario A and B");
     } else if (o && recommendation?.prepared && !approved) {
       suggestedReply =
         recommendation.prepared.kind === "replacement"
@@ -1085,6 +1111,32 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
               `I've set up a full refund of ${money(o.price)} to your ${o.payment ?? "original payment method"}. It's issued when the carrier scans the return and takes ${pack.policy.refundTiming} to appear. You'll get an email with a free return label.`,
               "Scenario B"
             );
+    } else if (o && approved && recommendation?.prepared && choice) {
+      // Approval isn't the customer hearing the terms: keep what the agent hasn't said yet since the choice,
+      // across split lines (outside review of call 6, §6). Only then the closing question.
+      const since = choice.evidence.at;
+      const told = ordered
+        .filter((l) => l.side === "agent" && l.startedAt >= since)
+        .map((l) => l.text.toLowerCase())
+        .join(" ");
+      const terms =
+        recommendation.prepared.kind === "refund"
+          ? [
+              { said: /\brefund/.test(told) && /(\d{3}|dollars|visa|card|payment)/.test(told), text: `I've set up a full refund of ${money(o.price)} to your ${o.payment ?? "original payment method"}.` },
+              {
+                said: /\bscan/.test(told) && /(business days|\b3\s*(-|to)\s*5\b|three to five)/.test(told),
+                text: `It's issued when the carrier scans the return and takes ${pack.policy.refundTiming} to appear.`,
+              },
+              { said: /\blabel\b/.test(told), text: "You'll get an email with a free return label." },
+            ]
+          : [
+              { said: /\bships?\b/.test(told), text: `The new ${o.noun} ships today.` },
+              { said: /\blabel\b/.test(told), text: "You'll get an email with a free return label for the damaged one." },
+            ];
+      const unsaid = terms.filter((t) => !t.said).map((t) => t.text);
+      suggestedReply = unsaid.length
+        ? reply(unsaid.join(" "), recommendation.prepared.kind === "refund" ? "Scenario B" : "Scenario A")
+        : reply("Is there anything else I can help with?", "Required documentation");
     } else if (approved) {
       suggestedReply = reply("Is there anything else I can help with?", "Required documentation");
     }

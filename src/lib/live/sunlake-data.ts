@@ -169,7 +169,7 @@ export const scriptV2: { n: number; side: "caller" | "agent"; text: string }[] =
   { n: 7, side: "caller", text: "Hill Road, in Dallas." },
   { n: 8, side: "agent", text: "Thank you, Sam. I can see the tablet on order 427. Is the damage only on the screen?" },
   { n: 9, side: "caller", text: "Yes, only the screen. Can I get a new one, or my money back?" },
-  { n: 10, side: "agent", text: "You can have either. A new tablet ships today at no cost, or a full refund in 3 to 5 business days. Which do you prefer?" },
+  { n: 10, side: "agent", text: "You can have either. A new tablet ships today at no cost, or a full refund once the carrier scans your return; it takes 3 to 5 business days to appear. Which do you prefer?" },
   { n: 11, side: "caller", text: "A new one, please." },
   { n: 12, side: "agent", text: "Done. The new tablet ships today. You'll get an email with a free return label for the damaged one." },
   { n: 13, side: "caller", text: "Great, thank you." },

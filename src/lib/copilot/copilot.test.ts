@@ -1051,3 +1051,172 @@ test("on the 12 Oct call, a 'Done.' said before the checked choice arrived would
   assert.equal(approved.recommendation?.approval.state, "approved");
   assert.equal(approved.recommendation?.approval.via, "panel");
 });
+
+/* ---------- 12 Oct call 6 (the refund check call), as the console heard it ---------- */
+
+const call6: { s: number; end: number; side: "caller" | "agent"; text: string; first?: string; delay: number; check?: number; low?: boolean }[] = [
+  { s: 1, end: 4, side: "agent", text: "Thank you for calling Sunlig. How can I help you today?", delay: 1.2 },
+  { s: 6, end: 12, side: "caller", text: "Hello, I need help with order 427. The tablet came yesterday and the screen is cracked.", delay: 1.1, check: 3.1 },
+  { s: 14, end: 17, side: "agent", text: "I'm sorry to hear that. I can send you a new one today.", delay: 1.3 },
+  { s: 19, end: 21, side: "agent", text: "First, can I have your name please?", delay: 0.9 },
+  { s: 23, end: 24, side: "caller", text: "Sam Miller.", first: "San milis.", delay: 0.8, check: 2.0 },
+  { s: 26, end: 29, side: "agent", text: "Thank you and the street and city for delivery.", delay: 1.0 },
+  { s: 31, end: 33, side: "caller", text: "Hill Route in Dallas.", first: "Till rude in Dhanis.", delay: 1.0, check: 2.1 },
+  { s: 49, end: 50, side: "agent", text: "Thank you Sam.", delay: 0.8 },
+  { s: 56, end: 61, side: "agent", text: "I can see the tablet on order 427 is the damage only on the screen.", delay: 1.1 },
+  { s: 63, end: 67, side: "caller", text: "Yes, only the screen. Can I get a new one or my money back?", delay: 1.0 },
+  { s: 68, end: 74, side: "agent", text: "You can have either a new tablet ship today at no coast or a full refund in 3 to 5 business days.", delay: 1.2 },
+  { s: 76, end: 77, side: "agent", text: "We still prepare.", delay: 0.8 },
+  { s: 78, end: 79.5, side: "caller", text: "A new one, please.", first: "And you want peace.", delay: 0.9, check: 2.1 },
+  { s: 82, end: 82.6, side: "agent", text: "Done.", delay: 0.8 },
+  { s: 83, end: 86, side: "agent", text: "The new shop, the new tablet ships today.", delay: 1.2, low: true },
+  { s: 92, end: 95, side: "caller", text: "Actually I'd rather have my money back.", delay: 1.0 },
+  { s: 103, end: 108, side: "agent", text: "I've set up a full refund of $329 to your visa ending 2208", delay: 1.2 },
+  { s: 113, end: 118, side: "agent", text: "It's issued when the carriers scan the return and take 3-5 days.", delay: 1.1 },
+  { s: 120, end: 124, side: "agent", text: "To appear, you'll get an email with a free return label.", delay: 1.0 },
+  { s: 126, end: 127.5, side: "caller", text: "Great, thank you.", delay: 0.9 },
+  { s: 129, end: 133, side: "agent", text: "Your welcome is there is anything else I can help with.", delay: 1.0 },
+];
+const call6Start = NOW - 200_000;
+type Call6Line = (typeof call6)[number];
+const call6Events = (lines: Call6Line[] = call6): TranscriptEvent[] =>
+  lines.map((l, i) => ({
+    callId: "CA-call6",
+    seq: i + 1,
+    key: `c6-${i + 1}`,
+    side: l.side,
+    text: l.text,
+    startedAt: call6Start + l.s * 1000,
+    endedAt: call6Start + l.end * 1000,
+    final: true,
+    confidence: l.low ? 0.45 : 0.85,
+    firstHeard: l.first,
+    availableAt: call6Start + (l.end + l.delay + (l.check ?? 0)) * 1000,
+  }));
+// The agent typed the street at about 00:47 ("Hill Road, Dallas", typed by the agent).
+const call6Fix: AgentAction = { type: "correct", key: "c6-7", text: "Hill Road, Dallas", at: call6Start + 47_000 };
+const call6After = (n: number, actions: AgentAction[] = [call6Fix]) =>
+  analyze(sunlake, call6Events().slice(0, n), actions, call6Start + (call6[n - 1].end + 4) * 1000);
+const approvedReplacement = call6.slice(0, 15);
+const caller6 = (s: number, text: string, low = false): Call6Line => ({ s, end: s + 2, side: "caller", text, delay: 1.0, low });
+const agent6 = (s: number, text: string): Call6Line => ({ s, end: s + 3, side: "agent", text, delay: 1.0 });
+const call6With = (lines: Call6Line[], actions: AgentAction[] = [call6Fix]) => analyze(sunlake, call6Events(lines), actions, NOW);
+
+test("call 6 as heard: the refund change withdraws the replacement approval, and line 14 approves the refund on the call", () => {
+  let v = call6After(16);
+  assert.equal(v.choice?.value, "refund");
+  assert.equal(v.recommendation?.scenario, "B");
+  assert.equal(v.recommendation?.approval.state, "awaiting");
+  assert.equal(v.recommendation?.staleApproval?.reason, "it was for a replacement");
+  assert.ok(v.keyAnswers.includes("c6-16"), "a change of mind gets the second model's check");
+
+  // Without the early press in the panel, "I've set up a full refund…" approves it on the call.
+  v = call6After(17);
+  assert.equal(v.recommendation?.approval.state, "approved");
+  assert.equal(v.recommendation?.approval.via, "call");
+  v = call6After(21);
+  assert.equal(v.documentation.find((d) => d.label === "Resolution")!.value, "Refund RF-2026-092701-01");
+  assert.match(v.documentation.find((d) => d.label === "Case summary")!.value!, /damage: "screen is cracked"/);
+});
+
+test("approving doesn't hide the refund terms the agent hasn't said yet, even split across lines (call 6 review §6)", () => {
+  // The agent pressed Approve at about 01:47, before saying when the refund is issued.
+  const pressed: AgentAction[] = [call6Fix, { type: "approve", at: call6Start + 106_500 }];
+  let v = call6After(16, pressed);
+  assert.equal(v.recommendation?.approval.state, "approved");
+  assert.match(v.suggestedReply!.text, /^I've set up a full refund of \$329\.00 to your Visa ending 2208\. It's issued when the carrier scans the return/);
+  v = call6After(17, pressed);
+  assert.equal(v.suggestedReply?.text, "It's issued when the carrier scans the return and takes 3 to 5 business days to appear. You'll get an email with a free return label.");
+  v = call6After(18, pressed);
+  assert.equal(v.suggestedReply?.text, "You'll get an email with a free return label.");
+  v = call6After(19, pressed);
+  assert.equal(v.suggestedReply?.text, "Is there anything else I can help with?");
+
+  // The replacement on call 6: "Done. The new shop, the new tablet ships today." without the return label.
+  v = call6After(15);
+  assert.equal(v.recommendation?.approval.state, "approved");
+  assert.equal(v.suggestedReply?.text, "You'll get an email with a free return label for the damaged one.");
+});
+
+test("the options line says when a refund is issued, not just how long it takes (call 6 review §6)", () => {
+  const v = call6After(10);
+  assert.equal(
+    v.suggestedReply?.text,
+    "You can have either. A new tablet ships today at no cost, or a full refund once the carrier scans your return; it takes 3 to 5 business days to appear. Which do you prefer?"
+  );
+});
+
+test("going back to the first choice doesn't bring its old approval back (call 6 review §4)", () => {
+  // Replacement approved, refund, then replacement again: a fresh approval is needed.
+  const back = [...approvedReplacement, caller6(92, "Actually I'd rather have my money back."), caller6(100, "Sorry, a new one is better after all.")];
+  let v = call6With(back);
+  assert.equal(v.choice?.value, "replacement");
+  assert.equal(v.recommendation?.approval.state, "awaiting");
+  assert.equal(v.recommendation?.staleApproval?.reason, "the customer changed their choice after it");
+  assert.ok(v.keyAnswers.includes("c6-17"), "the change back is checked too");
+  v = call6With(back, [call6Fix, { type: "approve", at: NOW - 1000 }]);
+  assert.equal(v.recommendation?.approval.state, "approved");
+  assert.equal(v.recommendation?.approval.via, "panel");
+
+  // Refund approved in between: the refund approval doesn't cover the replacement either.
+  const viaRefund = [...approvedReplacement, call6[15], call6[16], caller6(112, "Actually, the new one after all.")];
+  v = call6With(viaRefund);
+  assert.equal(v.recommendation?.prepared?.kind, "replacement");
+  assert.equal(v.recommendation?.approval.state, "awaiting");
+  assert.equal(v.recommendation?.staleApproval?.reason, "it was for a refund");
+
+  // The same way round: refund approved, replacement, refund again.
+  const refundFirst = [
+    ...call6.slice(0, 12),
+    caller6(78, "The refund, please."),
+    agent6(82, "I've set up a full refund of $329 to your Visa ending 2208."),
+    caller6(92, "Actually, a new one would be better."),
+    caller6(100, "Sorry, the refund after all."),
+  ];
+  v = call6With(refundFirst);
+  assert.equal(v.choice?.value, "refund");
+  assert.equal(v.recommendation?.approval.state, "awaiting");
+  assert.equal(v.recommendation?.staleApproval?.reason, "the customer changed their choice after it");
+});
+
+test("saying the same choice again keeps the approval (call 6 review §4)", () => {
+  const again = [...approvedReplacement, caller6(92, "Yes, a new one, please."), caller6(98, "The new one.", true)];
+  const v = call6With(again);
+  assert.equal(v.recommendation?.approval.state, "approved");
+  assert.equal(v.recommendation?.approval.evidence?.text, "Done.");
+  assert.equal(v.prompts.some((p) => p.target === "choice"), false, "an unclear repeat of the same choice asks nothing");
+});
+
+test("an unclear change of mind puts the approved outcome on hold until it's confirmed (call 6 review §5)", () => {
+  const unclear = [...approvedReplacement, caller6(92, "Actually I'd rather have my money back.", true)];
+  let v = call6With(unclear);
+  assert.equal(v.choice?.value, "replacement");
+  assert.equal(v.recommendation?.approval.state, "not-ready");
+  assert.equal(v.recommendation?.staleApproval?.reason, "the customer may have changed their mind");
+  assert.equal(v.steps.find((s) => s.id === "choice")?.status, "attention");
+  assert.equal(v.steps.find((s) => s.id === "docs")?.status, "pending");
+  assert.equal(v.documentation.find((d) => d.label === "Resolution")!.value, null);
+  assert.equal(v.suggestedReply?.text, "Sorry, just to be sure: would you like the new tablet, or the refund?");
+  assert.equal(v.awaiting, "choice");
+  assert.ok(v.keyAnswers.includes("c6-16"));
+  assert.ok(v.prompts.some((p) => p.target === "choice"));
+
+  // "Done." or Approve while it's unclear approves nothing.
+  const done = [...unclear, agent6(98, "Done.")];
+  v = call6With(done, [call6Fix, { type: "approve", at: NOW - 1000 }]);
+  assert.equal(v.recommendation?.approval.state, "not-ready");
+
+  // The agent confirms the refund on the card: refund, waiting for a fresh approval.
+  v = call6With(unclear, [call6Fix, { type: "confirm", target: "choice", at: call6Start + 100_000 }]);
+  assert.equal(v.choice?.value, "refund");
+  assert.equal(v.recommendation?.approval.state, "awaiting");
+  assert.equal(v.recommendation?.staleApproval?.reason, "it was for a replacement");
+
+  // The caller answers clearly: a refund needs approval; the same replacement keeps the first one.
+  v = call6With([...unclear, caller6(100, "A refund, please.")]);
+  assert.equal(v.choice?.value, "refund");
+  assert.equal(v.recommendation?.approval.state, "awaiting");
+  v = call6With([...unclear, caller6(100, "The new one is fine.")]);
+  assert.equal(v.choice?.value, "replacement");
+  assert.equal(v.recommendation?.approval.state, "approved");
+});

@@ -403,11 +403,18 @@ export function LiveCopilot({ className }: { className?: string }) {
                             cover this: {rec.staleApproval.reason}.
                           </span>
                         )}
-                        {rec.staleApproval ? "Approve again if this is right." : "Waiting for your approval."}
+                        {rec.approval.state === "not-ready"
+                          ? "Confirm the customer's choice first."
+                          : rec.staleApproval
+                            ? "Approve again if this is right."
+                            : "Waiting for your approval."}
                       </span>
-                      <Button size="xs" className="rounded-full" onClick={approve}>
-                        Approve
-                      </Button>
+                      {/* On hold while a possible change of mind is unconfirmed: there is nothing to approve yet. */}
+                      {rec.approval.state === "awaiting" && (
+                        <Button size="xs" className="rounded-full" onClick={approve}>
+                          Approve
+                        </Button>
+                      )}
                     </div>
                   )}
                 </div>
