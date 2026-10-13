@@ -53,11 +53,18 @@ the public site build (`/axentra-copilot`). On a pull request it tests the
 merge of the PR's latest commit into `main`, and a new push re-runs it. It has
 read-only permissions and uses no secrets; deployment stays in `deploy.yml`.
 
-**Merge rule: merge only a pull request whose latest commit has a green
-"Tests, types, lint and both builds" check.** Unless a branch ruleset on
-`main` requires that check, GitHub only warns on a red check and still lets
-anyone with write access merge, so the rule then rests on people following
-it. A local git hook would not cover merges made on github.com either.
+**GitHub enforces this.** The branch ruleset "main checks" on `main` requires
+the "Tests, types, lint and both builds" check to pass on a branch that is up
+to date with `main`. It also blocks force pushes and deleting `main`, and its
+bypass list is empty. A pull request with a red or still-running check shows
+as blocked and can't be merged. A push straight to `main` is also refused
+unless that exact commit already passed the check.
+
+Limits: the repository admin can still edit or switch off the ruleset, so it
+guards against mistakes, not against a deliberate override. If the job's
+name in `checks.yml` changes, the ruleset must be updated too, or every merge
+will wait for a check that never reports. The site deploy (`deploy.yml`)
+doesn't wait for the check; it runs on every push to `main`.
 
 
 Every push to `main` rebuilds and republishes the site through
