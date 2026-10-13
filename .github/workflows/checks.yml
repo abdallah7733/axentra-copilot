@@ -1,0 +1,59 @@
+name: Checks
+
+# Runs the repo's own checks on every pull request (and on main after a merge),
+# so a proposed change shows a green tick or a red X before anyone merges it.
+# Deployment stays in deploy.yml, which runs only after a merge to main.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Read-only: this workflow runs code from proposed changes, so it gets no
+# write access and no secrets.
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Tests, types, lint and both builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # On a pull request this checks out the merge of the PR's latest commit
+      # into main: the code that would land if the PR were merged now.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: Unit tests
+        run: npm test
+      - name: Type check
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+
+      # The two targets use different base paths, so each is built on its own.
+      # build:console moves its output to out-console, so it runs first and the
+      # public site build then writes out/ without overwriting it.
+      - name: Build local console (base path /console)
+        run: npm run build:console
+      - name: Build public site (base path /axentra-copilot)
+        run: npm run build:static
+        env:
+          NEXT_PUBLIC_BASE_PATH: /axentra-copilot
+      - name: Check each build uses its own base path
+        run: |
+          grep -q '/console/_next/' out-console/index.html
+          grep -q '/axentra-copilot/_next/' out/index.html
+          echo "out-console -> /console, out -> /axentra-copilot"

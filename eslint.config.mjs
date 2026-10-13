@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Local console build served by the engine (npm run build:console).
+    "out-console/**",
   ]),
 ]);
 
