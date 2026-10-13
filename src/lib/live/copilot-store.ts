@@ -5,7 +5,7 @@ import { checkWording, classifyMessages, parseIntentLabel, replyMessages } from 
 import { ANSWER_GAP_MS, analyze, type CopilotView, type ModelHints } from "@/lib/copilot/copilot";
 import type { AgentAction, TranscriptEvent } from "@/lib/copilot/types";
 import { assistChat } from "./engine";
-import { liveEvents, useLive } from "./store";
+import { epochNow, liveEvents, useLive } from "./store";
 import { sunlake } from "./sunlake-data";
 
 /*
@@ -39,7 +39,10 @@ type CopilotState = {
   worded: Worded | null;
   /** Milliseconds from a line appearing to the model's suggestion, this call. */
   assistTimes: number[];
-  confirm: (target: "issue" | "name" | "address" | "order" | "choice") => void;
+  /** For the issue, `issue` is what the agent heard the problem is. */
+  confirm: (target: "issue" | "name" | "address" | "order" | "choice", issue?: "damaged" | "other") => void;
+  /** The agent types what the caller said on a line recognition got wrong. */
+  correct: (key: string, text: string) => void;
   approve: () => void;
   setHighlight: (key: string | null) => void;
 };
@@ -48,7 +51,7 @@ export const pack = sunlake;
 
 const run = (lines: TranscriptEvent[], actions: AgentAction[], hints: ModelHints) => {
   const began = performance.now();
-  const view = analyze(pack, lines, actions, Date.now(), hints);
+  const view = analyze(pack, lines, actions, epochNow(), hints);
   return { view, lastMs: performance.now() - began };
 };
 
@@ -64,6 +67,18 @@ export const useCopilot = create<CopilotState>((set, get) => {
   let healthCheckedAt = 0;
   // Re-check once the caller has been quiet long enough for an identity answer to be complete.
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
+  // Lines already sent for the second model's check (or found uncheckable) this call: each at most once.
+  let requested = new Set<string>();
+
+  /**
+   * Asks for the check on a line, once; the line is held back while it runs. Caller lines while an answer is
+   * awaited; agent lines only when the rules name them (an approval or terms that may have been misheard).
+   */
+  const requestCheck = (line: TranscriptEvent, named = false): TranscriptEvent => {
+    if (requested.has(line.key) || (line.side !== "caller" && !named) || line.firstHeard !== undefined || line.checkFailed) return line;
+    requested.add(line.key);
+    return useLive.getState().checkLine(line.key) === "started" ? { ...line, checking: true } : line;
+  };
 
   const assistOn = () => useLive.getState().health?.assist === "local";
 
@@ -141,6 +156,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
     queued = null;
     lastDraft = "";
     classified = new Set();
+    requested = new Set();
     set({ callId, highlightKey: null, worded: null, assistTimes: [], assist: assistOn() ? "ready" : "off" });
     update([], [], {});
   };
@@ -149,8 +165,19 @@ export const useCopilot = create<CopilotState>((set, get) => {
     if (event.type === "call-started") reset(event.callId);
     else if (event.type === "cleared") reset(null);
     else if (event.type === "line" && event.line.callId === get().callId) {
+      let line = event.line;
+      const known = get().lines.some((l) => l.key === line.key);
+      // A key answer (the problem, name, address or choice) waits for the second speech model's check:
+      // short answers heard on their own are where the fast model goes wrong.
+      if (!known && get().view.awaiting) line = requestCheck(line);
       lineArrivedAt = performance.now();
-      update([...get().lines, event.line], get().actions, get().hints);
+      // A checked line replaces the one it re-checked.
+      let lines = [...get().lines.filter((l) => l.key !== line.key), line];
+      // The two sides are transcribed separately, so an answer can arrive before the agent's question.
+      // Once the conversation in speech order shows a line is a key answer, it gets its check too.
+      const late = run(lines, get().actions, get().hints).view.keyAnswers.filter((key) => !requested.has(key));
+      if (late.length) lines = lines.map((l) => (late.includes(l.key) ? requestCheck(l, true) : l));
+      update(lines, get().actions, get().hints);
       clearTimeout(settleTimer);
       settleTimer = setTimeout(() => set(run(get().lines, get().actions, get().hints)), ANSWER_GAP_MS + 100);
     }
@@ -167,8 +194,9 @@ export const useCopilot = create<CopilotState>((set, get) => {
     assist: "off",
     worded: null,
     assistTimes: [],
-    confirm: (target) => act({ type: "confirm", target, at: Date.now() }),
-    approve: () => act({ type: "approve", at: Date.now() }),
+    confirm: (target, issue) => act({ type: "confirm", target, at: epochNow(), ...(issue ? { issue } : {}) }),
+    correct: (key, text) => act({ type: "correct", key, text, at: epochNow() }),
+    approve: () => act({ type: "approve", at: epochNow() }),
     setHighlight: (key) => set({ highlightKey: key }),
   };
 });

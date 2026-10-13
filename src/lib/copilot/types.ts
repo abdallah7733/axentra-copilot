@@ -24,11 +24,35 @@ export type TranscriptEvent = {
   final: true;
   /** Mean word probability from recognition, or null when unknown. */
   confidence: number | null;
+  /** A key answer the second speech model is re-checking: the copilot waits for it. */
+  checking?: boolean;
+  /** What the fast model heard, when the second model's check replaced it. */
+  firstHeard?: string;
+  /** The check failed or timed out: the fast model's text stands, as a doubtful line. */
+  checkFailed?: boolean;
+  /** The agent typed what the caller said; this is what speech recognition heard instead. */
+  typedFrom?: string;
+  /** Epoch milliseconds when the agent typed it. */
+  typedAt?: number;
+  /**
+   * Epoch milliseconds when this text reached the copilot: when the line arrived, or when the
+   * second model's check finished. Defaults to `endedAt`. Speech time places a line in the
+   * conversation; this is when it could first be used for a decision.
+   */
+  availableAt?: number;
 };
 
 /** Things the agent does in the panel. Suggestions never act on their own. */
 export type AgentAction =
-  | { type: "confirm"; target: "issue" | "name" | "address" | "order" | "choice"; at: number }
+  | {
+      type: "confirm";
+      target: "issue" | "name" | "address" | "order" | "choice";
+      at: number;
+      /** For the issue: what the agent heard the problem is. Without it, the copilot's reading is confirmed as it stands. */
+      issue?: "damaged" | "other";
+    }
+  /** The agent types what the caller actually said, in place of what recognition heard. The latest one per line counts. */
+  | { type: "correct"; key: string; text: string; at: number }
   | { type: "approve"; at: number };
 
 export type Customer = {

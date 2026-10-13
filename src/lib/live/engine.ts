@@ -19,6 +19,9 @@ export type EngineHealth = {
   assistModel?: string;
   assistReady?: boolean;
   assistGpu?: boolean;
+  /** The second speech model (large-v3-turbo) that re-checks key caller answers is ready. */
+  check?: boolean;
+  checkModel?: string;
 };
 
 export type Side = "caller" | "agent";
@@ -49,11 +52,19 @@ export async function fetchPhoneToken(accessCode: string): Promise<string> {
   return body.token;
 }
 
-export async function recognize(side: Side, samples: Float32Array): Promise<Recognition> {
-  const response = await fetch(`/transcribe?${new URLSearchParams({ side, lang: "en" })}`, {
+/** The engine gives up on a check after 8 s; the console waits a little longer, then keeps the fast text. */
+export const CHECK_TIMEOUT_MS = 9000;
+
+/**
+ * Recognises one phrase. With `check`, the engine uses its second, slower model with the
+ * full audio window: short answers heard on their own are where the fast model fails.
+ */
+export async function recognize(side: Side, samples: Float32Array, check = false): Promise<Recognition> {
+  const response = await fetch(`/transcribe?${new URLSearchParams({ side, lang: "en", ...(check ? { check: "1" } : {}) })}`, {
     method: "POST",
     headers: { "Content-Type": "audio/wav" },
     body: wav(samples, 16000),
+    signal: check ? AbortSignal.timeout(CHECK_TIMEOUT_MS) : undefined,
   });
   if (!response.ok) throw new Error("Local recognizer could not process audio");
   return response.json();

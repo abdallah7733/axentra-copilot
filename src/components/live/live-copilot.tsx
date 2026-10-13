@@ -1,16 +1,17 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useState, type FormEvent, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowSquareOutIcon, CheckCircleIcon, CheckIcon, LockSimpleIcon, PackageIcon, QuotesIcon, ShieldWarningIcon, WarningIcon, XIcon } from "@phosphor-icons/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Explain, LiveDot, Mono, PanelHeader, ease } from "@/components/workspace/bits";
-import type { Alert, Evidence, SopStep } from "@/lib/copilot/copilot";
+import { isAcknowledgement, type Alert, type Evidence, type SopStep } from "@/lib/copilot/copilot";
 import { money } from "@/lib/demo-data";
 import { pack, useCopilot } from "@/lib/live/copilot-store";
-import { useLive } from "@/lib/live/store";
+import { toEpoch, useLive } from "@/lib/live/store";
 import { cn } from "@/lib/utils";
 
 /*
@@ -24,11 +25,13 @@ const clock = (ms: number) => {
   return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 };
 
+const timeOfDay = (at: number) => new Date(at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+
 /** A quoted transcript line. Hovering it highlights the line in the transcript. */
 function Quote({ ev, className }: { ev: Evidence; className?: string }) {
   const setHighlight = useCopilot((s) => s.setHighlight);
   const callStartedAt = useLive((s) => s.callStartedAt);
-  const startEpoch = callStartedAt === null ? null : performance.timeOrigin + callStartedAt;
+  const startEpoch = callStartedAt === null ? null : toEpoch(callStartedAt);
   return (
     <span
       className={cn("inline-flex items-baseline gap-1.5 rounded-sm text-xs text-muted-foreground hover:text-foreground cursor-default", className)}
@@ -39,10 +42,60 @@ function Quote({ ev, className }: { ev: Evidence; className?: string }) {
       <span>
         &ldquo;{ev.text}&rdquo; <span className="whitespace-nowrap">{ev.side === "agent" ? "Agent" : "Caller"}{startEpoch !== null && <> <Mono>{clock(ev.at - startEpoch)}</Mono></>}</span>
         {ev.lowConfidence && <span> · low confidence</span>}
+        {ev.typedFrom !== undefined && <span> · typed by the agent (heard as &ldquo;{ev.typedFrom}&rdquo;)</span>}
       </span>
     </span>
   );
 }
+
+/** What the agent types in each field: the caller's words, never "checked". */
+const TYPE_LABEL: Record<string, string> = {
+  name: "Caller's full name, exactly as you heard it",
+  address: "Caller's street and city (or email), exactly as you heard it",
+  choice: "What the caller asked for, in their words",
+};
+
+/**
+ * When recognition got a caller's answer wrong, the agent types what the caller said. The
+ * copilot checks it word for word against the order; it never shows the agent the record.
+ */
+function TypeHeard({ lineKey, target }: { lineKey: string; target: string }) {
+  const correct = useCopilot((s) => s.correct);
+  const [text, setText] = useState("");
+  const [refused, setRefused] = useState(false);
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!text.trim()) return;
+    // "Checked" replaced the caller's name on the 11 Oct call.
+    if (isAcknowledgement(text)) return setRefused(true);
+    correct(lineKey, text);
+    setText("");
+  };
+  return (
+    <form onSubmit={submit} className="space-y-1 pt-1">
+      <p className="text-[11px] text-muted-foreground">Heard it differently? Type the caller&rsquo;s words, not &ldquo;checked&rdquo; or &ldquo;confirmed&rdquo;.</p>
+      <div className="flex items-center gap-1.5">
+        <Input
+          value={text}
+          onChange={(e) => {
+            setText(e.target.value);
+            setRefused(false);
+          }}
+          placeholder={TYPE_LABEL[target] ?? "What the caller said"}
+          aria-label={TYPE_LABEL[target] ?? "What the caller said"}
+          className="h-7 text-xs"
+        />
+        <Button type="submit" size="sm" variant="outline" className="h-7 rounded-full text-xs" disabled={!text.trim()}>
+          Use these words
+        </Button>
+      </div>
+      {refused && <p className="text-[11px] text-amber-700 dark:text-amber-500">That&rsquo;s an acknowledgement, not what the caller said. Type their words.</p>}
+    </form>
+  );
+}
+
+/** Answers the agent may type: identity answers and the customer's choice, on caller lines. */
+const typeable = (target: string, ev?: Evidence) => !!ev && ev.side === "caller" && (target === "name" || target === "address" || target === "choice");
 
 function Section({ label, meta, children }: { label: string; meta?: ReactNode; children: ReactNode }) {
   return (
@@ -120,9 +173,14 @@ function AlertCard({ alert }: { alert: Alert }) {
         <div className="min-w-0 flex-1 space-y-1">
           <p className="text-sm font-medium leading-snug">{alert.title}</p>
           <p className="text-xs leading-relaxed">{alert.resolved ?? alert.detail}</p>
-          {alert.evidence.slice(0, 2).map((ev) => (
+          {/* The newest two quotes: the latest is the one the agent can still act on. */}
+          {alert.evidence.length > 2 && <p className="text-[11px] text-muted-foreground">{alert.evidence.length - 2} earlier, then:</p>}
+          {alert.evidence.slice(-2).map((ev) => (
             <Quote key={ev.key} ev={ev} className="flex" />
           ))}
+          {/^verification-(failed|locked)/.test(alert.id) && alert.evidence[0]?.side === "caller" && (
+            <TypeHeard lineKey={alert.evidence[0].key} target={alert.id.endsWith("address") ? "address" : "name"} />
+          )}
         </div>
         <Mono className="shrink-0 text-[10px] text-muted-foreground">{alert.sopRef.replace(`${pack.sop.id} · `, "")}</Mono>
       </div>
@@ -164,12 +222,15 @@ export function LiveCopilot({ className }: { className?: string }) {
           meta={
             intent && (
               <span className="inline-flex items-center gap-1.5">
-                {intent.certainty === "low" ? (
+                {/* Where the reading comes from, not a percentage: the rule and model scores aren't calibrated. */}
+                {intent.source === "model" ? (
+                  <span className="text-amber-600">Model suggestion: needs confirmation</span>
+                ) : intent.certainty === "low" ? (
                   <span className="text-amber-600">Low certainty: confirm with the caller</span>
+                ) : intent.source === "agent" ? (
+                  "Chosen by the agent"
                 ) : (
-                  <>
-                    <Mono className="font-medium text-foreground">{Math.round(intent.confidence * 100)}%</Mono> confidence
-                  </>
+                  "From the caller's words"
                 )}
               </span>
             )
@@ -184,7 +245,15 @@ export function LiveCopilot({ className }: { className?: string }) {
                 </div>
                 <Explain label="Why this intent">
                   <ul className="list-disc pl-4 space-y-1">
-                    <li>Phrases heard: {intent.phrases.map((p) => `“${p}”`).join(", ")}</li>
+                    <li>
+                      {intent.phrases.length
+                        ? `Phrases heard: ${intent.phrases.map((p) => `“${p}”`).join(", ")}`
+                        : intent.source === "model"
+                          ? "No rule matched the caller's words; the local model read the line below."
+                          : intent.source === "agent"
+                            ? "The agent chose the issue from what the caller said."
+                            : "From the caller's answer to the agent's question."}
+                    </li>
                     {intent.evidence.map((ev) => (
                       <li key={ev.key}>
                         <Quote ev={ev} />
@@ -220,12 +289,26 @@ export function LiveCopilot({ className }: { className?: string }) {
               >
                 <LiveDot active className="mt-1 [&>span]:bg-amber-500" />
                 <div className="min-w-0 flex-1 space-y-1">
-                  <p className="text-sm font-medium">Please confirm</p>
+                  <p className="text-sm font-medium">{p.askAgain ? "Ask again" : "Please confirm"}</p>
                   <p className="text-xs leading-relaxed">{p.text}</p>
+                  {typeable(p.target, p.evidence) && <TypeHeard lineKey={p.evidence!.key} target={p.target} />}
+                  {/* The agent says what the caller's problem is; the copilot's guess is never just confirmed. */}
+                  {p.target === "issue" && (
+                    <div className="flex flex-wrap gap-1.5 pt-1">
+                      <Button size="sm" className="h-7 rounded-full bg-amber-600 text-xs text-white hover:bg-amber-700" onClick={() => confirm("issue", "damaged")}>
+                        Arrived damaged
+                      </Button>
+                      <Button size="sm" variant="outline" className="h-7 rounded-full text-xs" onClick={() => confirm("issue", "other")}>
+                        Something else
+                      </Button>
+                    </div>
+                  )}
                 </div>
-                <Button size="sm" className="rounded-full bg-amber-600 text-white hover:bg-amber-700" onClick={() => confirm(p.target)}>
-                  Confirmed
-                </Button>
+                {!p.askAgain && p.target !== "issue" && (
+                  <Button size="sm" className="rounded-full bg-amber-600 text-white hover:bg-amber-700" onClick={() => confirm(p.target)}>
+                    Confirmed
+                  </Button>
+                )}
               </motion.div>
             ))}
           </div>
@@ -312,10 +395,32 @@ export function LiveCopilot({ className }: { className?: string }) {
                     </p>
                   ) : (
                     <div className="flex items-center justify-between gap-2 pt-1">
-                      <span className="text-xs text-muted-foreground">Waiting for your approval.</span>
-                      <Button size="xs" className="rounded-full" onClick={approve}>
-                        Approve
-                      </Button>
+                      <span className="text-xs text-muted-foreground">
+                        {/* An earlier approval stays in the history but doesn't carry over to a changed decision. */}
+                        {rec.staleApproval && (
+                          <span className="block text-amber-700 dark:text-amber-500">
+                            The approval {rec.staleApproval.via === "call" ? "given on the call" : "given in the panel"} at {timeOfDay(rec.staleApproval.at)} doesn&rsquo;t
+                            cover this: {rec.staleApproval.reason}.
+                          </span>
+                        )}
+                        {/* Never approves by itself: a misheard approval is the agent's call to make. */}
+                        {rec.approval.state === "awaiting" && rec.unheardApproval && (
+                          <span className="block text-amber-700 dark:text-amber-500">
+                            Approval not heard in &ldquo;{rec.unheardApproval.text}&rdquo;. If you told the customer, approve here; if not, say it again.
+                          </span>
+                        )}
+                        {rec.approval.state === "not-ready"
+                          ? "Confirm the customer's choice first."
+                          : rec.staleApproval
+                            ? "Approve again if this is right."
+                            : "Waiting for your approval."}
+                      </span>
+                      {/* On hold while a possible change of mind is unconfirmed: there is nothing to approve yet. */}
+                      {rec.approval.state === "awaiting" && (
+                        <Button size="xs" className="rounded-full" onClick={approve}>
+                          Approve
+                        </Button>
+                      )}
                     </div>
                   )}
                 </div>

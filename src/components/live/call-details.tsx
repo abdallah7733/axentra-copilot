@@ -72,6 +72,7 @@ export function CallDetails({ className }: { className?: string }) {
   const startedAt = useLive((s) => s.callStartedAt);
   const endedAt = useLive((s) => s.callEndedAt);
   const delays = useLive((s) => s.delays);
+  const lines = useLive((s) => s.lines);
   const levels = useLive((s) => s.levels);
   const mics = useLive((s) => s.mics);
   const micId = useLive((s) => s.micId);
@@ -86,6 +87,10 @@ export function CallDetails({ className }: { className?: string }) {
   }, [phase, replaying]);
 
   const mid = median(delays);
+  // Checked answers: from the end of speech to the checked text, which is when the copilot can use it.
+  const checked = lines.filter((l) => l.checkSeconds !== undefined && !l.checkFailed).map((l) => (l.availableAtEpoch - l.endedAtEpoch) / 1000);
+  const notChecked = lines.filter((l) => l.checkFailed || l.checkSkipped).length;
+  const checkedMid = median(checked);
   const running = phase === "active" || replaying;
   const elapsed = startedAt === null ? null : (running ? Math.max(now, startedAt) : endedAt ?? startedAt) - startedAt;
   const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
@@ -101,8 +106,14 @@ export function CallDetails({ className }: { className?: string }) {
           <Row label="Duration">
             <Mono>{elapsed === null ? "0:00" : duration(elapsed)}</Mono>
           </Row>
-          <Row label="Median delay">
-            <Mono>{mid === null ? "n/a" : `${mid.toFixed(1)} s`}</Mono>
+          <Row label="First text">
+            <Mono>{mid === null ? "n/a" : `${mid.toFixed(1)} s median`}</Mono>
+          </Row>
+          <Row label="Checked answers">
+            <Mono>
+              {checkedMid === null ? "none yet" : `${checkedMid.toFixed(1)} s median (${checked.length})`}
+              {notChecked > 0 && ` · ${notChecked} not checked`}
+            </Mono>
           </Row>
           {/* After a call, the input the call really used, which can differ from the selection. */}
           <Row label="Agent microphone">{levels?.agentInput ?? mics.find((m) => m.id === micId)?.label ?? "System default"}</Row>
@@ -126,6 +137,7 @@ export function CallDetails({ className }: { className?: string }) {
           </Row>
           <Row label="Hardware">{health?.gpu ? "Apple GPU (Metal)" : "CPU"}</Row>
           <Row label="Speech detection">{health?.vad ? "On" : "Off"}</Row>
+          <Row label="Key answers checked by">{health?.check ? <Mono>whisper {health.checkModel ?? "large-v3-turbo"}</Mono> : "Off"}</Row>
           <Row label="Copilot">Rules ({pack.sop.id})</Row>
           {health?.assist === "local" && (
             <>
@@ -138,6 +150,10 @@ export function CallDetails({ className }: { className?: string }) {
             </>
           )}
           <Row label="Cloud AI">None</Row>
+          {/* Ties a recording to the code it ran. */}
+          <Row label="Console build">
+            <Mono>{process.env.NEXT_PUBLIC_BUILD_COMMIT || "development"}</Mono>
+          </Row>
         </dl>
         <p className="flex items-start gap-2 px-4 pb-4 pt-2 text-xs text-muted-foreground leading-relaxed">
           <ShieldCheckIcon className="size-3.5 shrink-0 mt-0.5" />

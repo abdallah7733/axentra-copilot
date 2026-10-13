@@ -42,9 +42,21 @@ export type LiveLine = {
   /** Epoch milliseconds when the speech began and ended. */
   startedAtEpoch: number;
   endedAtEpoch: number;
+  /** Epoch milliseconds when this text was ready: when the line arrived, or when its check finished. */
+  availableAtEpoch: number;
   /** Seconds between the speaker stopping and the text appearing. */
   delay: number;
   confidence: number | null;
+  /** The second speech model is re-checking this key answer. */
+  checking?: boolean;
+  /** What the fast model heard first, when the check changed the text. */
+  firstHeard?: string;
+  /** Seconds the check took. */
+  checkSeconds?: number;
+  /** The check failed or timed out, or the call ended first; the fast model's text stands. */
+  checkFailed?: boolean;
+  /** A key answer the second model couldn't check: its audio was no longer held, or the engine has no check model. */
+  checkSkipped?: "no-audio" | "no-model";
 };
 
 export type EngineState = "checking" | "offline" | "online";
@@ -82,6 +94,12 @@ type LiveState = {
   replay: (lines: ReplayLine[], msPerLine?: number) => void;
   stopReplay: () => void;
   setSop: (open: boolean) => void;
+  /**
+   * Re-checks a caller line with the engine's second speech model. Returns "started", or why it
+   * couldn't: no audio held for it (only the last few caller phrases are kept), or no check model.
+   * A key answer that can't be checked is marked on screen (not in a replay, which has no audio).
+   */
+  checkLine: (key: string) => "started" | "no-audio" | "no-model";
 };
 
 const MIC_KEY = "axentra-mic-label";
@@ -103,9 +121,25 @@ let epoch = 0;
 let callId = "";
 let seq = 0;
 let replayTimers: ReturnType<typeof setTimeout>[] = [];
+// The last few phrases from both sides, in memory only, so a key line can be re-checked. Cleared with each call.
+const recentAudio = new Map<string, Float32Array>();
+const RECENT_AUDIO = 12;
 
-/** performance.now() time to epoch milliseconds. */
-const toEpoch = (t: number) => Math.round(performance.timeOrigin + t);
+/**
+ * performance.now() time to epoch milliseconds, from one anchor per call: the wall clock and
+ * performance.now() read together when the call starts. Every line and every panel action in a call
+ * is timed on the same monotonic clock, so a wall-clock change mid-call can't reorder them.
+ * Not performance.timeOrigin + t: on macOS performance.now() stops while the Mac sleeps, so that
+ * sum fell 6.5 hours behind on the 11 Oct call ("verified at 04:46 PM", approved at 11:15 PM).
+ */
+let anchor: { wall: number; mono: number } | null = null;
+const reanchor = () => (anchor = { wall: Date.now(), mono: performance.now() });
+export const toEpoch = (t: number) => {
+  const a = anchor ?? reanchor();
+  return Math.round(a.wall + (t - a.mono));
+};
+/** Now, on the call's clock. Panel actions use this too, so they sort correctly against the lines. */
+export const epochNow = () => toEpoch(performance.now());
 
 const readSavedMic = () => {
   try {
@@ -124,12 +158,7 @@ export const useLive = create<LiveState>((set, get) => {
     await get().refreshMics();
   }
 
-  function addLine(fields: Omit<LiveLine, "callId" | "seq" | "startedAtEpoch" | "endedAtEpoch">, endedAt: number) {
-    const line: LiveLine = { ...fields, callId, seq: ++seq, startedAtEpoch: toEpoch(fields.startedAt), endedAtEpoch: toEpoch(endedAt) };
-    // Order by when the speech began, not when recognition finished.
-    const lines = [...get().lines.filter((l) => l.key !== line.key), line].sort((a, b) => a.startedAt - b.startedAt);
-    // A replay has no recognition delay, so it must not count towards the median.
-    set({ lines: lines.slice(-200), delays: get().replaying ? get().delays : [...get().delays, line.delay] });
+  function emitLine(line: LiveLine) {
     liveEvents.emit({
       type: "line",
       line: {
@@ -142,14 +171,38 @@ export const useLive = create<LiveState>((set, get) => {
         endedAt: line.endedAtEpoch,
         final: true,
         confidence: line.confidence,
+        checking: line.checking,
+        firstHeard: line.firstHeard,
+        checkFailed: line.checkFailed,
+        availableAt: line.availableAtEpoch,
       },
     });
   }
 
+  function addLine(fields: Omit<LiveLine, "callId" | "seq" | "startedAtEpoch" | "endedAtEpoch" | "availableAtEpoch">, endedAt: number) {
+    const line: LiveLine = { ...fields, callId, seq: ++seq, startedAtEpoch: toEpoch(fields.startedAt), endedAtEpoch: toEpoch(endedAt), availableAtEpoch: epochNow() };
+    // Order by when the speech began, not when recognition finished.
+    const lines = [...get().lines.filter((l) => l.key !== line.key), line].sort((a, b) => a.startedAt - b.startedAt);
+    // A replay has no recognition delay, so it must not count towards the median.
+    set({ lines: lines.slice(-200), delays: get().replaying ? get().delays : [...get().delays, line.delay] });
+    emitLine(line);
+  }
+
+  /** Replaces a line in place (same key and sequence number) and, unless told not to, tells the copilot. */
+  function updateLine(key: string, change: Partial<LiveLine>, emit = true) {
+    const current = get().lines.find((l) => l.key === key);
+    if (!current) return;
+    const line = { ...current, ...change };
+    set({ lines: get().lines.map((l) => (l.key === key ? line : l)) });
+    if (emit) emitLine(line);
+  }
+
   function startCall(id: string) {
+    reanchor();
     callId = id;
     seq = 0;
-    liveEvents.emit({ type: "call-started", callId, at: Date.now() });
+    recentAudio.clear();
+    liveEvents.emit({ type: "call-started", callId, at: epochNow() });
   }
 
   function cancelReplay() {
@@ -157,7 +210,7 @@ export const useLive = create<LiveState>((set, get) => {
     replayTimers = [];
     if (get().replaying) {
       set({ replaying: false, callEndedAt: performance.now() });
-      liveEvents.emit({ type: "call-ended", callId, at: Date.now() });
+      liveEvents.emit({ type: "call-ended", callId, at: epochNow() });
     }
   }
 
@@ -171,6 +224,9 @@ export const useLive = create<LiveState>((set, get) => {
         .then(async () => {
           const result = await recognize(side, samples);
           if (callEpoch !== epoch || !result.text) return;
+          // Kept for the second model's check: caller answers, and agent lines the copilot may ask about.
+          recentAudio.set(`${side}-${phrase.id}`, samples);
+          for (const key of [...recentAudio.keys()].slice(0, -RECENT_AUDIO)) recentAudio.delete(key);
           addLine(
             {
               key: `${side}-${phrase.id}`,
@@ -221,8 +277,12 @@ export const useLive = create<LiveState>((set, get) => {
   function endCall(message: string) {
     currentCall = null;
     epoch++;
+    recentAudio.clear();
+    // A check still running is dropped with the call (its result can't reach the next call), so settle
+    // it now: the fast model's text stands, as a doubtful line, instead of "checking" for ever.
+    for (const l of get().lines) if (l.checking) updateLine(l.key, { checking: false, checkFailed: true, availableAtEpoch: epochNow() });
     set({ phase: "ready", status: message, callEndedAt: performance.now() });
-    liveEvents.emit({ type: "call-ended", callId, at: Date.now() });
+    liveEvents.emit({ type: "call-ended", callId, at: epochNow() });
     void stopCaptures();
   }
 
@@ -242,6 +302,41 @@ export const useLive = create<LiveState>((set, get) => {
     micId: "",
     replaying: false,
     sopOpen: false,
+
+    checkLine: (key) => {
+      const samples = recentAudio.get(key);
+      const skipped = !get().health?.check ? "no-model" : !samples ? "no-audio" : null;
+      if (skipped || !samples) {
+        if (skipped && !get().replaying) updateLine(key, { checkSkipped: skipped }, false);
+        return skipped ?? "no-audio";
+      }
+      recentAudio.delete(key);
+      const callEpoch = epoch;
+      const began = performance.now();
+      const heard = get().lines.find((l) => l.key === key);
+      const fast = heard?.text ?? "";
+      // The copilot asked for this check and already holds the line back; only the screen needs to know.
+      updateLine(key, { checking: true }, false);
+      recognize(heard?.side ?? "caller", samples, true).then(
+        (result) => {
+          if (callEpoch !== epoch) return;
+          const checkSeconds = (performance.now() - began) / 1000;
+          if (!result.text) return updateLine(key, { checking: false, checkFailed: true, checkSeconds, availableAtEpoch: epochNow() });
+          updateLine(key, {
+            checking: false,
+            text: result.text,
+            confidence: result.confidence,
+            firstHeard: result.text === fast ? undefined : fast,
+            checkSeconds,
+            availableAtEpoch: epochNow(),
+          });
+        },
+        () => {
+          if (callEpoch === epoch) updateLine(key, { checking: false, checkFailed: true, checkSeconds: (performance.now() - began) / 1000, availableAtEpoch: epochNow() });
+        }
+      );
+      return "started";
+    },
 
     checkEngine: async () => {
       const health = await readEngineHealth();
@@ -323,6 +418,8 @@ export const useLive = create<LiveState>((set, get) => {
           call.on("accept", () => {
             set({ phase: "active", status: "Call connected", callStartedAt: performance.now() });
             void startCaptures(call, callEpoch);
+            // The check model loads after the fast one, so read the engine's state again for this call.
+            void readEngineHealth().then((health) => health && set({ health }));
           });
           call.on("disconnect", () => endCall("Call ended. Ready for another call."));
           call.on("cancel", () => endCall("Caller hung up. Ready for another call."));

@@ -1,7 +1,8 @@
 import { findOrderMentions, matchOrder, type MentionMethod, type OrderMention } from "./orders";
-import { agentAsksFor, agentCommits, agentDisclosesFactor, agentOffers, escalationWords, readChoice, readIntent, safetyWords, type Choice } from "./signals";
+import { agentAsksChoice, agentAsksFor, agentCommits, agentDisclosesFactor, agentOffers, escalationWords, readChoice, readIntent, safetyWords, type Choice } from "./signals";
+import { findPhrase, normalize, repeatsItself, soundsLike, words as textWords } from "./text";
 import type { AgentAction, AuthorityBand, ClientPack, Customer, Order, Side, TranscriptEvent } from "./types";
-import { matchAddress, matchName, soundsLikeRecord } from "./verification";
+import { deniesIdentity, isFiller, matchAddress, matchName, soundsLikeRecord } from "./verification";
 
 /*
   The copilot's rules layer. `analyze` rebuilds the whole copilot view from the
@@ -24,7 +25,21 @@ export const LOW_CONFIDENCE = 0.6;
  */
 export const ANSWER_GAP_MS = 2000;
 
-export type Evidence = { key: string; seq: number; side: Side; text: string; at: number; lowConfidence: boolean };
+export type Evidence = {
+  key: string;
+  seq: number;
+  side: Side;
+  text: string;
+  /** When it was said. */
+  at: number;
+  /** When the copilot could first use it: the line's arrival or check result, or the agent's typing, whichever is later. */
+  knownAt: number;
+  lowConfidence: boolean;
+  /** The agent typed this text; speech recognition heard this instead. */
+  typedFrom?: string;
+  /** What the fast speech model heard, when the second model's check replaced it. */
+  firstHeard?: string;
+};
 
 export type FactorState = "idle" | "asking" | "partial" | "confirm" | "ok" | "failed";
 export type Factor = {
@@ -36,8 +51,15 @@ export type Factor = {
   evidence?: Evidence;
   /** The answer as heard so far, across lines. */
   heard?: string;
-  /** Why the agent is asked to confirm: a doubtful line, or an answer that only sounds like the record. */
-  confirmReason?: "low-confidence" | "sounds-like";
+  /** When the factor was verified, by when its evidence was usable (see Evidence.knownAt). */
+  knownAt?: number;
+  /**
+   * Why the agent is asked to confirm: a doubtful line, a garbled one, or an answer that only sounds
+   * like the record. "disagree": a wrong answer the two speech models heard differently; the agent
+   * asks again or types the caller's words, and can't just confirm it. "ambiguous": the answer names
+   * two candidates or denies something else; asked again, never confirmed.
+   */
+  confirmReason?: "low-confidence" | "garbled" | "sounds-like" | "disagree" | "ambiguous";
 };
 
 export type OrderView = Order & { deliveredLabel: string; deliveredDate: string | null };
@@ -58,7 +80,13 @@ export type Alert = {
   resolved?: string;
 };
 
-export type ConfirmPrompt = { target: "issue" | "name" | "address" | "order" | "choice"; text: string; evidence?: Evidence };
+export type ConfirmPrompt = {
+  target: "issue" | "name" | "address" | "order" | "choice";
+  text: string;
+  evidence?: Evidence;
+  /** Nothing to confirm: the agent has to ask the caller again (an answer no rule could read). */
+  askAgain?: boolean;
+};
 
 export type Recommendation = {
   scenario: "A" | "B" | "C";
@@ -74,13 +102,24 @@ export type Recommendation = {
   authorityRow?: number;
   prepared?: { kind: "replacement" | "refund"; reference: string; lines: string[] };
   approval: { state: "not-ready" | "awaiting" | "approved"; by?: string; at?: number; via?: "call" | "panel"; evidence?: Evidence };
+  /**
+   * An earlier approval that doesn't cover this recommendation: given before what it needed was
+   * known, or for a different outcome or order. Kept so the history shows it; a fresh approval is needed.
+   */
+  staleApproval?: { at: number; via: "call" | "panel"; evidence?: Evidence; reason: string };
+  /**
+   * The agent's line about this outcome, while it waits for approval, with no approval heard in it:
+   * "offset a full refund…" for "I've set up a full refund…" (call 7). Never approves; the agent decides.
+   */
+  unheardApproval?: Evidence;
 };
 
 export type CopilotView = {
   callId: string | null;
   lineCount: number;
   intent: {
-    id: "damaged" | "order-status";
+    /** "other": the agent heard a problem this SOP doesn't cover. */
+    id: "damaged" | "order-status" | "other";
     label: string;
     category: string;
     sopId: string | null;
@@ -88,10 +127,18 @@ export type CopilotView = {
     confidence: number;
     phrases: string[];
     evidence: Evidence[];
-    /** "model" when only the local model could read the line; always low certainty. */
-    source: "rules" | "model";
+    /** "model" when only the local model could read the line (always low certainty); "agent" when the agent chose the issue. */
+    source: "rules" | "model" | "agent";
   } | null;
-  verification: { factors: Factor[]; verified: boolean; verifiedAt?: Evidence; locked: boolean; attemptsLeft: number };
+  verification: {
+    factors: Factor[];
+    verified: boolean;
+    verifiedAt?: Evidence;
+    /** When verification was complete on the evidence the copilot had: a correction typed later verifies later. */
+    verifiedKnownAt?: number;
+    locked: boolean;
+    attemptsLeft: number;
+  };
   order: {
     state: "none" | "heard" | "matched" | "unmatched";
     /** Before verification only what was heard is shown, never order details. */
@@ -106,6 +153,18 @@ export type CopilotView = {
   prompts: ConfirmPrompt[];
   steps: SopStep[];
   documentation: { label: string; value: string | null }[];
+  /**
+   * The key answer the copilot is waiting for: the caller's next line gets the second speech model's
+   * check. "issue": no problem heard yet. On 11 Oct the small model cut the opening line off after
+   * "order 427" and the damage sentence was lost; the second model heard all of it.
+   */
+  awaiting: "issue" | "name" | "address" | "choice" | null;
+  /**
+   * Caller lines that answer a key question, judged in speech order: the problem (until one is heard),
+   * the name, the address and the choice. Each gets the second model's check once, even when the
+   * agent's question reached the console after the answer (the two sides are transcribed separately).
+   */
+  keyAnswers: string[];
 };
 
 const DAY = 86_400_000;
@@ -116,8 +175,49 @@ const evidenceOf = (l: TranscriptEvent): Evidence => ({
   side: l.side,
   text: l.text,
   at: l.startedAt,
-  lowConfidence: l.confidence !== null && l.confidence < LOW_CONFIDENCE,
+  knownAt: Math.max(l.availableAt ?? l.endedAt, l.typedAt ?? 0),
+  lowConfidence: (l.confidence !== null && l.confidence < LOW_CONFIDENCE) || !!l.checkFailed,
+  typedFrom: l.typedFrom,
+  firstHeard: l.firstHeard,
 });
+
+/**
+ * The two speech models heard different answers ("Sen bilir." then "Send me." for "Sam Miller" on
+ * 11 Oct): a recognition problem, not the caller's wrong answer. Only the words that carry the answer
+ * are compared, so "My name is Sam Miller" and "My name is John Smith" disagree, and so do "Hill Road
+ * in Dallas" and "Hill Road in Boston". Words that only sound alike ("Jon", "John") agree.
+ */
+const modelsDisagree = (ev: Evidence) => {
+  if (ev.firstHeard === undefined || ev.typedFrom !== undefined) return false;
+  const answer = (text: string) => textWords(text).filter((w) => !isFiller(w));
+  const [first, checked] = [answer(ev.firstHeard), answer(ev.text)];
+  const within = (xs: string[], ys: string[]) => xs.every((x) => ys.some((y) => soundsLike(x, y) || soundsLike(y, x)));
+  return !(within(first, checked) && within(checked, first));
+};
+
+/**
+ * Only an acknowledgement ("Checked", "Confirmed", "OK"), not the caller's words. On the 11 Oct
+ * call the agent typed "Checked" into the name field; it must never stand in for an answer.
+ */
+export const isAcknowledgement = (text: string) => {
+  const w = textWords(text);
+  return w.length > 0 && w.every((t) => /^(checked|check|confirmed|confirm|ok|okay|yes|yeah|yep|correct|right|done|verified|matched|match|fine|good|same)$/.test(t));
+};
+
+/**
+ * The agent's typed corrections, applied to the caller lines they replace. What the agent
+ * typed is clear text: it is never low confidence, and it is judged word for word.
+ */
+function applyCorrections(lines: TranscriptEvent[], actions: AgentAction[]): TranscriptEvent[] {
+  const typed = new Map<string, { text: string; at: number }>();
+  for (const a of actions) if (a.type === "correct" && a.text.trim() && !isAcknowledgement(a.text)) typed.set(a.key, { text: a.text.trim(), at: a.at });
+  if (!typed.size) return lines;
+  return lines.map((l) => {
+    const t = l.side === "caller" ? typed.get(l.key) : undefined;
+    // The line keeps its place in the conversation, but the typed words only count from when they were typed.
+    return t === undefined ? l : { ...l, text: t.text, typedFrom: l.text, typedAt: t.at, confidence: null, checking: false, checkFailed: false };
+  });
+}
 
 export function orderView(order: Order, now: number): OrderView {
   const d = order.deliveredDaysAgo;
@@ -134,8 +234,63 @@ const clock = (at: number) => new Date(at).toLocaleTimeString("en-US", { hour: "
 /** What the optional local model read in lines the rules could not. It never ticks a step. */
 export type ModelHints = { intent?: { id: "damaged" | "order-status"; key: string } };
 
+const DAMAGED_LABEL = "Order issue: damaged on arrival";
+
+const DAMAGE_WORD = /\b(damage[ds]?|cracked|crack|broken|scratched|shattered|smashed|dented)\b/i;
+
+/**
+ * What the agent's damage question asks, if the line has one. Recognition drops question marks, so a
+ * sentence starting with a question word counts as well.
+ * - "arrival": whether it arrived damaged ("Did the tablet arrive damaged?"). A yes establishes it.
+ * - "extent": where or how bad ("Is the damage only on the screen?"). A yes confirms damage the caller
+ *   described; on its own it doesn't say the item arrived that way.
+ * A question about a photo, or a negated one ("Is the screen not damaged?"), confirms nothing.
+ */
+function damageQuestion(text: string): "arrival" | "extent" | null {
+  for (const sentence of text.split(/(?<=[.?!])\s+/)) {
+    if (!DAMAGE_WORD.test(sentence)) continue;
+    const question = /\?\s*$/.test(sentence) || /^(so |and |just to confirm,? )?(is|was|are|were|did|does|do|has|have|can you|could you)\b/i.test(sentence.trim());
+    if (!question || /\b(photo|photos|picture|pictures|pic|image|images)\b/i.test(sentence) || /\b(not|never|no)\b|n't\b/i.test(sentence)) continue;
+    return /\b(arriv\w*|came|come|deliver\w*|receiv\w*|out of the box|opened)\b/i.test(sentence) ? "arrival" : "extent";
+  }
+  return null;
+}
+
+/** A plain yes ("Yes, only the screen."): nothing in the answer denies or qualifies it ("Yes, but it is not damaged."). */
+const saysYes = (text: string) =>
+  /^(yes|yeah|yep|yup|correct|that's right|that is right|right|exactly|it is|it was|it did)\b/i.test(text.trim()) &&
+  !/\b(not|no|never|but|although|though|except)\b|n't\b/i.test(text.replace(/^\W*\w+/, ""));
+
+/** The caller says they or someone else damaged it after it arrived: not damage on arrival. */
+const CAUSED_AFTER =
+  /\b((i|we|he|she|they|my (son|daughter|kid|kids|child|dog|cat|husband|wife|brother|sister)) (accidentally |just )?(dropped|broke|sat on|stepped on|knocked)( it)?|dropped it|it fell|fell off|fell on)\b/i;
+
 /** The rules in one pass over the call. `now` fixes "delivered yesterday" and approval times for tests. */
 export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[] = [], now = Date.now(), hints: ModelHints = {}): CopilotView {
+  return rules(pack, lines, actions, now, hints, false);
+}
+
+/** Why an approval given when the copilot showed `then` doesn't cover the current outcome. */
+function notCovered(then: CopilotView, kind: "replacement" | "refund", orderId: string): string {
+  const r = then.recommendation;
+  if (!then.verification.verified) return "identity wasn't verified yet";
+  if (!then.order.match) return "the order wasn't found yet";
+  if (then.order.match.order.id !== orderId) return `it was for order ${then.order.match.order.id}`;
+  if (!(then.intent?.id === "damaged" && then.intent.certainty === "high")) return "the damage wasn't established yet";
+  if (!then.choice || then.choice.value === "both") return "the customer's choice wasn't known yet";
+  if (r?.prepared && r.prepared.kind !== kind) return `it was for a ${r.prepared.kind}`;
+  if (!r?.prepared) return "the order wasn't confirmed yet";
+  return "the outcome has changed since";
+}
+
+/** An approval as given: by the agent's commitment on the call, or in the panel. */
+type GivenApproval = { at: number; via: "call" | "panel"; evidence?: Evidence };
+
+/**
+ * `past`: this pass rebuilds what the copilot knew at an earlier moment, to check an approval given
+ * then. It only needs the recommendation, so it doesn't look at approvals itself.
+ */
+function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[], now: number, hints: ModelHints, past: boolean): CopilotView {
   const sopId = pack.sop.id;
   const ref = (section: string) => `${sopId} · ${section}`;
   const customer: Customer = pack.customers.find((c) => c.id === pack.callerCustomerId)!;
@@ -143,8 +298,11 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
   const idLengths = [...new Set(pack.orders.map((o) => o.id.length))];
   const firstName = customer.name.split(" ")[0];
 
-  // Speech order, not arrival order: the two sides are recognised separately.
-  const ordered = [...lines].sort((a, b) => a.startedAt - b.startedAt || a.seq - b.seq);
+  // Speech order, not arrival order: the two sides are recognised separately. A line still
+  // being checked by the second speech model is left out until its checked text arrives.
+  const ordered = applyCorrections(lines, actions)
+    .filter((l) => !l.checking)
+    .sort((a, b) => a.startedAt - b.startedAt || a.seq - b.seq);
   const timeline: ({ kind: "line"; at: number; line: TranscriptEvent } | { kind: "action"; at: number; action: AgentAction })[] = [
     ...ordered.map((line) => ({ kind: "line" as const, at: line.startedAt, line })),
     ...actions.map((action) => ({ kind: "action" as const, at: action.at, action })),
@@ -158,7 +316,15 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
   let expecting: "name" | "address" | "order" | null = null;
   const callerMentions: { mention: OrderMention; ev: Evidence }[] = [];
   const agentMentionsAfterVerify: { mention: OrderMention; ev: Evidence }[] = [];
-  let choice: CopilotView["choice"] = null;
+  // Assigned through setChoice too, so declared wide: TypeScript doesn't follow assignments in closures.
+  let choice = null as CopilotView["choice"];
+  // When a different choice became known. An approval given before a change never comes back, even if
+  // the customer returns to the first outcome (outside review of call 6, 12 Oct §4).
+  const choiceChanges: number[] = [];
+  const setChoice = (value: NonNullable<CopilotView["choice"]>["value"], evidence: Evidence, knownAt: number) => {
+    if (choice && choice.value !== value) choiceChanges.push(knownAt);
+    choice = { value, evidence };
+  };
   let askedBoth: Evidence | null = null;
   const escalations: { kind: "words" | "safety"; phrase: string; ev: Evidence }[] = [];
   const earlyOffers: Evidence[] = [];
@@ -166,9 +332,36 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
   const disclosures: Evidence[] = [];
   const prompts: ConfirmPrompt[] = [];
   let lowConfidenceChoice: Evidence | null = null;
+  // The caller's answer to "Which do you prefer?" named neither option ("Anyone please?" for "A new one, please").
+  let choiceAsked = false;
+  let unreadChoice: Evidence | null = null;
   let orderConfirmedInPanel = false;
   let issueConfirmedInPanel = false;
-  let approval: Recommendation["approval"] = { state: "not-ready" };
+  // What the agent chose on the issue card; caller words that arrive later replace "other".
+  let issueChoice: "damaged" | "other" | null = null;
+  // The agent's damage question, and the caller's yes to it.
+  let askedDamage: { ev: Evidence; kind: "arrival" | "extent" } | null = null;
+  let damageAnswer: { question: Evidence; answer: Evidence; kind: "arrival" | "extent" } | null = null;
+  // "I dropped it": the caller says the damage happened after delivery.
+  let causedAfter: { phrase: string; ev: Evidence } | null = null;
+  // Every approval given, checked against what was known at its moment once the recommendation is built.
+  const given: GivenApproval[] = [];
+  let unheardApproval: { ev: Evidence; value: "replacement" | "refund" } | null = null;
+  const keyAnswers: string[] = [];
+
+  /**
+   * The problem is one this SOP covers (damaged on arrival) and it's established: from the
+   * caller's own words, their yes to the agent's damage question, or the agent's choice.
+   * An unconfirmed model reading never counts (on the 11 Oct call an "Order status" reading
+   * the agent confirmed still led to an approved replacement).
+   */
+  const issueSupported = () =>
+    issueChoice === "damaged" ||
+    (issueChoice === null &&
+      ((intent?.id === "damaged" && (intent.certainty === "high" || issueConfirmedInPanel)) || (!intent && hints.intent?.id === "damaged" && issueConfirmedInPanel)));
+  /** Everything an approval needs, at the moment it is given: a stale or early approval doesn't count. */
+  // A possible change of mind heard with low confidence puts the outcome on hold until it's confirmed.
+  const readyToApprove = () => verified() && !!choice && choice.value !== "both" && issueSupported() && !lowConfidenceChoice;
 
   const verified = () => name.state === "ok" && address.state === "ok";
   const markVerified = (ev: Evidence) => {
@@ -176,22 +369,27 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
   };
 
   /** The caller lines answering the agent's current identity question (see ANSWER_GAP_MS). */
-  type Pending = { factor: Factor; evs: Evidence[]; texts: string[]; endedAt: number; result: "partial" | "sounds-like" | "mismatch" | "none" };
+  type Pending = { factor: Factor; evs: Evidence[]; texts: string[]; endedAt: number; result: "partial" | "sounds-like" | "ambiguous" | "mismatch" | "none" };
   // Cast so TypeScript doesn't narrow it to null: it changes inside hear() and closeAnswer().
   let pending = null as Pending | null;
 
   const addressMethod = (text: string) => (/\b(at|@)\b/.test(text.toLowerCase()) && !/\broad\b/i.test(text) ? "email" : "street and city");
 
-  function matched(factor: Factor, ev: Evidence, low: boolean, method?: string) {
+  /** Why an answer can't be trusted as heard, if it can't. */
+  const doubt = (evs: Evidence[], text: string): "low-confidence" | "garbled" | null =>
+    evs.some((e) => e.lowConfidence) ? "low-confidence" : repeatsItself(text) ? "garbled" : null;
+
+  function matched(factor: Factor, ev: Evidence, reason: "low-confidence" | "garbled" | null, method?: string, knownAt = ev.knownAt) {
     factor.evidence = ev;
-    if (low) {
+    factor.knownAt = knownAt;
+    if (reason) {
       // A doubtful line never ticks a step on its own.
       factor.state = "confirm";
-      factor.confirmReason = "low-confidence";
+      factor.confirmReason = reason;
       return;
     }
     factor.state = "ok";
-    factor.method = method;
+    factor.method = ev.typedFrom === undefined ? method : [method, "typed by the agent"].filter(Boolean).join(", ");
     markVerified(ev);
   }
 
@@ -203,17 +401,26 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     pending.texts.push(line.text);
     pending.endedAt = line.endedAt;
     const heard = pending.texts.join(" ");
-    const low = pending.evs.some((e) => e.lowConfidence);
+    const reason = doubt(pending.evs, heard);
     const result = factor.id === "name" ? matchName(heard, customer) : matchAddress(heard, customer);
     factor.heard = heard;
     factor.evidence = ev;
     if (result === "match") {
-      matched(factor, ev, low, factor.id === "address" ? addressMethod(heard) : undefined);
+      matched(factor, ev, reason, factor.id === "address" ? addressMethod(heard) : undefined, Math.max(...pending.evs.map((e) => e.knownAt)));
       pending = null;
+    } else if (result === "ambiguous") {
+      // "Sam Miller or John Smith", "Not Boston, Hill Road in Dallas": ask again; neither a match nor a wrong answer.
+      factor.state = "confirm";
+      factor.confirmReason = "ambiguous";
+      pending.result = "ambiguous";
     } else if (result === "partial") {
       factor.state = "partial";
       pending.result = "partial";
-    } else if (soundsLikeRecord(factor.id, heard, customer)) {
+    } else if (result !== "none" && pending.evs.some((e) => e.typedFrom !== undefined)) {
+      // Typed by the agent: no sound-alike leniency. Anything short of a match is a wrong answer.
+      factor.state = "asking";
+      pending.result = "mismatch";
+    } else if (!deniesIdentity(heard) && (result === "close" || soundsLikeRecord(factor.id, heard, customer))) {
       // Close to the record but not a clear match: the agent decides; never a failed attempt.
       factor.state = "confirm";
       factor.confirmReason = "sounds-like";
@@ -221,19 +428,21 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     } else {
       // More may be coming; a wrong answer counts only once the caller has finished (closeAnswer).
       factor.state = "asking";
-      pending.result = result;
+      pending.result = result === "close" ? "mismatch" : result;
     }
   }
 
   /** The caller finished answering: a clear mismatch is now a failed attempt. */
   function closeAnswer() {
     if (!pending) return;
-    const { factor, evs, result } = pending;
+    const { factor, evs, texts, result } = pending;
     pending = null;
     if (result !== "mismatch" || locked) return;
-    if (evs.some((e) => e.lowConfidence)) {
+    // A wrong answer from a doubtful, garbled or disputed line is the agent's call, never a failed attempt.
+    const reason = doubt(evs, texts.join(" ")) ?? (evs.some(modelsDisagree) ? "disagree" : null);
+    if (reason) {
       factor.state = "confirm";
-      factor.confirmReason = "low-confidence";
+      factor.confirmReason = reason;
       return;
     }
     factor.attempts++;
@@ -247,22 +456,25 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
       const a = item.action;
       if (a.type === "confirm" && (a.target === "name" || a.target === "address")) {
         const factor = a.target === "name" ? name : address;
-        if (factor.state === "confirm" && factor.evidence && !locked) {
+        if (factor.state === "confirm" && factor.confirmReason !== "disagree" && factor.confirmReason !== "ambiguous" && factor.evidence && !locked) {
           if (pending?.factor === factor) pending = null;
           factor.state = "ok";
-          factor.method = factor.method ?? (a.target === "address" ? "confirmed by the agent" : undefined);
+          factor.knownAt = Math.max(a.at, factor.evidence.knownAt);
+          // A confirm press is the agent vouching for the answer: always disclosed, for the name as for the address.
+          factor.method = a.target === "address" ? factor.method ?? "confirmed by the agent" : "confirmed by the agent";
           markVerified(factor.evidence);
         }
       } else if (a.type === "confirm" && a.target === "issue") {
-        issueConfirmedInPanel = true;
+        if (a.issue) issueChoice = a.issue;
+        else issueConfirmedInPanel = true;
       } else if (a.type === "confirm" && a.target === "order") {
         orderConfirmedInPanel = true;
       } else if (a.type === "confirm" && a.target === "choice" && lowConfidenceChoice) {
         const found = readChoice(lowConfidenceChoice.text);
-        if (found) choice = { value: found.choice, evidence: lowConfidenceChoice };
+        if (found) setChoice(found.choice, lowConfidenceChoice, a.at);
         lowConfidenceChoice = null;
-      } else if (a.type === "approve" && approval.state !== "approved") {
-        approval = { state: "approved", at: a.at, via: "panel" };
+      } else if (a.type === "approve" && readyToApprove()) {
+        given.push({ at: a.at, via: "panel" });
       }
       continue;
     }
@@ -271,6 +483,16 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     const ev = evidenceOf(line);
 
     if (line.side === "caller") {
+      // Judged before this line changes anything: what the copilot was waiting for when it was said.
+      // After a choice, a line that reads as a different one, or the answer to the choice asked again, is a key answer too.
+      const heardChoice = readChoice(line.text)?.choice;
+      const changesChoice = !!choice && !!heardChoice && heardChoice !== "both" && heardChoice !== choice.value;
+      if (!locked && (!intent || expecting === "name" || expecting === "address" || lowConfidenceChoice || (!choice && (choiceAsked || unreadChoice)) || (choice && (choiceAsked || changesChoice)))) {
+        keyAnswers.push(line.key);
+      }
+      const caused = CAUSED_AFTER.exec(line.text);
+      if (caused && !ev.lowConfidence) causedAfter = { phrase: caused[0], ev };
+
       for (const found of readIntent(line.text)) {
         if (found.score < 0.5) continue;
         // Keep building the same intent; switch only to a clearly stronger different one.
@@ -278,9 +500,10 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
         if (prev && prev.id !== found.id && found.score <= prev.confidence) continue;
         const same = prev?.id === found.id ? prev : null;
         const certainHere = found.score >= 0.8 && !ev.lowConfidence;
+        if (found.id === "damaged" && certainHere && issueChoice === "other") issueChoice = null;
         intent = {
           id: found.id,
-          label: found.id === "damaged" ? "Order issue: damaged on arrival" : "Order status",
+          label: found.id === "damaged" ? DAMAGED_LABEL : "Order status",
           category: "Orders and delivery",
           sopId: found.id === "damaged" ? sopId : null,
           certainty: same?.certainty === "high" || certainHere ? "high" : "low",
@@ -291,21 +514,48 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
         };
       }
 
+      if (askedDamage && saysYes(line.text) && !ev.lowConfidence) {
+        // "Did it arrive damaged?" "Yes.": the caller established it. "Is the damage only on the screen?"
+        // "Yes, only the screen.": confirms damage the caller described; on its own the agent confirms it arrived that way.
+        damageAnswer = { question: askedDamage.ev, answer: ev, kind: askedDamage.kind };
+        const prior = intent as CopilotView["intent"];
+        const same = prior?.id === "damaged" ? prior : null;
+        const certain = askedDamage.kind === "arrival" || same?.certainty === "high";
+        if (issueChoice === "other" && askedDamage.kind === "arrival") issueChoice = null;
+        intent = {
+          id: "damaged",
+          label: DAMAGED_LABEL,
+          category: "Orders and delivery",
+          sopId,
+          certainty: certain ? "high" : "low",
+          confidence: Math.max(same?.confidence ?? 0, certain ? 0.9 : 0.6),
+          phrases: same?.phrases ?? [],
+          evidence: [...(same?.evidence ?? []), askedDamage.ev, ev].slice(-3),
+          source: "rules",
+        };
+      }
+      askedDamage = null;
+
       for (const mention of findOrderMentions(line.text, idLengths, expecting === "order")) callerMentions.push({ mention, ev });
 
       if (!locked) {
         // The factor the agent asked for; the other only counts if volunteered as a clear match.
         if (expecting === "name") hear(name, line, ev);
-        else if (name.state !== "ok" && matchName(line.text, customer) === "match") matched(name, ev, ev.lowConfidence);
+        else if (name.state !== "ok" && matchName(line.text, customer) === "match") matched(name, ev, doubt([ev], line.text));
         if (expecting === "address") hear(address, line, ev);
-        else if (address.state !== "ok" && matchAddress(line.text, customer) === "match") matched(address, ev, ev.lowConfidence, addressMethod(line.text));
+        else if (address.state !== "ok" && matchAddress(line.text, customer) === "match") matched(address, ev, doubt([ev], line.text), addressMethod(line.text));
       }
 
       const wants = readChoice(line.text);
+      if (wants) unreadChoice = null;
+      else if (choiceAsked && !choice) unreadChoice = ev;
+      choiceAsked = false;
       if (wants?.choice === "both") askedBoth = ev;
-      else if (wants && ev.lowConfidence) lowConfidenceChoice = ev;
-      else if (wants) {
-        choice = { value: wants.choice, evidence: ev };
+      else if (wants && ev.lowConfidence) {
+        // The same choice again, unclear, changes nothing; a different one is a possible change of mind.
+        if (!choice || wants.choice !== choice.value) lowConfidenceChoice = ev;
+      } else if (wants) {
+        setChoice(wants.choice, ev, ev.knownAt);
         lowConfidenceChoice = null;
       }
 
@@ -318,8 +568,12 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
       if (offer && !verified()) earlyOffers.push(ev);
       if (offer && escalations.length) offersInEscalation.push(ev);
 
+      if (agentAsksChoice(line.text)) choiceAsked = true;
+      const kind = ev.lowConfidence ? null : damageQuestion(line.text);
+      askedDamage = kind ? { ev, kind } : null;
+
       closeAnswer();
-      const asks = agentAsksFor(line.text);
+      const asks = agentAsksFor(line.text, !verified() && !locked);
       if (!asks && (expecting === "name" || expecting === "address")) expecting = null;
       if (asks) {
         expecting = asks;
@@ -333,11 +587,25 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
 
       // "Done. The new tablet ships today." after the customer chose is the agent's approval on the call.
       const offeringOptions = /\?/.test(line.text) && /\bor\b/i.test(line.text);
-      if (choice && !offeringOptions && !ev.lowConfidence && approval.state !== "approved" && verified() && !escalations.length) {
-        const commit = agentCommits(line.text);
+      if (choice && !offeringOptions && verified() && !escalations.length && ev.at > choice.evidence.at) {
+        const commit = ev.lowConfidence ? null : agentCommits(line.text);
         const fitsChoice =
           choice.value === "refund" ? /\b(refund|money)\b/i.test(line.text) || /\b(done|all set)\b/i.test(line.text) : !/\brefund\b/i.test(line.text);
-        if (commit && fitsChoice && ev.at > choice.evidence.at) approval = { state: "approved", at: line.endedAt, via: "call", evidence: ev };
+        const aboutChoice =
+          choice.value === "refund"
+            ? /\b(refund|money|dollars|visa|card)\b|\$\d/i.test(line.text)
+            : /\b(ships?|shipping|replacement|new (one|\w+))\b/i.test(line.text) && !/\brefund\b/i.test(line.text);
+        if (commit && fitsChoice && readyToApprove()) {
+          given.push({ at: line.endedAt, via: "call", evidence: ev });
+          unheardApproval = null;
+        } else if (aboutChoice && readyToApprove() && !given.some((g) => g.at > choice!.evidence.at)) {
+          // About the chosen outcome, but no approval heard in it: flag it, and let the second speech model
+          // hear it again (call 7: "offset a full refund" for "I've set up a full refund").
+          unheardApproval = { ev, value: choice.value === "refund" ? "refund" : "replacement" };
+          keyAnswers.push(line.key);
+        }
+        // An unclear agent line once the customer has chosen may carry the approval or the terms: check it too.
+        if (ev.lowConfidence && !keyAnswers.includes(line.key)) keyAnswers.push(line.key);
       }
     }
   }
@@ -347,19 +615,34 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     const damaged = hints.intent.id === "damaged";
     intent = {
       id: hints.intent.id,
-      label: damaged ? "Order issue: damaged on arrival" : "Order status",
+      label: damaged ? DAMAGED_LABEL : "Order status",
       category: "Orders and delivery",
       sopId: damaged ? sopId : null,
       certainty: "low",
       confidence: 0.5,
-      phrases: ["read by the local model"],
+      // No caller phrase backs a model reading; provenance is in `source`, never in the facts.
+      phrases: [],
       evidence: [evidenceOf(hinted)],
       source: "model",
     };
   }
-  if (intent && issueConfirmedInPanel) intent = { ...intent, certainty: "high" };
+  const intentEvidence: Evidence[] = (intent as CopilotView["intent"])?.evidence ?? [];
+  // "I dropped it": damage after delivery isn't covered unless the agent chooses "Arrived damaged".
+  if (causedAfter && intent?.id === "damaged") intent = { ...intent, certainty: "low" };
+  if (issueChoice === "damaged" && intent?.id !== "damaged") {
+    intent = { id: "damaged", label: DAMAGED_LABEL, category: "Orders and delivery", sopId, certainty: "high", confidence: 1, phrases: [], evidence: intentEvidence, source: "agent" };
+  } else if (issueChoice === "damaged" && intent) {
+    intent = { ...intent, certainty: "high" };
+  } else if (issueChoice === "other") {
+    intent = { id: "other", label: "Another issue (not damage on arrival)", category: "Orders and delivery", sopId: null, certainty: "high", confidence: 1, phrases: [], evidence: intentEvidence, source: "agent" };
+  } else if (intent && issueConfirmedInPanel) intent = { ...intent, certainty: "high" };
+  const supported = intent?.id === "damaged" && intent.certainty === "high";
+  const callerDescribed = intent?.source === "rules" && intent.phrases.length > 0;
+  const damageSource =
+    issueChoice === "damaged" || issueConfirmedInPanel ? "confirmed by the agent" : callerDescribed ? "described by the caller" : "confirmed by the caller";
   if (pending && now - pending.endedAt >= ANSWER_GAP_MS) closeAnswer();
   const isVerified = verified();
+  const verifiedKnownAt = isVerified ? Math.max(name.knownAt ?? 0, address.knownAt ?? 0) : undefined;
   const attemptsLeft = Math.max(0, pack.policy.maxVerificationAttempts - Math.max(name.attempts, address.attempts));
 
   /* ---------- Order ---------- */
@@ -445,6 +728,18 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
   const words = escalations.filter((e) => e.kind === "words");
   const escalate = escalations.length > 0 || failedChecks.length > 0;
 
+  const identityFactor = expecting === "name" ? name : expecting === "address" ? address : null;
+  const awaiting: CopilotView["awaiting"] =
+    locked || escalate
+      ? null
+      : identityFactor && identityFactor.state !== "ok"
+        ? identityFactor.id
+        : lowConfidenceChoice || (!choice && (choiceAsked || unreadChoice))
+          ? "choice"
+          : !intent
+            ? "issue"
+            : null;
+
   /* ---------- Recommendation ---------- */
   let recommendation: Recommendation | null = null;
   if (escalate) {
@@ -468,7 +763,7 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
       agentCanApprove: false,
       approval: { state: "not-ready" },
     };
-  } else if (isVerified && match && band) {
+  } else if (isVerified && match && band && supported) {
     const o = match.order;
     const refund = choice?.value === "refund" || !o.inStock;
     const scenario = refund ? "B" : "A";
@@ -516,8 +811,37 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
       agentCanApprove: band.agentCanApprove,
       authorityRow: band.row,
       prepared,
-      approval: prepared ? (approval.state === "approved" ? { ...approval, by: `${pack.agent.name} (${pack.agent.id})` } : { state: "awaiting" }) : { state: "not-ready" },
+      approval: { state: prepared ? "awaiting" : "not-ready" },
     };
+    if (prepared && !past) {
+      // An approval counts only for the outcome it was given for, on what the copilot knew then: the
+      // lines and checked results that had arrived, and the agent's corrections and choices so far. A
+      // correction typed or a check finished later, a change of mind or an order found later all need a
+      // fresh approval (outside review, 12 Oct). The first approval that holds is the one recorded.
+      for (const a of [...given].sort((x, y) => x.at - y.at)) {
+        const then = rules(pack, lines.filter((l) => (l.availableAt ?? l.endedAt) <= a.at), actions.filter((x) => x.at <= a.at), a.at, hints, true);
+        const r = then.recommendation;
+        const changedSince = choiceChanges.some((t) => t > a.at);
+        if (!changedSince && r?.prepared && r.scenario === scenario && r.prepared.kind === prepared.kind && then.order.match?.order.id === o.id) {
+          recommendation.approval = { state: "approved", ...a, by: `${pack.agent.name} (${pack.agent.id})` };
+          recommendation.staleApproval = undefined;
+          break;
+        }
+        const reason = notCovered(then, prepared.kind, o.id);
+        recommendation.staleApproval = { ...a, reason: changedSince && reason === "the outcome has changed since" ? "the customer changed their choice after it" : reason };
+      }
+      if (recommendation.approval.state === "awaiting" && unheardApproval?.value === prepared.kind && choice && unheardApproval.ev.at > choice.evidence.at) {
+        recommendation.unheardApproval = unheardApproval.ev;
+      }
+      if (lowConfidenceChoice) {
+        // A possible change of mind: nothing is approved until the agent confirms what the customer wants.
+        const held = recommendation.approval.state === "approved" ? recommendation.approval : recommendation.staleApproval;
+        recommendation.approval = { state: "not-ready" };
+        if (held?.at !== undefined && held.via) {
+          recommendation.staleApproval = { at: held.at, via: held.via, evidence: held.evidence, reason: "the customer may have changed their mind" };
+        }
+      }
+    }
   }
 
   /* ---------- Alerts ---------- */
@@ -530,7 +854,7 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
       detail: "Verify first; don't commit yet.",
       sopRef: ref("Verification"),
       evidence: earlyOffers,
-      resolved: verifiedAt ? `Identity verified at ${clock(verifiedAt.at)}.` : undefined,
+      resolved: verifiedKnownAt ? `Identity verified at ${clock(verifiedKnownAt)}.` : undefined,
     });
   }
   if (safety.length) {
@@ -606,11 +930,28 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     if (f.state === "confirm" && f.evidence) {
       prompts.push({
         target: f.id,
+        askAgain: f.confirmReason === "disagree" || f.confirmReason === "ambiguous" || undefined,
         text:
-          f.confirmReason === "sounds-like"
+          f.confirmReason === "disagree"
+            ? `Heard "${f.heard}", first heard as "${f.evidence.firstHeard}". The two speech models disagree, so this isn't counted as a wrong answer. Ask the caller to repeat it, or type what they said.`
+            : f.confirmReason === "ambiguous"
+            ? `Heard "${f.heard}". It names more than one ${f.id === "name" ? "name" : "address"}, or denies part of one, so it isn't counted either way. Ask for the ${f.id === "name" ? "full name" : "street and city"} once more.`
+            : f.confirmReason === "sounds-like"
             ? `Heard "${f.heard}". It sounds like the ${f.id === "name" ? "name" : "address"} on the order but isn't a clear match. Ask the caller to repeat it, or confirm if you heard it clearly.`
-            : `Heard "${f.heard ?? f.evidence.text}" with low confidence. Ask the caller to repeat it, or confirm if you heard it clearly.`,
+            : f.confirmReason === "garbled"
+              ? `Heard "${f.heard}", which looks garbled (the same words repeated). Ask the caller to repeat it, or confirm if you heard it clearly.`
+              : (f.id === "name" ? matchName(f.heard ?? f.evidence.text, customer) : matchAddress(f.heard ?? f.evidence.text, customer)) === "match"
+              ? `Heard "${f.heard ?? f.evidence.text}" with low confidence. Ask the caller to repeat it, or confirm if you heard it clearly.`
+              : `Heard "${f.heard ?? f.evidence.text}" with low confidence, and it doesn't match the ${f.id === "name" ? "name" : "address"} on the order. Ask the caller to repeat it, or type what they said. Confirm only if you clearly heard the ${f.id === "name" ? "name" : "address"} on the order; it is recorded as confirmed by you.`,
         evidence: f.evidence,
+      });
+    } else if (f.state === "partial" && f.evidence && !locked && pending?.factor !== f) {
+      // The caller has finished and only part of the answer matched: never a failed attempt, nothing to confirm.
+      prompts.push({
+        target: f.id,
+        text: `Heard "${f.heard}", which matches only part of the ${f.id === "name" ? "name" : "address"} on the order. Ask for the ${f.id === "name" ? "full name" : "street and city"} again, without saying which part didn't match.`,
+        evidence: f.evidence,
+        askAgain: true,
       });
     }
   }
@@ -619,15 +960,37 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
   }
   if (lowConfidenceChoice) {
     prompts.push({ target: "choice", text: `Heard "${lowConfidenceChoice.text}" with low confidence. Confirm what the customer wants.`, evidence: lowConfidenceChoice });
+  } else if (unreadChoice && !escalate && isVerified) {
+    // Before identity is verified the identity prompt comes first; the choice waits.
+    prompts.push({
+      target: "choice",
+      text: `Heard "${unreadChoice.text}"${unreadChoice.lowConfidence ? " with low confidence" : ""}, which isn't a choice. Ask the customer again: replacement or refund?`,
+      evidence: unreadChoice,
+      askAgain: true,
+    });
   }
   if (intent?.certainty === "low" && intent.evidence[0]) {
     prompts.push({
       target: "issue",
       text:
         intent.source === "model"
-          ? `Only the local model read this as "${intent.label}". Confirm the problem with the caller.`
-          : `The issue was heard with low certainty ("${intent.phrases[0]}"). Confirm the damage with the caller.`,
-      evidence: intent.evidence[0],
+          ? `The local model suggests "${intent.label}", but no rule found it in the caller's words. Ask the caller what happened, then choose what they said.`
+          : causedAfter && intent.id === "damaged"
+            ? `The caller said "${causedAfter.phrase}". Damage after delivery isn't covered by ${sopId}. Ask whether it arrived damaged, then choose what they said.`
+            : !intent.phrases.length && damageAnswer
+              ? `The caller said "${damageAnswer.answer.text}" to "${damageAnswer.question.text}", but hasn't said it arrived damaged. Ask what happened, then choose what they said.`
+              : `The issue was heard with low certainty ("${intent.phrases[0]}"). Confirm the damage with the caller.`,
+      evidence: causedAfter && intent.id === "damaged" ? causedAfter.ev : intent.evidence[0],
+    });
+  } else if (!escalate && !locked && ((intent && !supported) || (!intent && isVerified))) {
+    // Nothing to offer under this SOP until the problem is established as damage on arrival.
+    prompts.push({
+      target: "issue",
+      text: intent
+        ? `"${intent.label}" isn't covered by ${sopId}, so don't offer a replacement or refund. Ask the caller what happened; if the item arrived damaged, choose that.`
+        : `The caller's problem isn't in the transcript. Ask what happened to the item before offering anything, then choose what they said.`,
+      evidence: intent?.evidence[0],
+      askAgain: true,
     });
   }
 
@@ -641,12 +1004,12 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     {
       id: "issue",
       label: "Identify the issue",
-      status: !intent ? "pending" : intent.certainty === "high" ? "done" : "attention",
-      detail: intent ? intent.label : undefined,
+      status: !intent ? "pending" : supported ? "done" : "attention",
+      detail: intent ? (intent.sopId ? intent.label : `${intent.label}: no SOP`) : undefined,
       evidence: intent?.evidence[0],
       sopRef: sopId,
     },
-    { id: "name", label: "Verify: full name", status: factorStep(name), detail: factorDetail(name), evidence: name.evidence, sopRef: ref("Verification") },
+    { id: "name", label: "Verify: full name", status: factorStep(name), detail: name.state === "ok" && name.method ? `By ${name.method}` : factorDetail(name), evidence: name.evidence, sopRef: ref("Verification") },
     {
       id: "address",
       label: "Verify: email, or street and city",
@@ -666,9 +1029,12 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     {
       id: "confirm",
       label: "Confirm the item and the damage",
-      status: match?.confirmed ? "done" : "pending",
-      detail: match?.confirmed ? (match.confirmedBy === "panel" ? "Confirmed by the agent" : "Order read back by the agent") : undefined,
-      evidence: typeof match?.confirmedBy === "object" ? match.confirmedBy : undefined,
+      // Reading the order number back confirms the item, not the damage (both ticked it on 11 Oct).
+      status: match?.confirmed && supported ? "done" : match?.confirmed ? "attention" : "pending",
+      detail: match?.confirmed
+        ? `${match.confirmedBy === "panel" ? "Item confirmed by the agent" : "Order read back"}; ${supported ? `damage ${damageSource}` : "damage not confirmed"}`
+        : undefined,
+      evidence: damageAnswer?.answer ?? (typeof match?.confirmedBy === "object" ? match.confirmedBy : undefined),
       sopRef: ref("Claim rules"),
     },
     {
@@ -681,9 +1047,17 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     {
       id: "choice",
       label: "Customer's choice",
-      status: escalate ? "skipped" : choice ? "done" : "pending",
-      detail: escalate ? "Not offered: Scenario C" : choice ? (choice.value === "replacement" ? "Replacement" : "Refund") : askedBoth ? "Asked about both" : undefined,
-      evidence: choice?.evidence ?? askedBoth ?? undefined,
+      status: escalate ? "skipped" : choice && lowConfidenceChoice ? "attention" : choice ? "done" : unreadChoice && isVerified ? "attention" : "pending",
+      detail: escalate
+        ? "Not offered: Scenario C"
+        : choice
+          ? `${choice.value === "replacement" ? "Replacement" : "Refund"}${lowConfidenceChoice ? "; may have changed, confirm" : ""}`
+          : unreadChoice && isVerified
+            ? "Answer not understood; ask again"
+            : askedBoth
+              ? "Asked about both"
+              : undefined,
+      evidence: choice?.evidence ?? unreadChoice ?? askedBoth ?? undefined,
       sopRef: ref("Scenario A and B"),
     },
     {
@@ -717,7 +1091,7 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
       `I understand, and I want this handled properly. I'm opening a case with a senior colleague who can review it. I can transfer you now, or they can call you back within ${pack.policy.escalationCallbackHours} business hours.`,
       "Scenario C"
     );
-  } else if (intent || earlyOffers.length) {
+  } else if (intent || earlyOffers.length || isVerified) {
     if (name.state === "failed" || address.state === "failed") {
       suggestedReply = reply("I wasn't able to match those details. Could you check them and try once more?", "Verification");
     } else if (name.state === "confirm") {
@@ -739,16 +1113,22 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
       suggestedReply = reply(`Thanks, ${firstName}, you're verified. Could you give me the order number, please?`, "Verification");
     } else if (isVerified && o && match && !orderReady) {
       suggestedReply = reply(`Thanks, ${firstName}, you're verified. Just to confirm, is it order ${o.id}, the ${o.shortName} delivered ${o.deliveredLabel}?`, "Verification");
+    } else if (isVerified && o && !supported) {
+      suggestedReply = reply(`Thanks, ${firstName}, you're verified. Can you tell me what's wrong with the ${o.noun}?`, "Claim rules");
     } else if (isVerified && o && match && !match.confirmed && !choice && !askedBoth) {
       suggestedReply = reply(
         `Thanks, ${firstName}, you're verified. I can see the ${o.shortName} on order ${o.id}, delivered ${o.deliveredLabel}. I can ship a replacement today at no cost, with a free return label for the damaged one, or give you a full refund if you'd prefer.`,
         "Scenario A"
       );
+    } else if (o && !choice && unreadChoice) {
+      suggestedReply = reply(`Sorry, I didn't catch that. Would you like the new ${o.noun}, or the refund?`, "Scenario A and B");
     } else if (o && !choice) {
       suggestedReply = reply(
-        `You can have either. A new ${o.noun} ships today at no cost, or a full refund in ${pack.policy.refundTiming}. Which do you prefer?`,
+        `You can have either. A new ${o.noun} ships today at no cost, or a full refund once the carrier scans your return; it takes ${pack.policy.refundTiming} to appear. Which do you prefer?`,
         "Scenario A and B"
       );
+    } else if (o && choice && lowConfidenceChoice) {
+      suggestedReply = reply(`Sorry, just to be sure: would you like the new ${o.noun}, or the refund?`, "Scenario A and B");
     } else if (o && recommendation?.prepared && !approved) {
       suggestedReply =
         recommendation.prepared.kind === "replacement"
@@ -757,19 +1137,70 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
               `I've set up a full refund of ${money(o.price)} to your ${o.payment ?? "original payment method"}. It's issued when the carrier scans the return and takes ${pack.policy.refundTiming} to appear. You'll get an email with a free return label.`,
               "Scenario B"
             );
+    } else if (o && approved && recommendation?.prepared && choice) {
+      // Approval isn't the customer hearing the terms: keep what the agent hasn't said yet since the choice,
+      // across split lines (outside review of call 6, §6). Each term counts only with its facts right, not
+      // negated and heard clearly: keywords alone passed "a refund of 999 dollars… we do not need a scan"
+      // (outside review of call 7, §6). Only then the closing question.
+      const since = choice.evidence.at;
+      const told = normalize(
+        ordered
+          .filter((l) => l.side === "agent" && l.startedAt >= since && !evidenceOf(l).lowConfidence)
+          .map((l) => l.text)
+          .join(" ")
+      );
+      const says = (pattern: RegExp) => {
+        const found = findPhrase(told, pattern);
+        return !!found && !found.negated;
+      };
+      // Every amount and card number said must be the record's, and the record's must be said.
+      const cents = Math.round((o.price % 1) * 100);
+      const amounts = [...told.matchAll(/\$ ?(\d+)(?: (\d{2})\b)?|\b(\d+) dollars\b/g)].map((m) => ({ whole: Number(m[1] ?? m[3]), cents: Number(m[2] ?? 0) }));
+      const rightAmount = amounts.length > 0 && amounts.every((a) => a.whole === Math.floor(o.price) && a.cents === cents);
+      const last4 = o.payment?.match(/\d{4}$/)?.[0];
+      const cards = [...told.matchAll(/\bending (?:in )?(\d[\d ]*\d)\b/g)].map((m) => m[1].replace(/ /g, ""));
+      const rightCard = last4 ? cards.length > 0 && cards.every((c) => c === last4) : says(/\boriginal payment\b/);
+      const spelled = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+      const [low, high] = (pack.policy.refundTiming.match(/\d+/g) ?? []).map((n) => `(${n}|${spelled[Number(n)] ?? n})`);
+      const terms =
+        recommendation.prepared.kind === "refund"
+          ? [
+              { said: says(/\brefund/) && rightAmount && rightCard, text: `I've set up a full refund of ${money(o.price)} to your ${o.payment ?? "original payment method"}.` },
+              {
+                said: says(/\bscan/) && says(new RegExp(`\\b${low} to ${high} (business )?days\\b`)),
+                text: `It's issued when the carrier scans the return and takes ${pack.policy.refundTiming} to appear.`,
+              },
+              { said: says(/\blabel\b/), text: "You'll get an email with a free return label." },
+            ]
+          : [
+              { said: says(/\bships?\b/), text: `The new ${o.noun} ships today.` },
+              { said: says(/\blabel\b/), text: "You'll get an email with a free return label for the damaged one." },
+            ];
+      const unsaid = terms.filter((t) => !t.said).map((t) => t.text);
+      suggestedReply = unsaid.length
+        ? reply(unsaid.join(" "), recommendation.prepared.kind === "refund" ? "Scenario B" : "Scenario A")
+        : reply("Is there anything else I can help with?", "Required documentation");
     } else if (approved) {
       suggestedReply = reply("Is there anything else I can help with?", "Required documentation");
     }
   }
 
   /* ---------- Documentation (filled once approved; nothing is sent) ---------- */
-  const damage = intent?.phrases[0];
+  // Only what the caller said goes in as the damage; never a placeholder or the model's provenance.
+  const qa = damageAnswer && `the caller said "${damageAnswer.answer.text}" to "${damageAnswer.question.text}"`;
+  const damage = !supported
+    ? null
+    : callerDescribed
+      ? [`"${intent!.phrases[0]}"`, qa].filter(Boolean).join("; ")
+      : qa
+        ? `${qa}${damageSource === "confirmed by the agent" ? "; arrival damage confirmed by the agent" : ""}`
+        : "confirmed by the agent; description not captured in the transcript, clarification required";
   const documentation = [
     {
       label: "Case summary",
       value:
         isVerified && o
-          ? `${customer.name} (${customer.id}), order ${o.id} ${o.shortName}${damage ? `, damage: "${damage}"` : ""}, verified by full name and ${address.method ?? "second factor"}`
+          ? `${customer.name} (${customer.id}), order ${o.id} ${o.shortName}, damage: ${damage ?? "not established"}, verified by full name${name.method ? ` (${name.method})` : ""} and ${address.method ?? "second factor"}`
           : null,
     },
     { label: "Resolution", value: approved && recommendation?.prepared ? `${recommendation.prepared.kind === "replacement" ? "Replacement order" : "Refund"} ${recommendation.prepared.reference}` : null },
@@ -784,7 +1215,7 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     callId: ordered[0]?.callId ?? null,
     lineCount: ordered.length,
     intent,
-    verification: { factors: [name, address], verified: isVerified, verifiedAt, locked, attemptsLeft },
+    verification: { factors: [name, address], verified: isVerified, verifiedAt, verifiedKnownAt, locked, attemptsLeft },
     order,
     checks,
     choice,
@@ -794,5 +1225,7 @@ export function analyze(pack: ClientPack, lines: TranscriptEvent[], actions: Age
     prompts,
     steps,
     documentation,
+    awaiting,
+    keyAnswers,
   };
 }

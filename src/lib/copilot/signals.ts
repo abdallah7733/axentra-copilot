@@ -127,15 +127,40 @@ export function agentCommits(text: string): string | null {
   return found && !found.negated ? found.phrase : null;
 }
 
-/** Which verification factor the agent is asking for, if any. */
-export function agentAsksFor(text: string): "name" | "address" | "order" | null {
+const NAME_WORDS = /\b(full name|your name|the name|name on the order)\b/;
+const ADDRESS_WORDS = /\b(street|city|address|zip|postcode|post code|email|e mail)\b/;
+
+/**
+ * A detail asked for as a bare phrase, with no question word: "Thank you and the street and
+ * city for the delivery." (the 10 Oct call; recognition dropped the question mark).
+ */
+const BARE_REQUEST =
+  /^((thank you|thanks|okay|ok|great|perfect|right|alright|sorry|so)( \w+)? )?((and|now|next|also|then|first|lastly|finally) )*(the|your) (\w+ ){0,2}(full name|name|street|city|address|zip|postcode|post code|email|e mail)\b/;
+/** Words that make a line a statement about a detail ("the city doesn't match", "you'll get an email"). */
+const STATEMENT =
+  /\b(i|we|you|i'll|we'll|you'll|i've|we've|i'm|it's|that's|is|are|was|were|has|have|had|does|doesn't|don't|didn't|isn't|aren't|wasn't|can't|won't|will|would|match|matches|matched|send|sent|ship|ships|update|updated|change|changed|see|got|get)\b/;
+
+/**
+ * Which verification factor the agent is asking for, if any. While the identity check is under
+ * way, a bare request for a detail counts too: recognition often drops the question mark.
+ */
+export function agentAsksFor(text: string, identityUnderway = false): "name" | "address" | "order" | null {
   const norm = normalize(text);
   const asking = /\b(can i have|may i have|could i have|can you (give|tell|confirm)|could you (give|tell|confirm)|what('s| is)|please|confirm)\b|\?/.test(text.toLowerCase()) || /\b(can i have|may i have|what is|whats)\b/.test(norm);
-  if (!asking) return null;
-  if (/\b(full name|your name|the name|name on the order)\b/.test(norm)) return "name";
-  if (/\b(street|city|address|zip|postcode|post code|email|e mail)\b/.test(norm)) return "address";
+  if (!asking) {
+    if (!identityUnderway || !BARE_REQUEST.test(norm) || STATEMENT.test(norm.replace(/^thank you\b/, ""))) return null;
+    return NAME_WORDS.test(norm) ? "name" : ADDRESS_WORDS.test(norm) ? "address" : null;
+  }
+  if (NAME_WORDS.test(norm)) return "name";
+  if (ADDRESS_WORDS.test(norm)) return "address";
   if (/\border number\b/.test(norm)) return "order";
   return null;
+}
+
+/** The agent asks the customer to choose: "Which do you prefer?", or both options offered in one line. */
+export function agentAsksChoice(text: string): boolean {
+  if (/\b(which (one )?(do|would) you (prefer|like|want)|(do|would) you prefer|what would you (like|prefer))\b/.test(normalize(text))) return true;
+  return hits(text, WANTS_REPLACEMENT).length > 0 && hits(text, WANTS_REFUND).length > 0;
 }
 
 /** The agent says which verification detail failed, which the SOP forbids. */
