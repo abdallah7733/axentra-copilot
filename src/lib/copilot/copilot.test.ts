@@ -487,6 +487,33 @@ test("10 Oct retest: a garbled name is the agent's call, never a failed attempt"
   assert.equal(v.recommendation?.approval.state, "not-ready");
 });
 
+test("13 Oct call 9: a name the agent confirms is disclosed as the agent's call", () => {
+  const s = script({ 5: { side: "caller", text: "10 million.", confidence: 0.4 } });
+  let v = after(s, 6);
+  const name = v.verification.factors[0];
+  assert.equal(name.state, "confirm");
+  assert.equal(name.attempts, 0);
+  const prompt = v.prompts.find((p) => p.target === "name")!.text;
+  assert.match(prompt, /doesn't match the name on the order/);
+  assert.match(prompt, /recorded as confirmed by you/);
+
+  const at = events(s)[5].endedAt + 500;
+  v = after(s, s.length, [{ type: "confirm", target: "name", at }]);
+  assert.equal(v.verification.factors[0].state, "ok");
+  assert.equal(v.verification.factors[0].method, "confirmed by the agent");
+  assert.equal(v.steps.find((x) => x.id === "name")!.detail, "By confirmed by the agent");
+  assert.match(v.documentation.find((d) => d.label === "Case summary")!.value!, /verified by full name \(confirmed by the agent\)/);
+});
+
+test("a low-confidence name that matches the order keeps the plain confirm prompt", () => {
+  const s = script({ 5: { side: "caller", text: "Sam Miller.", confidence: 0.4 } });
+  const v = after(s, 6);
+  assert.equal(v.verification.factors[0].state, "confirm");
+  const prompt = v.prompts.find((p) => p.target === "name")!.text;
+  assert.match(prompt, /confirm if you heard it clearly/);
+  assert.doesNotMatch(prompt, /doesn't match/);
+});
+
 test("a clear wrong name still counts as a failed attempt", () => {
   const s = script({ 5: { side: "caller", text: "John Smith." } });
   const v = after(s, 6);

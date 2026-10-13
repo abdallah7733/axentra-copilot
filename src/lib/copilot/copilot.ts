@@ -460,7 +460,8 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
           if (pending?.factor === factor) pending = null;
           factor.state = "ok";
           factor.knownAt = Math.max(a.at, factor.evidence.knownAt);
-          factor.method = factor.method ?? (a.target === "address" ? "confirmed by the agent" : undefined);
+          // A confirm press is the agent vouching for the answer: always disclosed, for the name as for the address.
+          factor.method = a.target === "address" ? factor.method ?? "confirmed by the agent" : "confirmed by the agent";
           markVerified(factor.evidence);
         }
       } else if (a.type === "confirm" && a.target === "issue") {
@@ -939,7 +940,9 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
             ? `Heard "${f.heard}". It sounds like the ${f.id === "name" ? "name" : "address"} on the order but isn't a clear match. Ask the caller to repeat it, or confirm if you heard it clearly.`
             : f.confirmReason === "garbled"
               ? `Heard "${f.heard}", which looks garbled (the same words repeated). Ask the caller to repeat it, or confirm if you heard it clearly.`
-              : `Heard "${f.heard ?? f.evidence.text}" with low confidence. Ask the caller to repeat it, or confirm if you heard it clearly.`,
+              : (f.id === "name" ? matchName(f.heard ?? f.evidence.text, customer) : matchAddress(f.heard ?? f.evidence.text, customer)) === "match"
+              ? `Heard "${f.heard ?? f.evidence.text}" with low confidence. Ask the caller to repeat it, or confirm if you heard it clearly.`
+              : `Heard "${f.heard ?? f.evidence.text}" with low confidence, and it doesn't match the ${f.id === "name" ? "name" : "address"} on the order. Ask the caller to repeat it, or type what they said. Confirm only if you clearly heard the ${f.id === "name" ? "name" : "address"} on the order; it is recorded as confirmed by you.`,
         evidence: f.evidence,
       });
     } else if (f.state === "partial" && f.evidence && !locked && pending?.factor !== f) {
@@ -1006,7 +1009,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
       evidence: intent?.evidence[0],
       sopRef: sopId,
     },
-    { id: "name", label: "Verify: full name", status: factorStep(name), detail: factorDetail(name), evidence: name.evidence, sopRef: ref("Verification") },
+    { id: "name", label: "Verify: full name", status: factorStep(name), detail: name.state === "ok" && name.method ? `By ${name.method}` : factorDetail(name), evidence: name.evidence, sopRef: ref("Verification") },
     {
       id: "address",
       label: "Verify: email, or street and city",
