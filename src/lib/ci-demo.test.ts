@@ -3,6 +3,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-test("ci demo: deliberately failing test", () => {
-  assert.equal(1 + 1, 3);
+test("ci demo: fixed demo test", () => {
+  assert.equal(1 + 1, 2);
 });
