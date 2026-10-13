@@ -144,13 +144,42 @@ test("I-02: undoing a name Confirm relocks the order, and the approval given whi
   assert.equal(v.order.match?.confirmed, false);
   const item: AgentAction = { type: "confirm", target: "order", at: at(15, 4600) };
   v = view(s, [press, undo, again, item]);
-  // "Done." on line 12 was said while the name stood on the press now undone: without it, identity wasn't
-  // verified then, so it was never an approval.
+  // "Done." on line 12 was said while the name stood on the press now undone: it stays in the history,
+  // not counted, with the reason, and doesn't come back.
   assert.equal(v.recommendation?.approval.state, "awaiting");
-  assert.equal(v.recommendation?.history, undefined);
+  assert.deepEqual(
+    v.recommendation?.history?.map((h) => [h.via, h.counted, h.reason]),
+    [["call", false, "a confirmation it relied on was undone"]],
+  );
+  assert.equal(v.recommendation?.staleApproval?.via, "call");
+  assert.equal(v.recommendation?.staleApproval?.reason, "a confirmation it relied on was undone");
   v = view(s, [press, undo, again, item, { type: "approve", at: at(15, 5000) }]);
   assert.equal(v.recommendation?.approval.state, "approved");
   assert.equal(v.recommendation?.approval.via, "panel");
+  assert.match(doc(v, "Approval history")!, /on the call: not counted \(a confirmation it relied on was undone\); .* in the panel: counted/);
+});
+
+test("I-02: a spoken approval that relied on an undone item confirmation is kept in the history as invalidated", () => {
+  const s = script(noReadBack, [{ side: "agent", text: "Done. The new tablet ships today." }]);
+  const done = s.length; // the spoken approval, after the panel item confirmation
+  const actions: AgentAction[] = [
+    { type: "confirm", target: "order", at: at(done - 1, 4000) },
+    { type: "undo", target: "order", at: at(done, 4000) },
+  ];
+  let v = view(s, actions.slice(0, 1));
+  assert.equal(v.recommendation?.approval.state, "approved", "heard while the item confirmation stood");
+  assert.equal(v.recommendation?.approval.via, "call");
+  v = view(s, [...actions, { type: "confirm", target: "order", at: at(done, 4500) }]);
+  assert.equal(v.recommendation?.approval.state, "awaiting", "confirming again doesn't revive it");
+  const h = v.recommendation?.history ?? [];
+  // Line 12's "Done." came before any item confirmation; the added one relied on the press now undone.
+  assert.deepEqual(h.map((x) => [x.via, x.counted, x.reason]), [
+    ["call", false, "the item wasn't confirmed with the caller yet"],
+    ["call", false, "a confirmation it relied on was undone"],
+  ]);
+  assert.equal(h[1].evidence?.text, "Done. The new tablet ships today.");
+  v = view(s, [...actions, { type: "confirm", target: "order", at: at(done, 4500) }, { type: "approve", at: at(done, 5000) }]);
+  assert.match(doc(v, "Approval history")!, /on the call: not counted \(a confirmation it relied on was undone\); .* in the panel: counted/);
 });
 
 test("I-02: undoing the item confirmation withdraws the approval that relied on it", () => {

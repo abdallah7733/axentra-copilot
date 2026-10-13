@@ -317,6 +317,8 @@ function notCovered(then: CopilotView, kind: "replacement" | "refund", orderId: 
 
 /** An approval as given: by the agent's commitment on the call, or in the panel. */
 type GivenApproval = { at: number; via: "call" | "panel"; evidence?: Evidence };
+/** The approvals each pass heard, so a later pass can find the ones an undo took away. */
+const givenIn = new WeakMap<CopilotView, GivenApproval[]>();
 
 /**
  * `past`: this pass rebuilds what the copilot knew at an earlier moment, to check an approval given
@@ -910,7 +912,24 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       // correction typed or a check finished later, a change of mind or an order found later all need a
       // fresh approval (outside review, 12 Oct). The first approval that holds is the one recorded.
       // Every approval given is kept in the history, with whether it counted and why not (call 8 review).
-      for (const a of [...given].sort((x, y) => x.at - y.at)) {
+      // A spoken approval said while a Confirm press stood, and only heard because of it: once the press is
+      // undone this pass no longer hears it, so it is found in the pass just before the undo and kept in the
+      // history as not counted, rather than disappearing (Step 5 check, 13 Oct).
+      const withdrawn: GivenApproval[] = [];
+      for (const u of undone) {
+        const before = rules(pack, lines.filter((l) => (l.availableAt ?? l.endedAt) < u.undoneAt), allActions.filter((x) => x.at < u.undoneAt), u.undoneAt, hints, true);
+        for (const g of givenIn.get(before) ?? []) {
+          const known = (x: GivenApproval) => x.at === g.at && x.via === g.via;
+          if (g.via === "call" && g.at >= u.confirmedAt && !given.some(known) && !withdrawn.some(known)) withdrawn.push(g);
+        }
+      }
+      for (const a of [...given, ...withdrawn].sort((x, y) => x.at - y.at)) {
+        if (withdrawn.includes(a)) {
+          const reason = "a confirmation it relied on was undone";
+          if (recommendation.approval.state !== "approved") recommendation.staleApproval = { ...a, reason };
+          history.push({ ...a, counted: false, reason });
+          continue;
+        }
         const then = rules(pack, lines.filter((l) => (l.availableAt ?? l.endedAt) <= a.at), allActions.filter((x) => x.at <= a.at), a.at, hints, true);
         const r = then.recommendation;
         const changedSince = choiceChanges.some((t) => t > a.at);
@@ -1362,7 +1381,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
     },
   ];
 
-  return {
+  const view: CopilotView = {
     callId: ordered[0]?.callId ?? null,
     lineCount: ordered.length,
     intent,
@@ -1384,4 +1403,6 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       ...(match?.confirmedBy === "panel" ? (["order"] as const) : []),
     ],
   };
+  givenIn.set(view, given);
+  return view;
 }
