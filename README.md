@@ -23,7 +23,7 @@ npm run dev
 
 Then open http://localhost:3000. `npm run build && npm start` for production.
 
-`npm test` runs the copilot unit tests in `src/lib/copilot` with Node's built-in test runner (Node 22.18 or later).
+`npm test` runs the copilot unit tests in `src/lib/copilot` with Node's built-in test runner (Node 22.18 or later). `npm run typecheck` generates Next's route types and runs `tsc`; `npm run lint` runs ESLint.
 
 ## Architecture
 
@@ -45,7 +45,20 @@ scripts/export-video.sh
 
 Records Presentation Mode headlessly (Playwright, 1920×1080) from the title card through the outro, clicks Approve at the 5-second audio slot, encodes H.264 at 30 fps, then muxes in `public/audio/call.mp3` (offset to the call scene) and the ambient bed. Output: `exports/axentra-demo.mp4`. Needs a running server on port 3000 and `npx playwright install chromium` once.
 
-## Deployment
+## Checks on pull requests
+
+`.github/workflows/checks.yml` runs on every pull request and on `main` after a
+merge: unit tests, type check, lint, the local console build (`/console`) and
+the public site build (`/axentra-copilot`). On a pull request it tests the
+merge of the PR's latest commit into `main`, and a new push re-runs it. It has
+read-only permissions and uses no secrets; deployment stays in `deploy.yml`.
+
+**Merge rule: merge only a pull request whose latest commit has a green
+"Tests, types, lint and both builds" check.** Unless a branch ruleset on
+`main` requires that check, GitHub only warns on a red check and still lets
+anyone with write access merge, so the rule then rests on people following
+it. A local git hook would not cover merges made on github.com either.
+
 
 Every push to `main` rebuilds and republishes the site through
 `.github/workflows/deploy.yml`. It runs `npm run build:static`, which produces a
