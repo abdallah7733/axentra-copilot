@@ -112,6 +112,10 @@ export type Recommendation = {
    * "offset a full refund…" for "I've set up a full refund…" (call 7). Never approves; the agent decides.
    */
   unheardApproval?: Evidence;
+  /** The approval is on hold while a caller line that may change the choice is being checked. */
+  suspended?: { at: number; via: "call" | "panel"; evidence: Evidence; reason: string };
+  /** Every approval given for this call, in order: whether it counted, and why not. */
+  history?: { at: number; via: "call" | "panel"; evidence?: Evidence; counted: boolean; reason?: string }[];
 };
 
 export type CopilotView = {
@@ -165,6 +169,13 @@ export type CopilotView = {
    * agent's question reached the console after the answer (the two sides are transcribed separately).
    */
   keyAnswers: string[];
+  /**
+   * Each agent line after the customer chose: whether it goes to the second speech model's check, and why
+   * or why not (outside review 14 Oct, 5.6). Lines before the choice are never checked.
+   */
+  agentChecks: { key: string; check: boolean; reason: string }[];
+  /** The agent's Confirm presses still in effect for the name, address and item: each can be undone. */
+  undoable: ("name" | "address" | "order")[];
 };
 
 const DAY = 86_400_000;
@@ -217,6 +228,27 @@ function applyCorrections(lines: TranscriptEvent[], actions: AgentAction[]): Tra
     // The line keeps its place in the conversation, but the typed words only count from when they were typed.
     return t === undefined ? l : { ...l, text: t.text, typedFrom: l.text, typedAt: t.at, confidence: null, checking: false, checkFailed: false };
   });
+}
+
+/** A Confirm press the agent took back: when it was pressed and when it was undone. */
+type Undone = { target: "name" | "address" | "order"; confirmedAt: number; undoneAt: number };
+
+/**
+ * Each undo removes the agent's latest earlier Confirm press for that target that is still standing.
+ * An undo with nothing to take back does nothing.
+ */
+function applyUndos(actions: AgentAction[]): { kept: AgentAction[]; undone: Undone[] } {
+  const removed = new Set<AgentAction>();
+  const undone: Undone[] = [];
+  const byTime = [...actions].sort((a, b) => a.at - b.at);
+  for (const u of byTime) {
+    if (u.type !== "undo") continue;
+    const press = byTime.filter((a) => a.type === "confirm" && a.target === u.target && a.at <= u.at && !removed.has(a)).pop();
+    if (!press) continue;
+    removed.add(press);
+    undone.push({ target: u.target, confirmedAt: press.at, undoneAt: u.at });
+  }
+  return { kept: actions.filter((a) => a.type !== "undo" && !removed.has(a)), undone };
 }
 
 export function orderView(order: Order, now: number): OrderView {
@@ -279,7 +311,7 @@ function notCovered(then: CopilotView, kind: "replacement" | "refund", orderId: 
   if (!(then.intent?.id === "damaged" && then.intent.certainty === "high")) return "the damage wasn't established yet";
   if (!then.choice || then.choice.value === "both") return "the customer's choice wasn't known yet";
   if (r?.prepared && r.prepared.kind !== kind) return `it was for a ${r.prepared.kind}`;
-  if (!r?.prepared) return "the order wasn't confirmed yet";
+  if (!r?.prepared) return then.order.match.confirmed ? "the customer's choice wasn't known yet" : "the item wasn't confirmed with the caller yet";
   return "the outcome has changed since";
 }
 
@@ -290,7 +322,8 @@ type GivenApproval = { at: number; via: "call" | "panel"; evidence?: Evidence };
  * `past`: this pass rebuilds what the copilot knew at an earlier moment, to check an approval given
  * then. It only needs the recommendation, so it doesn't look at approvals itself.
  */
-function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[], now: number, hints: ModelHints, past: boolean): CopilotView {
+function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentAction[], now: number, hints: ModelHints, past: boolean): CopilotView {
+  const { kept: actions, undone } = applyUndos(allActions);
   const sopId = pack.sop.id;
   const ref = (section: string) => `${sopId} · ${section}`;
   const customer: Customer = pack.customers.find((c) => c.id === pack.callerCustomerId)!;
@@ -300,7 +333,8 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
 
   // Speech order, not arrival order: the two sides are recognised separately. A line still
   // being checked by the second speech model is left out until its checked text arrives.
-  const ordered = applyCorrections(lines, actions)
+  const corrected = applyCorrections(lines, actions);
+  const ordered = corrected
     .filter((l) => !l.checking)
     .sort((a, b) => a.startedAt - b.startedAt || a.seq - b.seq);
   const timeline: ({ kind: "line"; at: number; line: TranscriptEvent } | { kind: "action"; at: number; action: AgentAction })[] = [
@@ -335,7 +369,10 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
   // The caller's answer to "Which do you prefer?" named neither option ("Anyone please?" for "A new one, please").
   let choiceAsked = false;
   let unreadChoice: Evidence | null = null;
-  let orderConfirmedInPanel = false;
+  // When the agent pressed Confirm on the item; each press counts only for the order shown at that moment.
+  const orderPresses: number[] = [];
+  // Identity factors the agent's Confirm press verified (each can be undone).
+  const confirmedByPress = new Set<Factor["id"]>();
   let issueConfirmedInPanel = false;
   // What the agent chose on the issue card; caller words that arrive later replace "other".
   let issueChoice: "damaged" | "other" | null = null;
@@ -348,6 +385,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
   const given: GivenApproval[] = [];
   let unheardApproval: { ev: Evidence; value: "replacement" | "refund" } | null = null;
   const keyAnswers: string[] = [];
+  const agentChecks: CopilotView["agentChecks"] = [];
 
   /**
    * The problem is one this SOP covers (damaged on arrival) and it's established: from the
@@ -392,6 +430,19 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
     factor.method = ev.typedFrom === undefined ? method : [method, "typed by the agent"].filter(Boolean).join(", ");
     markVerified(ev);
   }
+
+  /**
+   * A Confirm press can only vouch for an answer that matches the record or sounds like it. Text that
+   * doesn't match ("10 million" for the name on call 9) is asked again, or the agent types what the
+   * caller said, which is then checked word for word (outside review 14 Oct, 5.4).
+   */
+  const resemblesRecord = (f: Factor) => {
+    const text = f.heard ?? f.evidence?.text ?? "";
+    const result = f.id === "name" ? matchName(text, customer) : matchAddress(text, customer);
+    return result === "match" || result === "close" || (!deniesIdentity(text) && soundsLikeRecord(f.id, text, customer));
+  };
+  const confirmable = (f: Factor) =>
+    f.confirmReason === "sounds-like" || ((f.confirmReason === "low-confidence" || f.confirmReason === "garbled") && resemblesRecord(f));
 
   /** A caller line while the agent is waiting for this factor. */
   function hear(factor: Factor, line: TranscriptEvent, ev: Evidence) {
@@ -456,9 +507,10 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
       const a = item.action;
       if (a.type === "confirm" && (a.target === "name" || a.target === "address")) {
         const factor = a.target === "name" ? name : address;
-        if (factor.state === "confirm" && factor.confirmReason !== "disagree" && factor.confirmReason !== "ambiguous" && factor.evidence && !locked) {
+        if (factor.state === "confirm" && confirmable(factor) && factor.evidence && !locked) {
           if (pending?.factor === factor) pending = null;
           factor.state = "ok";
+          confirmedByPress.add(factor.id);
           factor.knownAt = Math.max(a.at, factor.evidence.knownAt);
           // A confirm press is the agent vouching for the answer: always disclosed, for the name as for the address.
           factor.method = a.target === "address" ? factor.method ?? "confirmed by the agent" : "confirmed by the agent";
@@ -468,7 +520,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
         if (a.issue) issueChoice = a.issue;
         else issueConfirmedInPanel = true;
       } else if (a.type === "confirm" && a.target === "order") {
-        orderConfirmedInPanel = true;
+        orderPresses.push(a.at);
       } else if (a.type === "confirm" && a.target === "choice" && lowConfidenceChoice) {
         const found = readChoice(lowConfidenceChoice.text);
         if (found) setChoice(found.choice, lowConfidenceChoice, a.at);
@@ -595,17 +647,32 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
           choice.value === "refund"
             ? /\b(refund|money|dollars|visa|card)\b|\$\d/i.test(line.text)
             : /\b(ships?|shipping|replacement|new (one|\w+))\b/i.test(line.text) && !/\brefund\b/i.test(line.text);
+        const earlier = [...given].reverse().find((g) => g.at > choice!.evidence.at);
+        let note: string;
         if (commit && fitsChoice && readyToApprove()) {
           given.push({ at: line.endedAt, via: "call", evidence: ev });
           unheardApproval = null;
-        } else if (aboutChoice && readyToApprove() && !given.some((g) => g.at > choice!.evidence.at)) {
+          note = "approval heard in this line";
+        } else if (aboutChoice && readyToApprove() && !earlier) {
           // About the chosen outcome, but no approval heard in it: flag it, and let the second speech model
           // hear it again (call 7: "offset a full refund" for "I've set up a full refund").
           unheardApproval = { ev, value: choice.value === "refund" ? "refund" : "replacement" };
           keyAnswers.push(line.key);
+          note = "about the outcome, but no approval heard";
+        } else if (aboutChoice && earlier) {
+          // Call 10: the refund line ("Afzata full refund of 329 dollars.") came after an approval in the panel.
+          note = earlier.via === "panel" ? "already approved in the panel" : "already approved on the call";
+        } else if (aboutChoice) {
+          note = "not ready to approve yet";
+        } else {
+          note = "not about the outcome";
         }
         // An unclear agent line once the customer has chosen may carry the approval or the terms: check it too.
-        if (ev.lowConfidence && !keyAnswers.includes(line.key)) keyAnswers.push(line.key);
+        if (ev.lowConfidence && !keyAnswers.includes(line.key)) {
+          keyAnswers.push(line.key);
+          note = "unclear line after the customer chose";
+        }
+        agentChecks.push({ key: line.key, check: keyAnswers.includes(line.key), reason: note });
       }
     }
   }
@@ -659,8 +726,17 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
     const found = matchOrder(sources.map((s) => s.mention), customerOrders, pack.policy.claimWindowDays);
     if (found) {
       const source = sources.find((s) => s.mention === found.mention);
+      // A confirmation is bound to the order number it confirmed: once the caller names a different
+      // number after it, it no longer stands, even if they come back to the first (plan Step 5, action 5).
+      const stands = (at: number) => !callerMentions.some((c) => c.ev.at > at && !c.mention.candidates.includes(found.order.id));
       const readBack = agentMentionsAfterVerify.find(
-        (a) => !a.ev.lowConfidence && a.mention.candidates.includes(found.order.id)
+        (a) => !a.ev.lowConfidence && a.mention.candidates.includes(found.order.id) && stands(a.ev.at)
+      );
+      // A Confirm press counts only for the order the panel showed when it was pressed.
+      const pressed = orderPresses.some(
+        (at) =>
+          stands(at) &&
+          rules(pack, lines.filter((l) => (l.availableAt ?? l.endedAt) <= at), allActions.filter((x) => x.at < at), at, hints, true).order.match?.order.id === found.order.id
       );
       const needsConfirmation = found.needsConfirmation || !!source?.ev.lowConfidence;
       order.state = "matched";
@@ -669,8 +745,8 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
         method: found.method,
         note: found.note,
         needsConfirmation,
-        confirmed: !!readBack || orderConfirmedInPanel,
-        confirmedBy: readBack?.ev ?? (orderConfirmedInPanel ? "panel" : undefined),
+        confirmed: !!readBack || pressed,
+        confirmedBy: readBack?.ev ?? (pressed ? "panel" : undefined),
         evidence: source?.ev,
       };
     } else if (latestCaller.length) {
@@ -678,7 +754,11 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
     }
   }
   const match = order.match;
-  const orderReady = !!match && (!match.needsConfirmation || match.confirmed);
+  // Located: found in the verified customer's orders, and confirmed if it was only a near match.
+  const orderLocated = !!match && (!match.needsConfirmation || match.confirmed);
+  // Confirmed: the item was read back to the caller (or the agent confirmed it). Required before any
+  // approval, even for an exact match: the SOP lists it, and it costs the agent one sentence (decision 14 Oct, 6.1).
+  const itemConfirmed = !!match?.confirmed;
 
   /* ---------- Eligibility (order data and SOP numbers only) ---------- */
   const checks: Check[] = [];
@@ -740,6 +820,16 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
             ? "issue"
             : null;
 
+  // A caller line after the choice that the second speech model is still checking, and that reads (as first
+  // heard) as a different choice.
+  const settledChoice = choice as CopilotView["choice"];
+  const checkingChange = settledChoice
+    ? corrected.find((l) => {
+        const heard = readChoice(l.text)?.choice;
+        return l.checking && l.side === "caller" && l.startedAt > settledChoice.evidence.at && !!heard && heard !== "both" && heard !== settledChoice.value;
+      })
+    : undefined;
+
   /* ---------- Recommendation ---------- */
   let recommendation: Recommendation | null = null;
   if (escalate) {
@@ -774,7 +864,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
       ...(scenario === "A" ? [choice?.value === "replacement" ? "The customer chose a replacement." : "No preference stated, so replacement is the default."] : []),
     ];
     let prepared: Recommendation["prepared"];
-    if (choice && choice.value !== "both" && orderReady) {
+    if (choice && choice.value !== "both" && itemConfirmed) {
       prepared =
         choice.value === "refund" || refund
           ? {
@@ -814,21 +904,36 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
       approval: { state: prepared ? "awaiting" : "not-ready" },
     };
     if (prepared && !past) {
+      const history: NonNullable<Recommendation["history"]> = [];
       // An approval counts only for the outcome it was given for, on what the copilot knew then: the
       // lines and checked results that had arrived, and the agent's corrections and choices so far. A
       // correction typed or a check finished later, a change of mind or an order found later all need a
       // fresh approval (outside review, 12 Oct). The first approval that holds is the one recorded.
+      // Every approval given is kept in the history, with whether it counted and why not (call 8 review).
       for (const a of [...given].sort((x, y) => x.at - y.at)) {
-        const then = rules(pack, lines.filter((l) => (l.availableAt ?? l.endedAt) <= a.at), actions.filter((x) => x.at <= a.at), a.at, hints, true);
+        const then = rules(pack, lines.filter((l) => (l.availableAt ?? l.endedAt) <= a.at), allActions.filter((x) => x.at <= a.at), a.at, hints, true);
         const r = then.recommendation;
         const changedSince = choiceChanges.some((t) => t > a.at);
-        if (!changedSince && r?.prepared && r.scenario === scenario && r.prepared.kind === prepared.kind && then.order.match?.order.id === o.id) {
+        // A Confirm press the approval relied on was taken back after it: confirming again doesn't revive it.
+        const undoneSince = undone.some((u) => u.confirmedAt <= a.at && u.undoneAt > a.at);
+        if (recommendation.approval.state === "approved") {
+          history.push({ ...a, counted: false, reason: "already approved" });
+          continue;
+        }
+        if (!changedSince && !undoneSince && r?.prepared && r.scenario === scenario && r.prepared.kind === prepared.kind && then.order.match?.order.id === o.id) {
           recommendation.approval = { state: "approved", ...a, by: `${pack.agent.name} (${pack.agent.id})` };
           recommendation.staleApproval = undefined;
-          break;
+          history.push({ ...a, counted: true });
+          continue;
         }
-        const reason = notCovered(then, prepared.kind, o.id);
-        recommendation.staleApproval = { ...a, reason: changedSince && reason === "the outcome has changed since" ? "the customer changed their choice after it" : reason };
+        const covered = notCovered(then, prepared.kind, o.id);
+        const reason = undoneSince
+          ? "a confirmation it relied on was undone"
+          : changedSince && covered === "the outcome has changed since"
+            ? "the customer changed their choice after it"
+            : covered;
+        recommendation.staleApproval = { ...a, reason };
+        history.push({ ...a, counted: false, reason });
       }
       if (recommendation.approval.state === "awaiting" && unheardApproval?.value === prepared.kind && choice && unheardApproval.ev.at > choice.evidence.at) {
         recommendation.unheardApproval = unheardApproval.ev;
@@ -840,7 +945,14 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
         if (held?.at !== undefined && held.via) {
           recommendation.staleApproval = { at: held.at, via: held.via, evidence: held.evidence, reason: "the customer may have changed their mind" };
         }
+      } else if (checkingChange && recommendation.approval.state === "approved") {
+        // A caller line that may change the choice is still with the second speech model: the approval is
+        // on hold until its checked text arrives, then stands or falls by the usual rules (call 8 review).
+        const held = recommendation.approval;
+        recommendation.approval = { state: "not-ready" };
+        recommendation.suspended = { at: held.at!, via: held.via!, evidence: evidenceOf(checkingChange), reason: "a possible change of choice is being checked" };
       }
+      if (history.length) recommendation.history = history;
     }
   }
 
@@ -928,11 +1040,14 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
   /* ---------- Please-confirm prompts (low confidence never ticks a step) ---------- */
   for (const f of [name, address]) {
     if (f.state === "confirm" && f.evidence) {
+      const what = f.id === "name" ? "name" : "address";
       prompts.push({
         target: f.id,
-        askAgain: f.confirmReason === "disagree" || f.confirmReason === "ambiguous" || undefined,
+        askAgain: !confirmable(f) || undefined,
         text:
-          f.confirmReason === "disagree"
+          !confirmable(f) && (f.confirmReason === "low-confidence" || f.confirmReason === "garbled")
+            ? `Heard "${f.heard ?? f.evidence.text}"${f.confirmReason === "garbled" ? ", which looks garbled (the same words repeated)" : " with low confidence"}, and it doesn't match the ${what} on the order. Ask the caller to repeat it, or type what they said; typed words are checked against the order.`
+            : f.confirmReason === "disagree"
             ? `Heard "${f.heard}", first heard as "${f.evidence.firstHeard}". The two speech models disagree, so this isn't counted as a wrong answer. Ask the caller to repeat it, or type what they said.`
             : f.confirmReason === "ambiguous"
             ? `Heard "${f.heard}". It names more than one ${f.id === "name" ? "name" : "address"}, or denies part of one, so it isn't counted either way. Ask for the ${f.id === "name" ? "full name" : "street and city"} once more.`
@@ -940,9 +1055,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
             ? `Heard "${f.heard}". It sounds like the ${f.id === "name" ? "name" : "address"} on the order but isn't a clear match. Ask the caller to repeat it, or confirm if you heard it clearly.`
             : f.confirmReason === "garbled"
               ? `Heard "${f.heard}", which looks garbled (the same words repeated). Ask the caller to repeat it, or confirm if you heard it clearly.`
-              : (f.id === "name" ? matchName(f.heard ?? f.evidence.text, customer) : matchAddress(f.heard ?? f.evidence.text, customer)) === "match"
-              ? `Heard "${f.heard ?? f.evidence.text}" with low confidence. Ask the caller to repeat it, or confirm if you heard it clearly.`
-              : `Heard "${f.heard ?? f.evidence.text}" with low confidence, and it doesn't match the ${f.id === "name" ? "name" : "address"} on the order. Ask the caller to repeat it, or type what they said. Confirm only if you clearly heard the ${f.id === "name" ? "name" : "address"} on the order; it is recorded as confirmed by you.`,
+              : `Heard "${f.heard ?? f.evidence.text}" with low confidence. Ask the caller to repeat it, or confirm if you heard it clearly; it is recorded as confirmed by you.`,
         evidence: f.evidence,
       });
     } else if (f.state === "partial" && f.evidence && !locked && pending?.factor !== f) {
@@ -957,6 +1070,13 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
   }
   if (match && match.needsConfirmation && !match.confirmed) {
     prompts.push({ target: "order", text: `${match.note} Read the order number back to the caller.`, evidence: match.evidence });
+  } else if (match && !match.confirmed && choice && !escalate) {
+    // Everything else is ready: the item read-back is what approval waits for.
+    prompts.push({
+      target: "order",
+      text: `The item hasn't been confirmed with the caller. Read back order ${match.order.id}, the ${match.order.shortName}, before approving. If you already did and the transcript missed it, confirm here.`,
+      evidence: match.evidence,
+    });
   }
   if (lowConfidenceChoice) {
     prompts.push({ target: "choice", text: `Heard "${lowConfidenceChoice.text}" with low confidence. Confirm what the customer wants.`, evidence: lowConfidenceChoice });
@@ -1021,7 +1141,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
     {
       id: "order",
       label: "Locate the order",
-      status: !isVerified ? (locked ? "blocked" : "pending") : !match ? "pending" : orderReady ? "done" : "attention",
+      status: !isVerified ? (locked ? "blocked" : "pending") : !match ? "pending" : orderLocated ? "done" : "attention",
       detail: !isVerified ? (order.heard ? `Heard ${order.heard.reading}; locked until identity check` : "Locked until identity check") : match ? `#${match.order.id}` : order.state === "unmatched" ? "No match in this customer's orders" : undefined,
       evidence: match?.evidence ?? order.heard?.evidence,
       sopRef: ref("Verification"),
@@ -1063,8 +1183,14 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
     {
       id: "approval",
       label: escalate ? "Escalate to Tier 2" : "Agent approval",
-      status: escalate ? "pending" : approved ? "done" : "pending",
-      detail: approved ? (recommendation?.approval.via === "call" ? "Confirmed on the call" : "Approved in the panel") : undefined,
+      status: escalate ? "pending" : approved ? "done" : recommendation?.suspended ? "attention" : "pending",
+      detail: approved
+        ? recommendation?.approval.via === "call"
+          ? "Confirmed on the call"
+          : "Approved in the panel"
+        : recommendation?.suspended
+          ? "On hold: checking a possible change of choice"
+          : undefined,
       evidence: recommendation?.approval.evidence,
       sopRef: ref("Resolution authority"),
     },
@@ -1079,6 +1205,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
   const o = match?.order;
   const reply = (text: string, section: string) => ({ text, sopRef: ref(section), basis: "rules" as const });
   let suggestedReply: CopilotView["suggestedReply"] = null;
+  let termRecord: { label: string; said: boolean; evidence?: Evidence }[] = [];
   if (locked) {
     suggestedReply = reply("For your security I can't discuss the order on this call. I can arrange a call back to the phone number on the order.", "Verification");
   } else if (safety.length) {
@@ -1111,7 +1238,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
       suggestedReply = reply("Sorry, could you give me the street and the city once more?", "Verification");
     } else if (isVerified && !match) {
       suggestedReply = reply(`Thanks, ${firstName}, you're verified. Could you give me the order number, please?`, "Verification");
-    } else if (isVerified && o && match && !orderReady) {
+    } else if (isVerified && o && match && !orderLocated) {
       suggestedReply = reply(`Thanks, ${firstName}, you're verified. Just to confirm, is it order ${o.id}, the ${o.shortName} delivered ${o.deliveredLabel}?`, "Verification");
     } else if (isVerified && o && !supported) {
       suggestedReply = reply(`Thanks, ${firstName}, you're verified. Can you tell me what's wrong with the ${o.noun}?`, "Claim rules");
@@ -1129,6 +1256,8 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
       );
     } else if (o && choice && lowConfidenceChoice) {
       suggestedReply = reply(`Sorry, just to be sure: would you like the new ${o.noun}, or the refund?`, "Scenario A and B");
+    } else if (o && match && choice && !match.confirmed && !lowConfidenceChoice) {
+      suggestedReply = reply(`Just to confirm, that's order ${o.id}, the ${o.shortName}?`, "Claim rules");
     } else if (o && recommendation?.prepared && !approved) {
       suggestedReply =
         recommendation.prepared.kind === "replacement"
@@ -1162,20 +1291,29 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
       const rightCard = last4 ? cards.length > 0 && cards.every((c) => c === last4) : says(/\boriginal payment\b/);
       const spelled = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
       const [low, high] = (pack.policy.refundTiming.match(/\d+/g) ?? []).map((n) => `(${n}|${spelled[Number(n)] ?? n})`);
+      const timing = new RegExp(`\\b${low} to ${high} (business )?days\\b`);
       const terms =
         recommendation.prepared.kind === "refund"
           ? [
-              { said: says(/\brefund/) && rightAmount && rightCard, text: `I've set up a full refund of ${money(o.price)} to your ${o.payment ?? "original payment method"}.` },
+              { label: "Refund amount and card", key: /\brefund/, said: says(/\brefund/) && rightAmount && rightCard, text: `I've set up a full refund of ${money(o.price)} to your ${o.payment ?? "original payment method"}.` },
               {
-                said: says(/\bscan/) && says(new RegExp(`\\b${low} to ${high} (business )?days\\b`)),
+                label: "When it's issued and how long it takes",
+                key: /\bscan/,
+                said: says(/\bscan/) && says(timing),
                 text: `It's issued when the carrier scans the return and takes ${pack.policy.refundTiming} to appear.`,
               },
-              { said: says(/\blabel\b/), text: "You'll get an email with a free return label." },
+              { label: "Return label", key: /\blabel\b/, said: says(/\blabel\b/), text: "You'll get an email with a free return label." },
             ]
           : [
-              { said: says(/\bships?\b/), text: `The new ${o.noun} ships today.` },
-              { said: says(/\blabel\b/), text: "You'll get an email with a free return label for the damaged one." },
+              { label: "Ships today", key: /\bships?\b/, said: says(/\bships?\b/), text: `The new ${o.noun} ships today.` },
+              { label: "Return label", key: /\blabel\b/, said: says(/\blabel\b/), text: "You'll get an email with a free return label for the damaged one." },
             ];
+      // The record keeps each term with the line that said it (call 8 review).
+      const agentSince = ordered.filter((l) => l.side === "agent" && l.startedAt >= since && !evidenceOf(l).lowConfidence);
+      termRecord = terms.map((t) => {
+        const line = t.said ? agentSince.find((l) => { const f = findPhrase(normalize(l.text), t.key); return !!f && !f.negated; }) : undefined;
+        return { label: t.label, said: t.said, evidence: line ? evidenceOf(line) : undefined };
+      });
       const unsaid = terms.filter((t) => !t.said).map((t) => t.text);
       suggestedReply = unsaid.length
         ? reply(unsaid.join(" "), recommendation.prepared.kind === "refund" ? "Scenario B" : "Scenario A")
@@ -1209,6 +1347,19 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
       value: approved && recommendation ? `${pack.agent.name} (${pack.agent.id}), ${recommendation.approver}, ${clock(recommendation.approval.at ?? now)}` : null,
     },
     { label: "Customer communication", value: approved ? "Confirmation email and prepaid return label (prepared; nothing is sent in this demo)" : null },
+    {
+      label: "Approval history",
+      value:
+        approved && recommendation?.history
+          ? recommendation.history
+              .map((h) => `${clock(h.at)} ${h.via === "call" ? "on the call" : "in the panel"}: ${h.counted ? "counted" : `not counted (${h.reason})`}`)
+              .join("; ")
+          : null,
+    },
+    {
+      label: "Terms said",
+      value: approved && termRecord.length ? termRecord.map((t) => `${t.label}: ${t.evidence ? `"${t.evidence.text}" (${clock(t.evidence.at)})` : "not said yet"}`).join("; ") : null,
+    },
   ];
 
   return {
@@ -1227,5 +1378,10 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], actions: AgentAction[
     documentation,
     awaiting,
     keyAnswers,
+    agentChecks,
+    undoable: [
+      ...(["name", "address"] as const).filter((t) => confirmedByPress.has(t)),
+      ...(match?.confirmedBy === "panel" ? (["order"] as const) : []),
+    ],
   };
 }

@@ -73,6 +73,13 @@ const leftover = (tokens: string[], expected: string[]) =>
 /** Some parts right and nothing else said: ask for the rest. Anything else said: a wrong answer. */
 const judge = (someRight: boolean, extra: string[]): FactorResult => (extra.length ? "mismatch" : someRight ? "partial" : "none");
 
+/** How a single letter of an email is said aloud. */
+const LETTER_NAMES: Record<string, string[]> = {
+  a: ["ay"], b: ["bee", "be"], c: ["see", "sea", "cee"], d: ["dee"], e: ["ee"], f: ["ef", "eff"], g: ["gee"], h: ["aitch", "h"], i: ["eye"], j: ["jay"],
+  k: ["kay"], l: ["el", "ell"], m: ["em"], n: ["en"], o: ["oh"], p: ["pee"], q: ["queue", "cue"], r: ["ar", "are"], s: ["es", "ess"], t: ["tee", "tea"],
+  u: ["you"], v: ["vee"], w: ["double"], x: ["ex"], y: ["why"], z: ["zee", "zed"],
+};
+
 const STATE_NAMES: Record<string, string[]> = { tx: ["texas"], ca: ["california"], ny: ["new", "york"], fl: ["florida"] };
 const STREET_TYPES: Record<string, string[]> = { road: ["road", "rd"], street: ["street", "st"], avenue: ["avenue", "ave"], drive: ["drive", "dr"], lane: ["lane", "ln"] };
 
@@ -87,7 +94,16 @@ export function matchAddress(text: string, customer: Customer): FactorResult {
   if (tokens.includes("at") && (tokens.includes("com") || tokens.includes("mail") || tokens.some((t) => t.includes("@")))) {
     const local = words(customer.emailFull.split("@")[0]);
     const domain = words(customer.emailFull.split("@")[1]).filter((w) => w !== "dot" && w !== "com");
-    return allHeard([...local.filter((w) => w.length > 1), ...domain].map((w) => heardAs(tokens, w))) ?? "mismatch";
+    // A single letter ("s" in s.miller) can be said as its name ("es"). Every part counts: "miller at
+    // example mail dot com" leaves out the "s" and is only part of the email (plan Step 5, action 6).
+    const letter = (w: string): Heard => (tokens.includes(w) || (LETTER_NAMES[w] ?? []).some((n) => tokens.includes(n)) ? "exact" : null);
+    const localHeard = local.map((w) => (w.length === 1 ? letter(w) : heardAs(tokens, w)));
+    const domainHeard = domain.map((w) => heardAs(tokens, w));
+    const all = allHeard([...localHeard, ...domainHeard]);
+    if (all) return all;
+    // The domain right and the rest of the address missing, with nothing else said: ask for the rest.
+    const unexpected = tokens.filter((t) => !NOT_AN_ANSWER.test(t) && !/^(dot|com|@)$/.test(t) && ![...local, ...domain].some((w) => t === w || soundsLike(t, w) || (LETTER_NAMES[w] ?? []).includes(t)));
+    return domainHeard.every(Boolean) && !unexpected.length ? "partial" : "mismatch";
   }
   const [streetName, ...streetRest] = words(customer.address.street);
   const typeWords = streetRest.flatMap((w) => STREET_TYPES[w] ?? [w]);

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { checkWording, parseIntentLabel } from "./assist";
+import { sunlake } from "@/lib/live/sunlake-data";
 
 const names = ["Sam", "Sunlake Tab 11"];
 const draft =
@@ -24,7 +25,7 @@ test("an added or dropped offer is rejected", () => {
 
 test("the same offer in other words is kept; a new kind of offer is not", () => {
   const d = "You can have either. A new tablet ships today at no cost, or a full refund in 3 to 5 business days. Which do you prefer?";
-  const w = "You can have either. A new tablet ships today at no cost, or a full refund in 3 to 5 business days. Would you like the replacement or the refund, Sam?";
+  const w = "You can have either. A new tablet ships today at no cost, or a full refund in 3 to 5 business days. Would you like the replacement or the refund?";
   assert.equal(checkWording(d, w, names), w);
   assert.equal(checkWording(d, w.replace("Would you like", "I can also transfer you. Would you like"), names), null);
 });
@@ -49,4 +50,40 @@ test("intent labels", () => {
   assert.equal(parseIntentLabel("damaged"), "damaged");
   assert.equal(parseIntentLabel("Order_status"), "order-status");
   assert.equal(parseIntentLabel("other"), null);
+});
+
+/* ---------- I-03: names in a suggested reply come from the verified record, never from the model ---------- */
+
+const people = [...sunlake.customers.map((c) => c.name), ...sunlake.orders.map((o) => o.customerName), sunlake.agent.name];
+const sorry = "I'm sorry to hear that. Before I look at the order, can I have your full name, please?";
+
+test("I-03: a name the model adds is rejected, in any capitalisation (call 10, 'Afzata')", () => {
+  for (const worded of [
+    "I'm sorry to hear that, Afzata. Before I look at the order, can I have your full name, please?",
+    "I'm sorry to hear that, afzata. Before I look at the order, can I have your full name, please?",
+    "Afzata, I'm sorry to hear that. Before I look at the order, can I have your full name, please?",
+    "Hi afzata, I'm sorry to hear that. Before I look at the order, can I have your full name, please?",
+    "I'm so sorry to hear that, and I'll help you, Mr Afzata. Can I have your full name, please, before I look at the order?",
+  ]) {
+    assert.equal(checkWording(sorry, worded, names, people), null, worded);
+  }
+});
+
+test("I-03: another customer's name, or even the verified customer's, is rejected when the draft has none", () => {
+  assert.equal(checkWording(sorry, "I'm sorry to hear that, Laura. Before I look at the order, can I have your full name, please?", names, people), null);
+  assert.equal(checkWording(sorry, "I'm sorry to hear that, laura king. Before I look at the order, can I have your full name, please?", names, people), null);
+  assert.equal(checkWording(sorry, "I'm sorry to hear that, Sam. Before I look at the order, can I have your full name, please?", names, people), null);
+  // Where the draft has the verified name, the rewording keeps it and adds no other.
+  assert.equal(checkWording(draft, draft.replace("Thanks, Sam,", "Thanks, Sam Miller,"), names, people), null);
+  assert.equal(checkWording(draft, draft.replace("Thanks, Sam,", "Thank you, Sam,"), names, people), draft.replace("Thanks, Sam,", "Thank you, Sam,"));
+});
+
+test("I-03: a neutral rewording with no name is kept", () => {
+  for (const worded of [
+    "I'm really sorry to hear that. Before I look into the order, could I have your full name, please?",
+    "Sorry to hear that. I'll need your full name first, please, before I look at the order.",
+    "Of course, sorry to hear that. Can I have your full name before I look at the order, please?",
+  ]) {
+    assert.equal(checkWording(sorry, worded, names, people), worded, worded);
+  }
 });

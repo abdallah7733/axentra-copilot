@@ -26,6 +26,8 @@ export function LiveTranscript({ className }: { className?: string }) {
   const replaying = useLive((s) => s.replaying);
   const highlightKey = useCopilot((s) => s.highlightKey);
   const actions = useCopilot((s) => s.actions);
+  // Why an agent line after the customer's choice wasn't sent for the second check (Step 5C).
+  const agentChecks = useCopilot((s) => s.view.agentChecks);
   // What the agent typed for a misheard caller line; the latest one counts.
   const typed = new Map(actions.flatMap((a) => (a.type === "correct" ? [[a.key, a.text] as const] : [])));
   const endRef = useRef<HTMLDivElement>(null);
@@ -86,6 +88,10 @@ export function LiveTranscript({ className }: { className?: string }) {
                       )}
                       {t.checkFailed && <span> · check unavailable, treated as doubtful</span>}
                       {t.checkSkipped && <span> · not double-checked ({t.checkSkipped === "no-model" ? "no check model running" : "audio no longer held"})</span>}
+                      {(() => {
+                        const note = !t.checking && t.checkSeconds === undefined && !t.checkSkipped ? agentChecks.find((c) => c.key === t.key && !c.check) : undefined;
+                        return note && note.reason !== "not about the outcome" ? <span> · not double-checked ({note.reason})</span> : null;
+                      })()}
                     </p>
                   </div>
                 </motion.li>

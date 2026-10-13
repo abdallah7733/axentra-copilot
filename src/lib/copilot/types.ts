@@ -53,7 +53,13 @@ export type AgentAction =
     }
   /** The agent types what the caller actually said, in place of what recognition heard. The latest one per line counts. */
   | { type: "correct"; key: string; text: string; at: number }
-  | { type: "approve"; at: number };
+  | { type: "approve"; at: number }
+  /**
+   * The agent takes back their latest Confirm press for the name, the address or the item (an
+   * accidental press, call 9). What depended on it relocks, and an approval given while it stood
+   * doesn't come back when it is confirmed again.
+   */
+  | { type: "undo"; target: "name" | "address" | "order"; at: number };
 
 export type Customer = {
   id: string;

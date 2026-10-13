@@ -126,8 +126,13 @@ function StepIcon({ status }: { status: SopStep["status"] }) {
   );
 }
 
+/** The step each undoable Confirm press shows on. */
+const UNDO_STEP = { name: "name", address: "address", order: "confirm" } as const;
+
 function Steps({ steps }: { steps: SopStep[] }) {
   const setHighlight = useCopilot((s) => s.setHighlight);
+  const undoable = useCopilot((s) => s.view.undoable);
+  const undo = useCopilot((s) => s.undo);
   return (
     <ol className="grid grid-cols-1 gap-0.5" aria-label="SOP steps">
       {steps.map((s) => (
@@ -143,6 +148,14 @@ function Steps({ steps }: { steps: SopStep[] }) {
             {s.label}
           </span>
           {s.detail && <span className="ml-auto truncate pl-2 text-xs text-muted-foreground">{s.detail}</span>}
+          {/* An accidental Confirm press can be taken back: what depended on it relocks. */}
+          {undoable
+            .filter((t) => UNDO_STEP[t] === s.id)
+            .map((t) => (
+              <Button key={t} variant="ghost" size="xs" className={cn("h-5 shrink-0 px-1.5 text-[11px] text-muted-blue", !s.detail && "ml-auto")} onClick={() => undo(t)}>
+                Undo
+              </Button>
+            ))}
         </li>
       ))}
     </ol>
@@ -409,7 +422,14 @@ export function LiveCopilot({ className }: { className?: string }) {
                             Approval not heard in &ldquo;{rec.unheardApproval.text}&rdquo;. If you told the customer, approve here; if not, say it again.
                           </span>
                         )}
-                        {rec.approval.state === "not-ready"
+                        {rec.suspended && (
+                          <span className="block text-amber-700 dark:text-amber-500">
+                            The approval {rec.suspended.via === "call" ? "given on the call" : "given in the panel"} at {timeOfDay(rec.suspended.at)} is on hold: {rec.suspended.reason}.
+                          </span>
+                        )}
+                        {rec.suspended
+                          ? "It stands again if the check hears the same choice."
+                          : rec.approval.state === "not-ready"
                           ? "Confirm the customer's choice first."
                           : rec.staleApproval
                             ? "Approve again if this is right."
