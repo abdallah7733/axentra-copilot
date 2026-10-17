@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Explain, LiveDot, Mono, PanelHeader, ease } from "@/components/workspace/bits";
-import { isAcknowledgement, type Alert, type Evidence, type SopStep } from "@/lib/copilot/copilot";
+import { approvalReadiness, isAcknowledgement, type Alert, type Evidence, type SopStep } from "@/lib/copilot/copilot";
 import { money } from "@/lib/demo-data";
 import { pack, useCopilot } from "@/lib/live/copilot-store";
 import { toEpoch, useLive } from "@/lib/live/store";
@@ -25,7 +25,7 @@ const clock = (ms: number) => {
   return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 };
 
-const timeOfDay = (at: number) => new Date(at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+const timeOfDay = (at: number) => new Date(at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
 /** A quoted transcript line. Hovering it highlights the line in the transcript. */
 function Quote({ ev, className }: { ev: Evidence; className?: string }) {
@@ -211,6 +211,8 @@ export function LiveCopilot({ className }: { className?: string }) {
   const approve = useCopilot((s) => s.approve);
   const assist = useCopilot((s) => s.assist);
   const worded = useCopilot((s) => s.worded);
+  const draftSeq = useCopilot((s) => s.draftSeq);
+  const undo = useCopilot((s) => s.undo);
   const listening = phase === "active" || replaying;
   const { intent, order, recommendation: rec, suggestedReply, alerts, prompts, steps, checks, verification } = view;
   const match = order.match;
@@ -319,7 +321,8 @@ export function LiveCopilot({ className }: { className?: string }) {
                 </div>
                 {!p.askAgain && p.target !== "issue" && (
                   <Button size="sm" className="rounded-full bg-amber-600 text-white hover:bg-amber-700" onClick={() => confirm(p.target)}>
-                    Confirmed
+                    {/* For the item, the press says what the agent did, not what the copilot concluded (I-25). */}
+                    {p.target === "order" ? "I read it back" : "Confirmed"}
                   </Button>
                 )}
               </motion.div>
@@ -331,18 +334,20 @@ export function LiveCopilot({ className }: { className?: string }) {
         {suggestedReply && (
           <Section label="Suggested reply" meta={<Mono className="text-[10px]">{suggestedReply.sopRef}</Mono>}>
             {(() => {
-              const byModel = worded && worded.draft === suggestedReply.text ? worded : null;
+              const byModel = worded && worded.seq === draftSeq && worded.draft === suggestedReply.text ? worded : null;
               return (
                 <>
                   <p className="rounded-md border-l-2 border-cyan bg-muted/40 px-3 py-2 text-sm leading-relaxed">{byModel ? byModel.text : suggestedReply.text}</p>
                   <p className="mt-1 text-[11px] text-muted-foreground">
                     {byModel
-                      ? `Worded by the local model in ${(byModel.ms / 1000).toFixed(1)} s; facts and offers checked against the SOP rules. You decide what to say.`
-                      : assist === "working"
-                        ? "From the SOP rules. The local model is rewording it…"
-                        : assist === "fallback"
-                          ? "From the SOP rules (the local model was slow or unavailable). You decide what to say."
-                          : "A suggestion from the SOP rules. You decide what to say."}
+                      ? `Reworded by the local model in ${(byModel.ms / 1000).toFixed(1)} s. This line has no amounts, outcomes or order facts. You decide what to say.`
+                      : assist === "off" || !suggestedReply.rewordable
+                        ? "A suggestion from the SOP rules. You decide what to say."
+                        : assist === "working"
+                          ? "From the SOP rules. The local model is rewording it…"
+                          : assist === "fallback"
+                            ? "From the SOP rules (the local model was slow or unavailable). You decide what to say."
+                            : "A suggestion from the SOP rules. You decide what to say."}
                   </p>
                 </>
               );
@@ -357,7 +362,8 @@ export function LiveCopilot({ className }: { className?: string }) {
               key={`rec-${rec.scenario}`}
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
+              // The old card leaves at once, so it never shows under the new suggestion (I-27).
+              exit={{ opacity: 0, transition: { duration: 0 } }}
               transition={{ duration: 0.4, ease }}
               className={cn("rounded-lg border p-3 space-y-2", rec.scenario === "C" ? "border-destructive/60 bg-destructive/5" : "border-border bg-muted/50")}
             >
@@ -371,10 +377,21 @@ export function LiveCopilot({ className }: { className?: string }) {
               <p className="text-sm font-medium leading-snug">{rec.title}</p>
               <p className="text-sm leading-snug">{rec.action}</p>
               {rec.alsoAllowed && <p className="text-xs text-muted-foreground">The customer asked about both options. Scenario B (refund) is also allowed.</p>}
-              <p className="text-xs text-muted-foreground">
-                Approver: {rec.approver}
-                {rec.agentCanApprove ? ". You can approve this." : ". You can't approve this."}
+              <p className="text-xs text-muted-foreground" title={`Approver: ${rec.approver}`}>
+                {approvalReadiness(view)}
               </p>
+              {rec.checkingChoice && !rec.suspended && (
+                <p className="text-xs text-amber-700 dark:text-amber-500">
+                  Checking whether the customer changed their choice in &ldquo;{rec.checkingChoice.text}&rdquo;. Nothing can be approved until the check settles.
+                </p>
+              )}
+              {/* Before anything is prepared, an approval that doesn't count still says why, at once (I-24). */}
+              {!rec.prepared && rec.staleApproval && (
+                <p className="text-xs text-amber-700 dark:text-amber-500">
+                  The approval {rec.staleApproval.via === "call" ? "given on the call" : "given in the panel"} at {timeOfDay(rec.staleApproval.evidence?.at ?? rec.staleApproval.at)} doesn&rsquo;t count:{" "}
+                  {rec.staleApproval.reason}.
+                </p>
+              )}
               <Explain label="Why">
                 <ul className="list-disc pl-4 space-y-1">
                   {rec.reasons.map((r) => (
@@ -412,7 +429,7 @@ export function LiveCopilot({ className }: { className?: string }) {
                         {/* An earlier approval stays in the history but doesn't carry over to a changed decision. */}
                         {rec.staleApproval && (
                           <span className="block text-amber-700 dark:text-amber-500">
-                            The approval {rec.staleApproval.via === "call" ? "given on the call" : "given in the panel"} at {timeOfDay(rec.staleApproval.at)} doesn&rsquo;t
+                            The approval {rec.staleApproval.via === "call" ? "given on the call" : "given in the panel"} at {timeOfDay(rec.staleApproval.evidence?.at ?? rec.staleApproval.at)} doesn&rsquo;t
                             cover this: {rec.staleApproval.reason}.
                           </span>
                         )}
@@ -424,12 +441,14 @@ export function LiveCopilot({ className }: { className?: string }) {
                         )}
                         {rec.suspended && (
                           <span className="block text-amber-700 dark:text-amber-500">
-                            The approval {rec.suspended.via === "call" ? "given on the call" : "given in the panel"} at {timeOfDay(rec.suspended.at)} is on hold: {rec.suspended.reason}.
+                            The approval {rec.suspended.via === "call" ? "given on the call" : "given in the panel"} at {timeOfDay(rec.suspended.heard?.at ?? rec.suspended.at)} is on hold: {rec.suspended.reason}.
                           </span>
                         )}
                         {rec.suspended
                           ? "It stands again if the check hears the same choice."
-                          : rec.approval.state === "not-ready"
+                          : rec.checkingChoice
+                            ? "It can be approved once the check settles."
+                            : rec.approval.state === "not-ready"
                           ? "Confirm the customer's choice first."
                           : rec.staleApproval
                             ? "Approve again if this is right."
@@ -466,6 +485,12 @@ export function LiveCopilot({ className }: { className?: string }) {
               {match.method !== "exact" && match.method !== "spoken" && <p className="text-xs">{match.note}</p>}
               <p className={cn("text-xs", match.needsConfirmation && !match.confirmed ? "text-amber-600" : "text-muted-foreground")}>
                 {match.confirmed ? (match.confirmedBy === "panel" ? "Confirmed by the agent." : "Confirmed: the agent read the order number back.") : match.needsConfirmation ? "Confirm with the caller." : "Exact match in this customer's orders."}
+                {/* Where the agent looks, for as long as the confirmation rests on the press (I-25). */}
+                {view.undoable.includes("order") && (
+                  <Button variant="ghost" size="xs" className="ml-1.5 h-5 px-1.5 text-[11px] text-muted-blue" onClick={() => undo("order")}>
+                    Undo item confirmation
+                  </Button>
+                )}
               </p>
               {/* Eligibility checks, computed from the order data and SOP rules */}
               {checks.length > 0 && (

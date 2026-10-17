@@ -1,3 +1,5 @@
+import { agentCommits } from "./signals";
+import { normalize } from "./text";
 import type { ClientPack, TranscriptEvent } from "./types";
 
 /*
@@ -5,8 +7,9 @@ import type { ClientPack, TranscriptEvent } from "./types";
   small jobs and decides nothing:
     1. reword the rules' suggested reply so it answers the caller's last words;
     2. read a caller line the rules could not classify.
-  Every reworded reply is checked against the rules' draft: if a number, name or
-  offer changes, the draft is kept.
+  Every reworded reply is checked against the rules' draft: if a number, name, offer,
+  status, condition or approval phrase changes, the draft is kept. Only neutral lines
+  (no amounts, outcomes or order facts) are sent for rewording at all (Call 11, I-21).
 */
 
 export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
@@ -57,6 +60,45 @@ const wordsOf = (text: string) => text.toLowerCase().match(/[a-z0-9]+(?:['’][a
 const CLOSERS = new Set(["too", "please", "then", "now", "today", "again", "though", "okay", "ok", "either", "instead", "anyway", "already", "still", "yet", "first", "here", "there", "right", "thanks", "you"]);
 /** Words that may open a sentence before a comma: "Sure, …" "Of course, …" */
 const OPENERS = new Set(["sure", "okay", "ok", "alright", "right", "yes", "no", "well", "so", "now", "great", "perfect", "thanks", "thank", "sorry", "absolutely", "certainly", "unfortunately", "first", "also", "course", "understood", "got", "of", "and", "but", "then", "otherwise", "meanwhile", "good", "lovely", "oh"]);
+/**
+ * Words that say what has already happened, or fix a condition, a unit, a payment method or a negation.
+ * A rewording must keep exactly the draft's set of them: it may not add "processed", "has been placed",
+ * "already", "on its way", "prepaid", "hours", or drop "when the carrier scans" (Call 11: "We've processed the
+ * return for the damaged tablet and a replacement order for the new tablet has been placed").
+ */
+const STATUS =
+  /\b(process(ed|ing)|placed|sent|shipped|dispatched|issued|refunded|credit(ed)?|completed?|confirmed|arranged|approved|verified|done|all set|already|received|collected|e-?mailed|arriv\w*|deliver\w*|cancell?ed|booked|scheduled|set up|taken care|on (its|the|their) way|been|was|were|prepaid|courier|pick ?up|discount\w*|voucher\w*|gift|keep|upgrad\w*|overnight|express|photos?|scan\w*|label|minutes?|hours?|days?|weeks?|months?|business|visa|mastercard|amex|card|cash|not|never|no|\w+n['’]t|cannot)\b/gi;
+const STATUS_CANON: [RegExp, string][] = [
+  [/^(arriv|deliver)/, "delivered"],
+  [/^scan/, "scan"],
+  [/n't$|^(not|never|cannot)$/, "not"],
+  [/^(minute|hour|day|week|month)s$/, ""],
+  [/^e-?mailed$/, "emailed"],
+  [/^pick ?up$/, "pickup"],
+];
+const statusOf = (text: string) =>
+  [
+    ...new Set(
+      (text.toLowerCase().match(STATUS) ?? []).map((w) => {
+        const word = w.replace(/\s+/g, " ").replace(/’/g, "'");
+        const c = STATUS_CANON.find(([p]) => p.test(word));
+        return c ? c[1] || word.slice(0, -1) : word;
+      })
+    ),
+  ].sort();
+
+/** Words a reworded neutral line may add: politeness and plain function words only, never a name or a claim. */
+const POLITE = new Set(
+  (
+    "a an the and or but so of to for with at on in into from by about before after first then now just also too please thanks thank you your " +
+    "i i'm i'll i'd we we'll we're me my us our it it's that this there here can could would will may might need have has get give tell say " +
+    "let let's help check look see take make sure course okay ok alright right great perfect sorry really very truly terribly apologies " +
+    "apologise apologize understand understood certainly absolutely happy glad again once more one moment quick quickly kindly mind what " +
+    "which how is are be do go ahead name full last details order address email street city delivery spell repeat oh no problem hear that's " +
+    "if anything else"
+  ).split(" ")
+);
+
 const I_FORMS = /^I(['’](m|ll|ve|d))?$/;
 
 /**
@@ -83,18 +125,37 @@ function addedName(draft: string, text: string, people: string[]): string | null
 }
 
 /**
- * The model's wording, or null if it changed a number or an offer, dropped a name the draft has, or
- * added a name (then the draft stays). `names`: names in the draft that must survive (the customer's
- * first name, the product). `people`: every person the client pack knows, none of whom may be added.
+ * Why the model's wording can't be shown, or null if it can: it changed a number, an offer, a status,
+ * condition, unit, card or negation word, or an approval phrase, dropped a name the draft has, or added a
+ * name (then the draft stays). `names`: names in the draft that must survive (the customer's first name,
+ * the product). `people`: every person the client pack knows, none of whom may be added. `neutral`: the
+ * draft has no order facts, so the wording may add only politeness and function words.
  */
-export function checkWording(draft: string, worded: string, names: string[], people: string[] = []): string | null {
-  const text = worded.trim().replace(/^["“]|["”]$/g, "").trim();
-  if (!text || text.length > draft.length * 2 + 80 || /\n\s*[-*\d]/.test(text)) return null;
-  if (numbers(text).join() !== numbers(draft).join()) return null;
-  if (commitments(text).join() !== commitments(draft).join()) return null;
-  for (const name of names) if (draft.includes(name) && !text.includes(name)) return null;
-  if (addedName(draft, text, people)) return null;
-  return text;
+export function wordingProblem(draft: string, worded: string, names: string[], people: string[] = [], neutral = false): string | null {
+  const text = cleanWording(worded);
+  if (!text) return "empty";
+  if (text.length > draft.length * 2 + 80 || /\n\s*[-*\d]/.test(text)) return "too long or a list";
+  if (numbers(text).join() !== numbers(draft).join()) return "a number changed";
+  if (commitments(text).join() !== commitments(draft).join()) return "an offer changed";
+  for (const name of names) if (draft.includes(name) && !text.includes(name)) return `dropped "${name}"`;
+  const added = addedName(draft, text, people);
+  if (added) return `added the name "${added}"`;
+  if (statusOf(text).join() !== statusOf(draft).join()) return "a status, condition, unit or card word changed";
+  // Reading the line aloud must approve exactly what reading the draft would (Call 11 at video 110 s dropped "Done").
+  if (!!agentCommits(normalize(text)) !== !!agentCommits(normalize(draft))) return "approval words added or dropped";
+  if (neutral) {
+    const inDraft = new Set(wordsOf(draft).map((w) => w.replace(/’/g, "'")));
+    const extra = wordsOf(text).find((w) => !inDraft.has(w.replace(/’/g, "'")) && !POLITE.has(w.replace(/’/g, "'")));
+    if (extra) return `added "${extra}" to a neutral line`;
+  }
+  return null;
+}
+
+const cleanWording = (worded: string) => worded.trim().replace(/^["“]|["”]$/g, "").trim();
+
+/** The model's wording, or null if `wordingProblem` finds one (then the draft stays). */
+export function checkWording(draft: string, worded: string, names: string[], people: string[] = [], neutral = false): string | null {
+  return wordingProblem(draft, worded, names, people, neutral) ? null : cleanWording(worded);
 }
 
 export const INTENT_LABELS = ["damaged", "order_status", "other"] as const;
