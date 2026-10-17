@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { analyze, type CopilotView } from "./copilot";
+import { analyze, approvalReadiness, type CopilotView } from "./copilot";
 import { agentCommits } from "./signals";
 import type { AgentAction, TranscriptEvent } from "./types";
 import { scriptV2, sunlake } from "@/lib/live/sunlake-data";
@@ -133,4 +133,65 @@ test("I-24: 'Done' before the item read-back shows its reason at once, and the t
   const note = v.agentChecks.find((c) => c.key === "k12")!.reason;
   assert.doesNotMatch(note, /^approval heard/);
   assert.match(note, /item wasn't confirmed/);
+});
+
+/* ---------- I-25 / I-02: the item confirmation keeps both the press and the read-back ---------- */
+
+const READ_BACK: Line = { side: "agent", text: "Just to confirm, that's order 427, the Sunlake Tab 11?" };
+/** Script v2 without the read-back on line 8. */
+const noReadBack = (upTo: number, extra: Line[] = []) => {
+  const lines = script(upTo, extra);
+  lines[7] = { side: "agent", text: "Thank you, Sam. Is the damage only on the screen?" };
+  return lines;
+};
+
+test("I-25: a press, then a read-back: the record keeps both, with seconds", () => {
+  const press: AgentAction = { type: "confirm", target: "order", at: at(11, 4000) };
+  const pressed = view(noReadBack(11), [press]);
+  assert.equal(pressed.order.match?.confirmedBy, "panel");
+  assert.ok(pressed.undoable.includes("order"), "Undo shows while the confirmation rests on the press");
+  assert.match(doc(pressed, "Item confirmation") ?? "", /^confirmed in the panel at \d{2}:\d{2}:\d{2}/);
+
+  const v = view(noReadBack(11, [READ_BACK]), [press]);
+  assert.notEqual(v.order.match?.confirmedBy, "panel", "the read-back now carries it");
+  const record = doc(v, "Item confirmation") ?? "";
+  assert.match(record, /confirmed in the panel at \d{2}:\d{2}:\d{2}/, "the press isn't lost once a read-back follows");
+  assert.match(record, /read back at \d{2}:\d{2}:\d{2}/);
+});
+
+test("I-02: an undone item press stays in the record as undone", () => {
+  const press: AgentAction = { type: "confirm", target: "order", at: at(11, 4000) };
+  const undo: AgentAction = { type: "undo", target: "order", at: at(11, 4800) };
+  const v = view(noReadBack(11), [press, undo]);
+  assert.equal(v.order.match?.confirmed, false);
+  assert.match(doc(v, "Item confirmation") ?? "", /^confirmed in the panel at \d{2}:\d{2}:\d{2} [AP]M, undone at \d{2}:\d{2}:\d{2} [AP]M$/);
+});
+
+/* ---------- I-28: one moment per line, with seconds ---------- */
+
+test("I-28: a spoken approval shows the same time, with seconds, in every part of the record", () => {
+  const v = view(script(12));
+  const start = new Date(at(12, 0)).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  assert.equal(v.recommendation?.approval.via, "call");
+  assert.match(doc(v, "Approval record")!, new RegExp(`, ${start}$`), "the line's start, not its end");
+  assert.match(doc(v, "Approval history")!, new RegExp(`^${start} on the call: counted`));
+  assert.match(doc(v, "Terms said")!, new RegExp(`\\(${start}\\)`));
+});
+
+/* ---------- I-27: the card says what the agent can do now ---------- */
+
+test("I-27: the recommendation says 'Within your authority' and whether it is ready, with what is missing", () => {
+  const label = (v: CopilotView) => approvalReadiness(v);
+  assert.equal(label(view(noReadBack(11))), "Within your authority. Not ready: read back the order first.");
+  assert.equal(label(view(script(10))), "Within your authority. Not ready: the customer hasn't chosen yet.");
+  assert.equal(label(view(script(11))), "Within your authority. Ready to approve.");
+  assert.equal(label(view(script(11, [{ ...TO_REFUND, checking: true }]))), "Within your authority. Not ready: checking a possible change of choice.");
+  assert.equal(label(view(script(12))), "Within your authority. Approved.");
+});
+
+test("I-27: a confirmed or typed identity factor reads 'Confirmed by the agent', not 'By confirmed by the agent'", () => {
+  const lines = script(8);
+  lines[4] = { side: "caller", text: "Sam Miller.", confidence: 0.3 };
+  const v = view(lines, [{ type: "confirm", target: "name", at: at(5, 4000) }]);
+  assert.equal(v.steps.find((s) => s.id === "name")!.detail, "Confirmed by the agent");
 });

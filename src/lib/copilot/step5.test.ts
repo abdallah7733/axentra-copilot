@@ -136,8 +136,8 @@ test("I-02: undoing a name Confirm relocks the order, and the approval given whi
   assert.notEqual(step(v, "docs").status, "done");
   assert.deepEqual(v.undoable, []);
 
-  // Confirmed again: the item read-back on line 8 came before this verification, so the item is confirmed
-  // again too. The call-time approval stays refused; a fresh one counts.
+  // Confirmed again: identity is back, but the item read-back on line 8 came before this verification, so
+  // it doesn't count and the item needs confirming again. The call-time approval stays refused; a fresh one counts.
   const again: AgentAction = { type: "confirm", target: "name", at: at(15, 4500) };
   v = view(s, [press, undo, again]);
   assert.equal(v.verification.verified, true);
@@ -258,7 +258,7 @@ test("I-16: the record lists every approval with its time, method and status, an
   assert.match(doc(v, "Approval history")!, /in the panel: counted; .* on the call: not counted \(already approved\)/);
   assert.equal(
     doc(v, "Terms said"),
-    `Ships today: "Done. The new tablet ships today. You'll get an email with a free return label for the damaged one." (${new Date(at(12, 0)).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}); Return label: "Done. The new tablet ships today. You'll get an email with a free return label for the damaged one." (${new Date(at(12, 0)).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })})`
+    `Ships today: "Done. The new tablet ships today. You'll get an email with a free return label for the damaged one." (${new Date(at(12, 0)).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}); Return label: "Done. The new tablet ships today. You'll get an email with a free return label for the damaged one." (${new Date(at(12, 0)).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" })})`
   );
   assert.ok(v.documentation.every((d) => d.value), "every documentation row is filled");
 });
