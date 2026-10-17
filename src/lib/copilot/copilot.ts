@@ -114,6 +114,11 @@ export type Recommendation = {
   unheardApproval?: Evidence;
   /** The approval is on hold while a caller line that may change the choice is being checked. */
   suspended?: { at: number; via: "call" | "panel"; evidence: Evidence; reason: string };
+  /**
+   * A caller line that may change the choice is still being checked: nothing can be approved until it
+   * settles, whether or not an approval was given (Call 11 review, I-22).
+   */
+  checkingChoice?: Evidence;
   /** Every approval given for this call, in order: whether it counted, and why not. */
   history?: { at: number; via: "call" | "panel"; evidence?: Evidence; counted: boolean; reason?: string }[];
 };
@@ -317,6 +322,8 @@ function notCovered(then: CopilotView, kind: "replacement" | "refund", orderId: 
 
 /** An approval as given: by the agent's commitment on the call, or in the panel. */
 type GivenApproval = { at: number; via: "call" | "panel"; evidence?: Evidence };
+/** Approval words in a line that named the other outcome: never counted, but kept in the history. */
+type RefusedApproval = GivenApproval & { reason: string };
 /** The approvals each pass heard, so a later pass can find the ones an undo took away. */
 const givenIn = new WeakMap<CopilotView, GivenApproval[]>();
 
@@ -385,6 +392,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
   let causedAfter: { phrase: string; ev: Evidence } | null = null;
   // Every approval given, checked against what was known at its moment once the recommendation is built.
   const given: GivenApproval[] = [];
+  const refused: RefusedApproval[] = [];
   let unheardApproval: { ev: Evidence; value: "replacement" | "refund" } | null = null;
   const keyAnswers: string[] = [];
   const agentChecks: CopilotView["agentChecks"] = [];
@@ -643,8 +651,13 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       const offeringOptions = /\?/.test(line.text) && /\bor\b/i.test(line.text);
       if (choice && !offeringOptions && verified() && !escalations.length && ev.at > choice.evidence.at) {
         const commit = ev.lowConfidence ? null : agentCommits(line.text);
-        const fitsChoice =
-          choice.value === "refund" ? /\b(refund|money)\b/i.test(line.text) || /\b(done|all set)\b/i.test(line.text) : !/\brefund\b/i.test(line.text);
+        // A line that names the other outcome is never this one's approval: "Done. The new tablet ships
+        // today." counted as the approval of a refund (Call 11 review, I-23).
+        const namesReplacement = /\b(replace(ment)?|ships?|shipped|shipping|new (one|\w+))\b/i.test(line.text);
+        const namesRefund = /\brefund\b/i.test(line.text);
+        const other = choice.value === "refund" ? "replacement" : "refund";
+        const namesOther = choice.value === "refund" ? namesReplacement : namesRefund;
+        const fitsChoice = !namesOther && (choice.value === "refund" ? /\b(refund|money|done|all set)\b/i.test(line.text) : true);
         const aboutChoice =
           choice.value === "refund"
             ? /\b(refund|money|dollars|visa|card)\b|\$\d/i.test(line.text)
@@ -655,6 +668,11 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
           given.push({ at: line.endedAt, via: "call", evidence: ev });
           unheardApproval = null;
           note = "approval heard in this line";
+        } else if (commit && namesOther && readyToApprove()) {
+          // Recorded and checked again, not dropped (the 01:43 "free refund" line in Call 11, I-24).
+          refused.push({ at: line.endedAt, via: "call", evidence: ev, reason: `it named a ${other}, not the ${choice.value}` });
+          keyAnswers.push(line.key);
+          note = `approval words, but the line named the ${other}`;
         } else if (aboutChoice && readyToApprove() && !earlier) {
           // About the chosen outcome, but no approval heard in it: flag it, and let the second speech model
           // hear it again (call 7: "offset a full refund" for "I've set up a full refund").
@@ -923,11 +941,11 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
           if (g.via === "call" && g.at >= u.confirmedAt && !given.some(known) && !withdrawn.some(known)) withdrawn.push(g);
         }
       }
-      for (const a of [...given, ...withdrawn].sort((x, y) => x.at - y.at)) {
-        if (withdrawn.includes(a)) {
-          const reason = "a confirmation it relied on was undone";
-          if (recommendation.approval.state !== "approved") recommendation.staleApproval = { ...a, reason };
-          history.push({ ...a, counted: false, reason });
+      for (const a of [...given, ...withdrawn, ...refused].sort((x, y) => x.at - y.at)) {
+        if (withdrawn.includes(a) || refused.includes(a as RefusedApproval)) {
+          const reason = "reason" in a ? a.reason : "a confirmation it relied on was undone";
+          if (recommendation.approval.state !== "approved") recommendation.staleApproval = { at: a.at, via: a.via, evidence: a.evidence, reason };
+          history.push({ at: a.at, via: a.via, evidence: a.evidence, counted: false, reason });
           continue;
         }
         const then = rules(pack, lines.filter((l) => (l.availableAt ?? l.endedAt) <= a.at), allActions.filter((x) => x.at <= a.at), a.at, hints, true);
@@ -964,14 +982,29 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
         if (held?.at !== undefined && held.via) {
           recommendation.staleApproval = { at: held.at, via: held.via, evidence: held.evidence, reason: "the customer may have changed their mind" };
         }
-      } else if (checkingChange && recommendation.approval.state === "approved") {
+      } else if (checkingChange) {
         // A caller line that may change the choice is still with the second speech model: the approval is
         // on hold until its checked text arrives, then stands or falls by the usual rules (call 8 review).
-        const held = recommendation.approval;
+        // Nothing can be approved meanwhile, given or not (Call 11 review, I-22).
+        const held = recommendation.approval.state === "approved" ? recommendation.approval : null;
         recommendation.approval = { state: "not-ready" };
-        recommendation.suspended = { at: held.at!, via: held.via!, evidence: evidenceOf(checkingChange), reason: "a possible change of choice is being checked" };
+        recommendation.checkingChoice = evidenceOf(checkingChange);
+        if (held) recommendation.suspended = { at: held.at!, via: held.via!, evidence: evidenceOf(checkingChange), reason: "a possible change of choice is being checked" };
       }
       if (history.length) recommendation.history = history;
+    } else if (!past && (given.length || refused.length)) {
+      // Nothing is prepared, so nothing can be approved: say why at once, rather than only once the item
+      // is read back (Call 11 review, I-24). "Done." before the read-back used to show no reason at all.
+      const missing = !itemConfirmed ? "the item wasn't confirmed with the caller yet" : "the customer's choice wasn't known yet";
+      const history = [...given.map((a) => ({ ...a, reason: missing })), ...refused].sort((x, y) => x.at - y.at).map((a) => ({ ...a, counted: false }));
+      const last = history[history.length - 1];
+      recommendation.staleApproval = { at: last.at, via: last.via, evidence: last.evidence, reason: last.reason };
+      recommendation.history = history;
+    }
+    // The transcript note for a line whose approval words didn't count says so, and why.
+    for (const h of recommendation.history ?? []) {
+      const check = h.evidence && !h.counted && agentChecks.find((c) => c.key === h.evidence!.key);
+      if (check && check.reason === "approval heard in this line") check.reason = `approval words heard, not counted: ${h.reason}`;
     }
   }
 
@@ -1277,6 +1310,10 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       suggestedReply = reply(`Sorry, just to be sure: would you like the new ${o.noun}, or the refund?`, "Scenario A and B");
     } else if (o && match && choice && !match.confirmed && !lowConfidenceChoice) {
       suggestedReply = reply(`Just to confirm, that's order ${o.id}, the ${o.shortName}?`, "Claim rules");
+    } else if (o && recommendation?.checkingChoice) {
+      // While the caller's possible change of choice is being checked, never an outcome as done: reading
+      // that aloud could approve whichever outcome the check settles on (Call 11 review, I-22 and I-23).
+      suggestedReply = reply("One moment, please, while I make sure I have your choice right.", "Scenario A and B");
     } else if (o && recommendation?.prepared && !approved) {
       suggestedReply =
         recommendation.prepared.kind === "replacement"
