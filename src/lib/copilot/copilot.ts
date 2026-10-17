@@ -157,7 +157,8 @@ export type CopilotView = {
   checks: Check[];
   choice: { value: Choice; evidence: Evidence } | null;
   recommendation: Recommendation | null;
-  suggestedReply: { text: string; sopRef: string; basis: "rules" } | null;
+  /** `rewordable`: the line has no amounts, outcomes, order facts or status, so the local model may reword it (I-21). */
+  suggestedReply: { text: string; sopRef: string; basis: "rules"; rewordable: boolean } | null;
   alerts: Alert[];
   prompts: ConfirmPrompt[];
   steps: SopStep[];
@@ -942,8 +943,9 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
         }
       }
       for (const a of [...given, ...withdrawn, ...refused].sort((x, y) => x.at - y.at)) {
-        if (withdrawn.includes(a) || refused.includes(a as RefusedApproval)) {
-          const reason = "reason" in a ? a.reason : "a confirmation it relied on was undone";
+        const refusal = refused.find((r) => r === a);
+        if (refusal || withdrawn.includes(a)) {
+          const reason = refusal?.reason ?? "a confirmation it relied on was undone";
           if (recommendation.approval.state !== "approved") recommendation.staleApproval = { at: a.at, via: a.via, evidence: a.evidence, reason };
           history.push({ at: a.at, via: a.via, evidence: a.evidence, counted: false, reason });
           continue;
@@ -1255,7 +1257,8 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
 
   /* ---------- Suggested reply (rules templates; wording only) ---------- */
   const o = match?.order;
-  const reply = (text: string, section: string) => ({ text, sopRef: ref(section), basis: "rules" as const });
+  const reply = (text: string, section: string, rewordable = false) => ({ text, sopRef: ref(section), basis: "rules" as const, rewordable });
+  const neutral = (text: string, section: string) => reply(text, section, true);
   let suggestedReply: CopilotView["suggestedReply"] = null;
   let termRecord: { label: string; said: boolean; evidence?: Evidence }[] = [];
   if (locked) {
@@ -1272,22 +1275,22 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
     );
   } else if (intent || earlyOffers.length || isVerified) {
     if (name.state === "failed" || address.state === "failed") {
-      suggestedReply = reply("I wasn't able to match those details. Could you check them and try once more?", "Verification");
+      suggestedReply = neutral("I wasn't able to match those details. Could you check them and try once more?", "Verification");
     } else if (name.state === "confirm") {
-      suggestedReply = reply("Sorry, could you say your full name once more?", "Verification");
+      suggestedReply = neutral("Sorry, could you say your full name once more?", "Verification");
     } else if (name.state === "partial") {
-      suggestedReply = reply("Thank you. And your last name, please?", "Verification");
+      suggestedReply = neutral("Thank you. And your last name, please?", "Verification");
     } else if (name.state === "idle") {
-      suggestedReply = reply(
+      suggestedReply = neutral(
         earlyOffers.length
           ? "Before I arrange anything, I need to check a couple of details. Can I have your full name, please?"
           : "I'm sorry to hear that. Before I look at the order, can I have your full name, please?",
         "Verification"
       );
     } else if (name.state === "ok" && address.state === "idle") {
-      suggestedReply = reply("Thank you. And the email address on the order, or the street and city for the delivery?", "Verification");
+      suggestedReply = neutral("Thank you. And the email address on the order, or the street and city for the delivery?", "Verification");
     } else if (address.state === "partial" || address.state === "confirm") {
-      suggestedReply = reply("Sorry, could you give me the street and the city once more?", "Verification");
+      suggestedReply = neutral("Sorry, could you give me the street and the city once more?", "Verification");
     } else if (isVerified && !match) {
       suggestedReply = reply(`Thanks, ${firstName}, you're verified. Could you give me the order number, please?`, "Verification");
     } else if (isVerified && o && match && !orderLocated) {
@@ -1313,7 +1316,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
     } else if (o && recommendation?.checkingChoice) {
       // While the caller's possible change of choice is being checked, never an outcome as done: reading
       // that aloud could approve whichever outcome the check settles on (Call 11 review, I-22 and I-23).
-      suggestedReply = reply("One moment, please, while I make sure I have your choice right.", "Scenario A and B");
+      suggestedReply = neutral("One moment, please, while I make sure I have your choice right.", "Scenario A and B");
     } else if (o && recommendation?.prepared && !approved) {
       suggestedReply =
         recommendation.prepared.kind === "replacement"
@@ -1373,9 +1376,9 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       const unsaid = terms.filter((t) => !t.said).map((t) => t.text);
       suggestedReply = unsaid.length
         ? reply(unsaid.join(" "), recommendation.prepared.kind === "refund" ? "Scenario B" : "Scenario A")
-        : reply("Is there anything else I can help with?", "Required documentation");
+        : neutral("Is there anything else I can help with?", "Required documentation");
     } else if (approved) {
-      suggestedReply = reply("Is there anything else I can help with?", "Required documentation");
+      suggestedReply = neutral("Is there anything else I can help with?", "Required documentation");
     }
   }
 

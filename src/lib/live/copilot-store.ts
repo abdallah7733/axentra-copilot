@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import { checkWording, classifyMessages, parseIntentLabel, replyMessages } from "@/lib/copilot/assist";
+import { classifyMessages, parseIntentLabel, replyMessages, wordingProblem } from "@/lib/copilot/assist";
 import { ANSWER_GAP_MS, analyze, type CopilotView, type ModelHints } from "@/lib/copilot/copilot";
 import type { AgentAction, TranscriptEvent } from "@/lib/copilot/types";
 import { assistChat } from "./engine";
@@ -14,14 +14,26 @@ import { sunlake } from "./sunlake-data";
   nothing is stored or sent anywhere except the local engine on this Mac.
 
   When the engine runs the optional local model (AXENTRA_ASSIST=local), the model
-  rewords the rules' suggested reply and reads caller lines the rules could not.
-  If it is slow (over 4 s) or unavailable, the panel keeps the rules' wording.
+  rewords the rules' suggested reply when the line is neutral (no amounts, outcomes
+  or order facts), and reads caller lines the rules could not. If it is slow (over
+  4 s from when the suggestion appeared) or unavailable, the panel keeps the rules'
+  wording.
 */
 
-/** The suggestion target from the plan: a suggestion within 4 s of the caller's line. */
+/** The suggestion target from the plan: a suggestion within 4 s. */
 export const ASSIST_TIMEOUT_MS = 4000;
 
-type Worded = { draft: string; text: string; ms: number; model: string };
+/** `seq`: the appearance of the suggestion it rewords; shown only while that same suggestion is up (I-26). */
+type Worded = { seq: number; draft: string; text: string; ms: number; model: string };
+/** What became of each rewording request, for the call details and the review. */
+export type AssistRecord = {
+  draft: string;
+  text?: string;
+  /** From the moment the suggestion appeared. */
+  ms: number;
+  outcome: "shown" | "rejected" | "replaced" | "late" | "timeout" | "failed";
+  reason?: string;
+};
 type AssistStatus = "off" | "loading" | "ready" | "working" | "fallback";
 
 type CopilotState = {
@@ -37,8 +49,12 @@ type CopilotState = {
   assist: AssistStatus;
   /** The model's wording of the current suggested reply, if it passed the check. */
   worded: Worded | null;
-  /** Milliseconds from a line appearing to the model's suggestion, this call. */
+  /** Counts each new suggested reply, so a rewording belongs to one appearance of its draft. */
+  draftSeq: number;
+  /** Milliseconds from a suggestion appearing to the model's answer, this call. */
   assistTimes: number[];
+  /** Every rewording request this call, including rejected, late and failed ones. */
+  assistLog: AssistRecord[];
   /** For the issue, `issue` is what the agent heard the problem is. */
   confirm: (target: "issue" | "name" | "address" | "order" | "choice", issue?: "damaged" | "other") => void;
   /** The agent types what the caller said on a line recognition got wrong. */
@@ -65,8 +81,9 @@ export const useCopilot = create<CopilotState>((set, get) => {
   // One model request at a time (llama-server runs a single slot); newer work replaces queued work.
   let busy = false;
   let queued: (() => Promise<void>) | null = null;
-  let lineArrivedAt = 0;
-  let lastDraft = "";
+  // When the current suggested reply appeared, and the last appearance sent for rewording.
+  let draftShownAt = 0;
+  let askedSeq = -1;
   let classified = new Set<string>();
   let healthCheckedAt = 0;
   // Re-check once the caller has been quiet long enough for an identity answer to be complete.
@@ -116,6 +133,16 @@ export const useCopilot = create<CopilotState>((set, get) => {
       });
   }
 
+  /** Sets a new view; a changed suggested reply is a new appearance, with its own clock and no old wording. */
+  function setView(next: Partial<CopilotState> & { view: CopilotView }) {
+    if (next.view.suggestedReply?.text !== get().view.suggestedReply?.text) {
+      draftShownAt = performance.now();
+      set({ ...next, draftSeq: get().draftSeq + 1, worded: null });
+    } else set(next);
+  }
+
+  const record = (r: AssistRecord) => set({ assistLog: [...get().assistLog, r] });
+
   function askModel() {
     const { view, lines, callId } = get();
     const last = lines[lines.length - 1];
@@ -128,29 +155,50 @@ export const useCopilot = create<CopilotState>((set, get) => {
         const id = parseIntentLabel(result.text);
         if (id && get().callId === callId && !get().view.intent) {
           const hints = { ...get().hints, intent: { id, key: line.key } };
-          set({ hints, ...run(get().lines, get().actions, hints) });
+          setView({ hints, ...run(get().lines, get().actions, hints) });
         }
       });
     }
-    // Reword the rules' suggested reply.
-    const draft = view.suggestedReply?.text;
-    if (draft && draft !== lastDraft) {
-      lastDraft = draft;
-      const since = lineArrivedAt;
+    // Reword the rules' suggested reply, only when it has no amounts, outcomes or order facts (I-21).
+    const suggestion = view.suggestedReply;
+    const seq = get().draftSeq;
+    if (suggestion?.rewordable && seq !== askedSeq) {
+      askedSeq = seq;
+      const draft = suggestion.text;
+      const since = draftShownAt;
       schedule(async () => {
-        if (get().view.suggestedReply?.text !== draft) return;
-        const result = await assistChat(replyMessages(pack, get().lines, draft), 96, ASSIST_TIMEOUT_MS);
-        const text = checkWording(draft, result.text, NAMES, PEOPLE);
+        if (get().draftSeq !== seq) return;
+        // The 4 s run from when the suggestion appeared, queue included (I-26).
+        const left = ASSIST_TIMEOUT_MS - (performance.now() - since);
+        if (left <= 0) return record({ draft, ms: performance.now() - since, outcome: "late", reason: "waited in the queue past 4 s" });
+        let result: Awaited<ReturnType<typeof assistChat>>;
+        try {
+          result = await assistChat(replyMessages(pack, get().lines, draft), 96, Math.ceil(left));
+        } catch (error) {
+          if (get().callId === callId) {
+            const timedOut = (error as { name?: string } | null)?.name === "TimeoutError";
+            record({ draft, ms: performance.now() - since, outcome: timedOut ? "timeout" : "failed", reason: timedOut ? "no answer within 4 s" : String(error) });
+          }
+          throw error;
+        }
         const ms = performance.now() - since;
         if (get().callId !== callId) return;
+        const problem = wordingProblem(draft, result.text, NAMES, PEOPLE, true);
         set({ assistTimes: [...get().assistTimes, ms] });
-        if (text && get().view.suggestedReply?.text === draft) set({ worded: { draft, text, ms, model: result.model } });
+        if (get().draftSeq !== seq) record({ draft, text: result.text, ms, outcome: "replaced", reason: "the suggestion changed while the model worked" });
+        else if (ms > ASSIST_TIMEOUT_MS) record({ draft, text: result.text, ms, outcome: "late", reason: "answered after 4 s" });
+        else if (problem) record({ draft, text: result.text, ms, outcome: "rejected", reason: problem });
+        else {
+          const text = result.text.trim().replace(/^["“]|["”]$/g, "").trim();
+          record({ draft, text, ms, outcome: "shown" });
+          set({ worded: { seq, draft, text, ms, model: result.model } });
+        }
       });
     }
   }
 
   const update = (lines: TranscriptEvent[], actions: AgentAction[], hints: ModelHints) => {
-    set({ lines, actions, hints, ...run(lines, actions, hints) });
+    setView({ lines, actions, hints, ...run(lines, actions, hints) });
     void assistReady().then((ready) => ready && askModel());
   };
   const act = (action: AgentAction) => update(get().lines, [...get().actions, action], get().hints);
@@ -158,10 +206,9 @@ export const useCopilot = create<CopilotState>((set, get) => {
   const reset = (callId: string | null) => {
     clearTimeout(settleTimer);
     queued = null;
-    lastDraft = "";
     classified = new Set();
     requested = new Set();
-    set({ callId, highlightKey: null, worded: null, assistTimes: [], assist: assistOn() ? "ready" : "off" });
+    set({ callId, highlightKey: null, worded: null, assistTimes: [], assistLog: [], assist: assistOn() ? "ready" : "off" });
     update([], [], {});
   };
 
@@ -174,7 +221,6 @@ export const useCopilot = create<CopilotState>((set, get) => {
       // A key answer (the problem, name, address or choice) waits for the second speech model's check:
       // short answers heard on their own are where the fast model goes wrong.
       if (!known && get().view.awaiting) line = requestCheck(line);
-      lineArrivedAt = performance.now();
       // A checked line replaces the one it re-checked.
       let lines = [...get().lines.filter((l) => l.key !== line.key), line];
       // The two sides are transcribed separately, so an answer can arrive before the agent's question.
@@ -183,7 +229,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
       if (late.length) lines = lines.map((l) => (late.includes(l.key) ? requestCheck(l, true) : l));
       update(lines, get().actions, get().hints);
       clearTimeout(settleTimer);
-      settleTimer = setTimeout(() => set(run(get().lines, get().actions, get().hints)), ANSWER_GAP_MS + 100);
+      settleTimer = setTimeout(() => setView(run(get().lines, get().actions, get().hints)), ANSWER_GAP_MS + 100);
     }
   });
 
@@ -197,7 +243,9 @@ export const useCopilot = create<CopilotState>((set, get) => {
     highlightKey: null,
     assist: "off",
     worded: null,
+    draftSeq: 0,
     assistTimes: [],
+    assistLog: [],
     confirm: (target, issue) => act({ type: "confirm", target, at: epochNow(), ...(issue ? { issue } : {}) }),
     correct: (key, text) => act({ type: "correct", key, text, at: epochNow() }),
     approve: () => act({ type: "approve", at: epochNow() }),

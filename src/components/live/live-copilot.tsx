@@ -211,6 +211,7 @@ export function LiveCopilot({ className }: { className?: string }) {
   const approve = useCopilot((s) => s.approve);
   const assist = useCopilot((s) => s.assist);
   const worded = useCopilot((s) => s.worded);
+  const draftSeq = useCopilot((s) => s.draftSeq);
   const listening = phase === "active" || replaying;
   const { intent, order, recommendation: rec, suggestedReply, alerts, prompts, steps, checks, verification } = view;
   const match = order.match;
@@ -331,18 +332,20 @@ export function LiveCopilot({ className }: { className?: string }) {
         {suggestedReply && (
           <Section label="Suggested reply" meta={<Mono className="text-[10px]">{suggestedReply.sopRef}</Mono>}>
             {(() => {
-              const byModel = worded && worded.draft === suggestedReply.text ? worded : null;
+              const byModel = worded && worded.seq === draftSeq && worded.draft === suggestedReply.text ? worded : null;
               return (
                 <>
                   <p className="rounded-md border-l-2 border-cyan bg-muted/40 px-3 py-2 text-sm leading-relaxed">{byModel ? byModel.text : suggestedReply.text}</p>
                   <p className="mt-1 text-[11px] text-muted-foreground">
                     {byModel
-                      ? `Worded by the local model in ${(byModel.ms / 1000).toFixed(1)} s; facts and offers checked against the SOP rules. You decide what to say.`
-                      : assist === "working"
-                        ? "From the SOP rules. The local model is rewording it…"
-                        : assist === "fallback"
-                          ? "From the SOP rules (the local model was slow or unavailable). You decide what to say."
-                          : "A suggestion from the SOP rules. You decide what to say."}
+                      ? `Reworded by the local model in ${(byModel.ms / 1000).toFixed(1)} s. This line has no amounts, outcomes or order facts. You decide what to say.`
+                      : assist === "off" || !suggestedReply.rewordable
+                        ? "A suggestion from the SOP rules. You decide what to say."
+                        : assist === "working"
+                          ? "From the SOP rules. The local model is rewording it…"
+                          : assist === "fallback"
+                            ? "From the SOP rules (the local model was slow or unavailable). You decide what to say."
+                            : "A suggestion from the SOP rules. You decide what to say."}
                   </p>
                 </>
               );
