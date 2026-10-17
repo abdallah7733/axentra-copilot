@@ -364,7 +364,7 @@ const lineAt = (i: number) => events(call1010)[i].startedAt;
 test("10 Oct call: the address question without '?' still waits for the address", () => {
   // The agent confirmed the name in the panel while asking for the address (both orders tested).
   for (const nameConfirmedAt of [lineAt(5) + 1000, lineAt(6) + 1000]) {
-    const actions: AgentAction[] = [{ type: "confirm", target: "name", at: nameConfirmedAt }];
+    const actions: AgentAction[] = [{ type: "correct", key: "k5", text: "Sam Miller", at: nameConfirmedAt }];
     let v = after(call1010, 6, actions);
     assert.equal(v.verification.factors[1].state, "asking");
     assert.equal(step(v, "address"), "active");
@@ -389,7 +389,7 @@ test("10 Oct call: the address question without '?' still waits for the address"
 
 test("10 Oct call: once the agent confirms the address, the flow continues; 'Anyone please?' asks again", () => {
   const actions: AgentAction[] = [
-    { type: "confirm", target: "name", at: lineAt(5) + 1000 },
+    { type: "correct", key: "k5", text: "Sam Miller", at: lineAt(5) + 1000 },
     { type: "confirm", target: "address", at: lineAt(6) + 3500 },
   ];
   let v = after(call1010, 8, actions);
@@ -432,7 +432,7 @@ test("10 Oct call: once the agent confirms the address, the flow continues; 'Any
 
 test("an unreadable choice can still be answered with low confidence, then confirmed", () => {
   const actions: AgentAction[] = [
-    { type: "confirm", target: "name", at: lineAt(5) + 1000 },
+    { type: "correct", key: "k5", text: "Sam Miller", at: lineAt(5) + 1000 },
     { type: "confirm", target: "address", at: lineAt(6) + 3500 },
   ];
   const lines: Line[] = [...call1010.slice(0, 13), { side: "agent", text: "Which would you like?" }, { side: "caller", text: "A new one please.", confidence: 0.4 }];
@@ -478,7 +478,7 @@ test("10 Oct retest: a garbled name is the agent's call, never a failed attempt"
 
   // The agent heard both clearly and confirms them: the call carries on.
   const at = events(retest1010)[6].endedAt + 500;
-  const actions: AgentAction[] = [{ type: "confirm", target: "name", at }, { type: "confirm", target: "address", at }];
+  const actions: AgentAction[] = [{ type: "correct", key: "k4", text: "Sam Miller", at }, { type: "confirm", target: "address", at }];
   v = after(retest1010, 8, actions);
   assert.equal(v.verification.verified, true);
   assert.equal(v.order.match?.order.id, "427");
@@ -487,22 +487,32 @@ test("10 Oct retest: a garbled name is the agent's call, never a failed attempt"
   assert.equal(v.recommendation?.approval.state, "not-ready");
 });
 
-test("13 Oct call 9: a name the agent confirms is disclosed as the agent's call", () => {
+test("13 Oct call 9: Confirm can't verify a name that doesn't match; the agent types it instead (I-02)", () => {
   const s = script({ 5: { side: "caller", text: "10 million.", confidence: 0.4 } });
   let v = after(s, 6);
   const name = v.verification.factors[0];
   assert.equal(name.state, "confirm");
   assert.equal(name.attempts, 0);
-  const prompt = v.prompts.find((p) => p.target === "name")!.text;
-  assert.match(prompt, /doesn't match the name on the order/);
-  assert.match(prompt, /recorded as confirmed by you/);
+  const prompt = v.prompts.find((p) => p.target === "name")!;
+  assert.equal(prompt.askAgain, true, "no Confirm button for text that doesn't match");
+  assert.match(prompt.text, /doesn't match the name on the order/);
+  assert.match(prompt.text, /type what they said/);
 
+  // An accidental press (call 9) verifies nothing.
   const at = events(s)[5].endedAt + 500;
   v = after(s, s.length, [{ type: "confirm", target: "name", at }]);
+  assert.notEqual(v.verification.factors[0].state, "ok");
+  assert.equal(v.verification.verified, false);
+  assert.equal(v.order.match, undefined, "order details stay locked");
+  assert.equal(v.recommendation, null);
+
+  // Typing what the caller said is checked word for word and disclosed.
+  v = after(s, s.length, [{ type: "correct", key: "k5", text: "Sam Miller", at }]);
   assert.equal(v.verification.factors[0].state, "ok");
-  assert.equal(v.verification.factors[0].method, "confirmed by the agent");
-  assert.equal(v.steps.find((x) => x.id === "name")!.detail, "By confirmed by the agent");
-  assert.match(v.documentation.find((d) => d.label === "Case summary")!.value!, /verified by full name \(confirmed by the agent\)/);
+  assert.equal(v.verification.factors[0].method, "typed by the agent");
+  assert.match(v.documentation.find((d) => d.label === "Case summary")!.value!, /verified by full name \(typed by the agent\)/);
+  v = after(s, s.length, [{ type: "correct", key: "k5", text: "Ten Miller", at }]);
+  assert.notEqual(v.verification.factors[0].state, "ok", "a wrong typed name never verifies");
 });
 
 test("a low-confidence name that matches the order keeps the plain confirm prompt", () => {
@@ -542,7 +552,7 @@ const call3: Line[] = [
 
 test("10 Oct second retest: a part-matched address asks again, and the choice waits for identity", () => {
   const ev = events(call3);
-  const actions: AgentAction[] = [{ type: "confirm", target: "name", at: ev[4].endedAt + 2500 }];
+  const actions: AgentAction[] = [{ type: "correct", key: "k5", text: "Sam Miller", at: ev[4].endedAt + 2500 }];
 
   // "One road in Dallas.": the city matches, the street doesn't. No card while the caller may still be talking.
   let v = analyze(sunlake, ev.slice(0, 7), actions, ev[6].endedAt + 500);
@@ -623,7 +633,7 @@ test("the copilot says which key answer it is waiting for, so that answer gets t
   // Call 3: whatever key question the agent asked last is the one awaited, the choice included,
   // and an unreadable reply keeps it open.
   const ev = events(call3);
-  const actions: AgentAction[] = [{ type: "confirm", target: "name", at: ev[4].endedAt + 2500 }];
+  const actions: AgentAction[] = [{ type: "correct", key: "k5", text: "Sam Miller", at: ev[4].endedAt + 2500 }];
   assert.equal(analyze(sunlake, ev.slice(0, 6), actions, NOW).awaiting, "address");
   assert.equal(analyze(sunlake, ev.slice(0, 13), actions, NOW).awaiting, "choice");
   assert.equal(analyze(sunlake, ev.slice(0, 14), actions, NOW).awaiting, "choice", '"And you want please." is no answer');
@@ -696,7 +706,7 @@ test("the agent can type what the caller said; it is checked word for word again
 test("the agent can type the customer's choice when recognition couldn't read it", () => {
   const ev = events(call3);
   const verifiedFirst: AgentAction[] = [
-    { type: "confirm", target: "name", at: ev[4].endedAt + 2500 },
+    { type: "correct", key: "k5", text: "Sam Miller", at: ev[4].endedAt + 2500 },
     { type: "correct", key: ev[6].key, text: "Hill Road, in Dallas.", at: ev[6].endedAt + 2500 },
   ];
   let v = after(call3, 14, verifiedFirst);

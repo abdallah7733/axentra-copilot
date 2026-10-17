@@ -44,6 +44,8 @@ type CopilotState = {
   /** The agent types what the caller said on a line recognition got wrong. */
   correct: (key: string, text: string) => void;
   approve: () => void;
+  /** Takes back the agent's latest Confirm press for the name, the address or the item. */
+  undo: (target: "name" | "address" | "order") => void;
   setHighlight: (key: string | null) => void;
 };
 
@@ -56,6 +58,8 @@ const run = (lines: TranscriptEvent[], actions: AgentAction[], hints: ModelHints
 };
 
 const NAMES = [...pack.customers.map((c) => c.name.split(" ")[0]), ...pack.orders.map((o) => o.shortName)];
+/** Every person in the client pack: the model may never add one of these to a reply. */
+const PEOPLE = [...pack.customers.map((c) => c.name), ...pack.orders.map((o) => o.customerName), pack.agent.name];
 
 export const useCopilot = create<CopilotState>((set, get) => {
   // One model request at a time (llama-server runs a single slot); newer work replaces queued work.
@@ -136,7 +140,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
       schedule(async () => {
         if (get().view.suggestedReply?.text !== draft) return;
         const result = await assistChat(replyMessages(pack, get().lines, draft), 96, ASSIST_TIMEOUT_MS);
-        const text = checkWording(draft, result.text, NAMES);
+        const text = checkWording(draft, result.text, NAMES, PEOPLE);
         const ms = performance.now() - since;
         if (get().callId !== callId) return;
         set({ assistTimes: [...get().assistTimes, ms] });
@@ -197,6 +201,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
     confirm: (target, issue) => act({ type: "confirm", target, at: epochNow(), ...(issue ? { issue } : {}) }),
     correct: (key, text) => act({ type: "correct", key, text, at: epochNow() }),
     approve: () => act({ type: "approve", at: epochNow() }),
+    undo: (target) => act({ type: "undo", target, at: epochNow() }),
     setHighlight: (key) => set({ highlightKey: key }),
   };
 });
