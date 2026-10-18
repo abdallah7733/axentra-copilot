@@ -286,3 +286,77 @@ test("I-05: the call 10 refund line isn't re-checked after a panel approval, and
   const agentAfter = events(lines).filter((l) => l.side === "agent" && l.seq > choiceAt).map((l) => l.key);
   assert.deepEqual(v.agentChecks.map((c) => c.key), agentAfter);
 });
+
+/* ---------- The roadmap's Call 12 sequence, offline (Call 12 review: rows 2 to 7 weren't exercised live) ---------- */
+
+test("§9.4 rows 1-12: early 'Done', press, spoken approval, Undo, read-back, fresh approval, refund, wrong line, panel approval", () => {
+  const DONE: Line = { side: "agent", text: "Done. The new tablet ships today." };
+  const s = script(noReadBack, [
+    DONE, // 13: row 4, after the press
+    { side: "agent", text: "Just to confirm, that's order 427, the Sunlake Tab 11?" }, // 14: row 6
+    { side: "caller", text: "Yes." }, // 15
+    DONE, // 16: row 7
+    { side: "caller", text: "Actually, I'd rather have my money back. A refund, please." }, // 17: row 8
+    DONE, // 18: row 10, the deliberate wrong line
+    {
+      side: "agent",
+      text: "I've set up a full refund of $329.00 to your Visa ending 2208. It's issued when the carrier scans the return and takes 3 to 5 business days to appear. You'll get an email with a free return label.",
+    }, // 19: row 12
+  ]);
+  const press: AgentAction = { type: "confirm", target: "order", at: at(12, 4000) };
+  const undo: AgentAction = { type: "undo", target: "order", at: at(13, 4000) };
+  const approve: AgentAction = { type: "approve", at: at(18, 4000) };
+
+  // Rows 1-2: no read-back; line 12's "Done." is refused at once, with its reason.
+  let v = view(s, [], 12);
+  assert.notEqual(v.recommendation?.approval.state, "approved");
+  assert.equal(v.recommendation?.staleApproval?.reason, "the item wasn't confirmed with the caller yet");
+  // Row 3: the press makes it ready, with Undo.
+  v = view(s, [press], 12);
+  assert.equal(v.order.match?.confirmedBy, "panel");
+  assert.ok(v.undoable.includes("order"));
+  assert.equal(v.recommendation?.approval.state, "awaiting", "the early 'Done' doesn't come back with the press");
+  // Row 4: a fresh spoken approval counts.
+  v = view(s, [press], 13);
+  assert.equal(v.recommendation?.approval.state, "approved");
+  assert.equal(v.recommendation?.approval.via, "call");
+  // Row 5: Undo withdraws it and relocks the item.
+  v = view(s, [press, undo], 13);
+  assert.equal(v.order.match?.confirmed, false);
+  assert.notEqual(v.recommendation?.approval.state, "approved");
+  // Row 6: the read-back confirms the item, and the withdrawn approval stays withdrawn.
+  v = view(s, [press, undo], 15);
+  assert.equal(v.order.match?.confirmed, true);
+  assert.equal(v.recommendation?.approval.state, "awaiting");
+  assert.equal(v.recommendation?.staleApproval?.reason, "a confirmation it relied on was undone");
+  // Row 7: a fresh spoken approval counts.
+  v = view(s, [press, undo], 16);
+  assert.equal(v.recommendation?.approval.state, "approved");
+  // Rows 8-9: the refund needs its own approval; the replacement's doesn't cover it.
+  v = view(s, [press, undo], 17);
+  assert.equal(v.recommendation?.prepared?.kind, "refund");
+  assert.equal(v.recommendation?.approval.state, "awaiting");
+  assert.match(v.recommendation?.staleApproval?.reason ?? "", /replacement/);
+  assert.notEqual(v.recommendation?.staleApproval?.refused, true, "it was an approval, for the other outcome");
+  // Row 10: the wrong line isn't the refund's approval.
+  v = view(s, [press, undo], 18);
+  assert.notEqual(v.recommendation?.approval.state, "approved");
+  // Rows 11-12: the panel approves the refund; the close-out line completes the record.
+  v = view(s, [press, undo, approve]);
+  assert.equal(v.recommendation?.approval.state, "approved");
+  assert.equal(v.recommendation?.approval.via, "panel");
+  assert.deepEqual(
+    v.recommendation?.history?.map((h) => [h.via, h.counted, h.reason]),
+    [
+      ["call", false, "the item wasn't confirmed with the caller yet"],
+      ["call", false, "a confirmation it relied on was undone"],
+      ["call", false, "it was for a replacement"], // row 7's approval, seen from the refund
+      ["call", false, "it named a replacement, not the refund"],
+      ["panel", true, undefined],
+      ["call", false, "already approved"], // the close-out line
+    ]
+  );
+  assert.match(doc(v, "Resolution") ?? "", /^Refund/);
+  assert.doesNotMatch(doc(v, "Terms heard") ?? "", /not heard yet/);
+  assert.equal(step(v, "docs").status, "done");
+});
