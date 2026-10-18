@@ -153,6 +153,7 @@ test("I-02: undoing a name Confirm relocks the order, and the approval given whi
   );
   assert.equal(v.recommendation?.staleApproval?.via, "call");
   assert.equal(v.recommendation?.staleApproval?.reason, "a confirmation it relied on was undone");
+  assert.notEqual(v.recommendation?.staleApproval?.refused, true, "a withdrawn approval was an approval (Call 12 review)");
   v = view(s, [press, undo, again, item, { type: "approve", at: at(15, 5000) }]);
   assert.equal(v.recommendation?.approval.state, "approved");
   assert.equal(v.recommendation?.approval.via, "panel");
@@ -257,7 +258,7 @@ test("I-16: the record lists every approval with its time, method and status, an
   assert.equal(v.recommendation?.approval.via, "panel");
   assert.match(doc(v, "Approval history")!, /in the panel: counted; .* on the call: not counted \(already approved\)/);
   assert.equal(
-    doc(v, "Terms said"),
+    doc(v, "Terms heard"),
     `Ships today: "Done. The new tablet ships today. You'll get an email with a free return label for the damaged one." (${new Date(at(12, 0)).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}); Return label: "Done. The new tablet ships today. You'll get an email with a free return label for the damaged one." (${new Date(at(12, 0)).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" })})`
   );
   assert.ok(v.documentation.every((d) => d.value), "every documentation row is filled");

@@ -106,7 +106,14 @@ export type Recommendation = {
    * An earlier approval that doesn't cover this recommendation: given before what it needed was
    * known, or for a different outcome or order. Kept so the history shows it; a fresh approval is needed.
    */
-  staleApproval?: { at: number; via: "call" | "panel"; evidence?: Evidence; reason: string };
+  staleApproval?: {
+    at: number;
+    via: "call" | "panel";
+    evidence?: Evidence;
+    reason: string;
+    /** Approval words that never counted (the line named the other outcome): not an approval to give "again". */
+    refused?: boolean;
+  };
   /**
    * The agent's line about this outcome, while it waits for approval, with no approval heard in it:
    * "offset a full refund…" for "I've set up a full refund…" (call 7). Never approves; the agent decides.
@@ -955,7 +962,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
         const refusal = refused.find((r) => r === a);
         if (refusal || withdrawn.includes(a)) {
           const reason = refusal?.reason ?? "a confirmation it relied on was undone";
-          if (recommendation.approval.state !== "approved") recommendation.staleApproval = { at: a.at, via: a.via, evidence: a.evidence, reason };
+          if (recommendation.approval.state !== "approved") recommendation.staleApproval = { at: a.at, via: a.via, evidence: a.evidence, reason, ...(refusal ? { refused: true } : {}) };
           history.push({ at: a.at, via: a.via, evidence: a.evidence, counted: false, reason });
           continue;
         }
@@ -988,7 +995,8 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       }
       if (lowConfidenceChoice) {
         // A possible change of mind: nothing is approved until the agent confirms what the customer wants.
-        const held = recommendation.approval.state === "approved" ? recommendation.approval : recommendation.staleApproval;
+        // Words that never counted are no approval to hold: their note stays as it is.
+        const held = recommendation.approval.state === "approved" ? recommendation.approval : recommendation.staleApproval?.refused ? undefined : recommendation.staleApproval;
         recommendation.approval = { state: "not-ready" };
         if (held?.at !== undefined && held.via) {
           recommendation.staleApproval = { at: held.at, via: held.via, evidence: held.evidence, reason: "the customer may have changed their mind" };
@@ -1016,7 +1024,8 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       const missing = !itemConfirmed ? "the item wasn't confirmed with the caller yet" : "the customer's choice wasn't known yet";
       const history = [...given.map((a) => ({ ...a, reason: missing })), ...refused].sort((x, y) => x.at - y.at).map((a) => ({ ...a, counted: false }));
       const last = history[history.length - 1];
-      recommendation.staleApproval = { at: last.at, via: last.via, evidence: last.evidence, reason: last.reason };
+      const lastRefused = refused.some((r) => r.at === last.at && r.via === last.via);
+      recommendation.staleApproval = { at: last.at, via: last.via, evidence: last.evidence, reason: last.reason, ...(lastRefused ? { refused: true } : {}) };
       recommendation.history = history;
     }
     // The transcript note for a line whose approval words didn't count says so, and why.
@@ -1357,9 +1366,14 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
         const found = findPhrase(told, pattern);
         return !!found && !found.negated;
       };
-      // Every amount and card number said must be the record's, and the record's must be said.
+      // Every amount and card number said must be the record's, and the record's must be said. Recognition
+      // often drops the "$": "a full refund of 329 to your visa ending 2208" (Call 12 review, RC12-01), so a
+      // number straight after "refund of" counts too. Any other bare number (order 427, 3 to 5 days) doesn't.
       const cents = Math.round((o.price % 1) * 100);
-      const amounts = [...told.matchAll(/\$ ?(\d+)(?: (\d{2})\b)?|\b(\d+) dollars\b/g)].map((m) => ({ whole: Number(m[1] ?? m[3]), cents: Number(m[2] ?? 0) }));
+      const amounts = [...told.matchAll(/\$ ?(\d+)(?: (\d{2})\b)?|\b(\d+) dollars\b|\brefund (?:of|for) (\d+)(?: (\d{2})\b)?/g)].map((m) => ({
+        whole: Number(m[1] ?? m[3] ?? m[4]),
+        cents: Number(m[2] ?? m[5] ?? 0),
+      }));
       const rightAmount = amounts.length > 0 && amounts.every((a) => a.whole === Math.floor(o.price) && a.cents === cents);
       const last4 = o.payment?.match(/\d{4}$/)?.[0];
       const cards = [...told.matchAll(/\bending (?:in )?(\d[\d ]*\d)\b/g)].map((m) => m[1].replace(/ /g, ""));
@@ -1396,6 +1410,19 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
     } else if (approved) {
       suggestedReply = neutral("Is there anything else I can help with?", "Required documentation");
     }
+  }
+
+  // Approval alone doesn't complete the documentation: the step stays open while a term the customer must
+  // hear isn't heard yet, so a finished-looking checklist can't hide "not heard yet" in the record (Call 12
+  // review, RC12-03).
+  const unheardTerms = termRecord.filter((t) => !t.said).map((t) => t.label.toLowerCase());
+  if (approved && termRecord.length) {
+    const docs = steps.find((s) => s.id === "docs")!;
+    if (unheardTerms.length) {
+      // The step in progress, as the checklist marks the first open step (above).
+      docs.status = steps.some((s) => s !== docs && s.status !== "done" && s.status !== "skipped") ? "pending" : "active";
+      docs.detail = `Not heard yet: ${unheardTerms.join(", ")}`;
+    } else docs.detail = "Terms heard on the call";
   }
 
   /* ---------- Documentation (filled once approved; nothing is sent) ---------- */
@@ -1442,8 +1469,9 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
           : null,
     },
     {
-      label: "Terms said",
-      value: approved && termRecord.length ? termRecord.map((t) => `${t.label}: ${t.evidence ? `"${t.evidence.text}" (${clock(t.evidence.at)})` : "not said yet"}`).join("; ") : null,
+      // "Not heard": the copilot only knows what recognition gave it, not what the customer heard (Call 12 review).
+      label: "Terms heard",
+      value: approved && termRecord.length ? termRecord.map((t) => `${t.label}: ${t.evidence ? `"${t.evidence.text}" (${clock(t.evidence.at)})` : "not heard yet"}`).join("; ") : null,
     },
   ];
 

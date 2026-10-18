@@ -121,8 +121,8 @@ test("I-24: 'Done' before the item is confirmed shows its reason at once, not on
 test("I-28: one line has one time in the record, and two panel presses 40 s apart are told apart", () => {
   const v = at(END);
   const history = doc(v, "Approval history")!.split("; ");
-  assert.ok(history[history.length - 1].startsWith(hms(c(174.7))), "the 02:54 line at its start, as in Terms said");
-  assert.match(doc(v, "Terms said")!, new RegExp(`\\(${hms(c(174.7))}\\)$`));
+  assert.ok(history[history.length - 1].startsWith(hms(c(174.7))), "the 02:54 line at its start, as in Terms heard");
+  assert.match(doc(v, "Terms heard")!, new RegExp(`\\(${hms(c(174.7))}\\)$`));
   const panels = history.filter((h) => h.includes("in the panel")).map((h) => h.split(" in the panel")[0]);
   assert.deepEqual(panels, [hms(c(133.5)), hms(c(173.45))]);
   assert.notEqual(panels[0], panels[1]);

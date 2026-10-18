@@ -427,10 +427,19 @@ export function LiveCopilot({ className }: { className?: string }) {
                     <div className="flex items-center justify-between gap-2 pt-1">
                       <span className="text-xs text-muted-foreground">
                         {/* An earlier approval stays in the history but doesn't carry over to a changed decision. */}
+                        {/* Words that never counted aren't "the approval": Call 12's "Approve again" read as an instruction. */}
                         {rec.staleApproval && (
                           <span className="block text-amber-700 dark:text-amber-500">
-                            The approval {rec.staleApproval.via === "call" ? "given on the call" : "given in the panel"} at {timeOfDay(rec.staleApproval.evidence?.at ?? rec.staleApproval.at)} doesn&rsquo;t
-                            cover this: {rec.staleApproval.reason}.
+                            {rec.staleApproval.refused ? (
+                              <>
+                                Approval words on the call at {timeOfDay(rec.staleApproval.evidence?.at ?? rec.staleApproval.at)} weren&rsquo;t counted: {rec.staleApproval.reason}.
+                              </>
+                            ) : (
+                              <>
+                                The approval {rec.staleApproval.via === "call" ? "given on the call" : "given in the panel"} at {timeOfDay(rec.staleApproval.evidence?.at ?? rec.staleApproval.at)} doesn&rsquo;t
+                                cover this: {rec.staleApproval.reason}.
+                              </>
+                            )}
                           </span>
                         )}
                         {/* Never approves by itself: a misheard approval is the agent's call to make. */}
@@ -450,7 +459,7 @@ export function LiveCopilot({ className }: { className?: string }) {
                             ? "It can be approved once the check settles."
                             : rec.approval.state === "not-ready"
                           ? "Confirm the customer's choice first."
-                          : rec.staleApproval
+                          : rec.staleApproval && !rec.staleApproval.refused
                             ? "Approve again if this is right."
                             : "Waiting for your approval."}
                       </span>

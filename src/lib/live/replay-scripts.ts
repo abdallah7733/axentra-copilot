@@ -31,7 +31,11 @@ export const replayScripts: { id: string; label: string; lines: ReplayLine[] }[]
       9: { side: "caller", text: "I just want my money back." },
       10: null,
       11: null,
-      12: { side: "agent", text: "Done. Your refund is set up. You'll get an email with a free return label for the damaged one." },
+      // Every refund term, so the record is complete: the Documentation step waits for them (Call 12 review).
+      12: {
+        side: "agent",
+        text: "Done. I've set up a full refund of $329.00 to your Visa ending 2208. It's issued when the carrier scans the return and takes 3 to 5 business days to appear. You'll get an email with a free return label.",
+      },
     }),
   },
   { id: "failed", label: "Branch: failed check", lines: variant({ 7: { side: "caller", text: "Lake Road, in Houston." } }).slice(0, 7) },

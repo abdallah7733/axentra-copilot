@@ -175,7 +175,7 @@ test("I-28: a spoken approval shows the same time, with seconds, in every part o
   assert.equal(v.recommendation?.approval.via, "call");
   assert.match(doc(v, "Approval record")!, new RegExp(`, ${start}$`), "the line's start, not its end");
   assert.match(doc(v, "Approval history")!, new RegExp(`^${start} on the call: counted`));
-  assert.match(doc(v, "Terms said")!, new RegExp(`\\(${start}\\)`));
+  assert.match(doc(v, "Terms heard")!, new RegExp(`\\(${start}\\)`));
 });
 
 /* ---------- I-27: the card says what the agent can do now ---------- */

@@ -118,11 +118,14 @@ export function agentOffers(text: string): string | null {
   return null;
 }
 
-/** The agent says the resolution is done ("Done. The new tablet ships today."). */
+/**
+ * The agent says the resolution is done ("Done. The new tablet ships today."). "I have" counts as "I've":
+ * recognition writes either (Call 12: "I have set a full refund…").
+ */
 export function agentCommits(text: string): string | null {
   const found = findPhrase(
     text,
-    /\b(done|all set|i've (sent|set up|arranged|processed|placed|created|issued|booked)|it's on (its|the) way|(has|have) been (sent|processed|arranged|issued)|ships? today|is on its way)\b/
+    /\b(done|all set|i(?:'ve| have) (sent|set up|arranged|processed|placed|created|issued|booked)|it's on (its|the) way|(has|have) been (sent|processed|arranged|issued)|ships? today|is on its way)\b/
   );
   return found && !found.negated ? found.phrase : null;
 }
