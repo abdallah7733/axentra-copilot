@@ -917,7 +917,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
               kind: "replacement",
               reference: pack.references.replacement,
               lines: [
-                `${o.shortName} at no charge, ${pack.policy.replacementShipping}`,
+                `${o.shortName} at no charge; ${pack.policy.replacementShipping}`,
                 `Prepaid return label by email; ${pack.policy.returnDays} days to send the damaged one back`,
                 ...(o.price < pack.policy.photoRequiredFrom ? [`Photo of the damage requested within ${pack.policy.photoDays} days`] : []),
               ],
@@ -929,7 +929,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       title: scenario === "A" ? (choice?.value === "replacement" ? "Replacement (customer's choice)" : "Replacement") : "Refund",
       action:
         scenario === "A"
-          ? `Replace the ${o.shortName} at no charge; it ships by ${pack.policy.replacementShipping}. Email a prepaid return label.`
+          ? `Replace the ${o.shortName} at no charge; it ${pack.policy.replacementShipping}. Email a prepaid return label.`
           : `Refund ${money(o.price)} to ${o.payment ?? "the original payment method"} when the return is scanned. Email a prepaid return label.`,
       reasons,
       sopRef: ref(`Scenario ${scenario}`),

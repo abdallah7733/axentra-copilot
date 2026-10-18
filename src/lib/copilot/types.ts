@@ -113,6 +113,7 @@ export type Policy = {
   maxVerificationAttempts: number;
   authority: AuthorityBand[];
   refundTiming: string;
+  /** A verb phrase that follows "it": "ships the same day by expedited shipping". Say when it ships, never when it arrives. */
   replacementShipping: string;
   returnDays: number;
   escalationCallbackHours: number;
