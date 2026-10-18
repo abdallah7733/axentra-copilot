@@ -10,7 +10,8 @@
     "typecheck": "next typegen && tsc --noEmit",
     "build:static": "STATIC_EXPORT=1 next build",
     "build:console": "STATIC_EXPORT=1 NEXT_PUBLIC_BASE_PATH=/console next build && rm -rf out-console && mv out out-console",
-    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/ts-resolve.mjs --test 'src/**/*.test.ts'"
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/ts-resolve.mjs --test 'src/**/*.test.ts'",
+    "eval": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/ts-resolve.mjs src/lib/eval/cli.ts"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
