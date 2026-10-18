@@ -320,10 +320,11 @@ test("§9.4 rows 1-12: early 'Done', press, spoken approval, Undo, read-back, fr
   v = view(s, [press], 13);
   assert.equal(v.recommendation?.approval.state, "approved");
   assert.equal(v.recommendation?.approval.via, "call");
-  // Row 5: Undo withdraws it and relocks the item.
+  // Row 5: Undo withdraws it and relocks the item, and says why at once.
   v = view(s, [press, undo], 13);
   assert.equal(v.order.match?.confirmed, false);
   assert.notEqual(v.recommendation?.approval.state, "approved");
+  assert.equal(v.recommendation?.staleApproval?.reason, "a confirmation it relied on was undone");
   // Row 6: the read-back confirms the item, and the withdrawn approval stays withdrawn.
   v = view(s, [press, undo], 15);
   assert.equal(v.order.match?.confirmed, true);

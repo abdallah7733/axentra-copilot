@@ -1022,7 +1022,9 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       // Nothing is prepared, so nothing can be approved: say why at once, rather than only once the item
       // is read back (Call 11 review, I-24). "Done." before the read-back used to show no reason at all.
       const missing = !itemConfirmed ? "the item wasn't confirmed with the caller yet" : "the customer's choice wasn't known yet";
-      const history = [...given.map((a) => ({ ...a, reason: missing })), ...refused].sort((x, y) => x.at - y.at).map((a) => ({ ...a, counted: false }));
+      // Given while a Confirm press stood that is now undone: say so, as the history does once the item is confirmed again.
+      const reasonFor = (a: GivenApproval) => (undone.some((u) => u.confirmedAt <= a.at && u.undoneAt > a.at) ? "a confirmation it relied on was undone" : missing);
+      const history = [...given.map((a) => ({ ...a, reason: reasonFor(a) })), ...refused].sort((x, y) => x.at - y.at).map((a) => ({ ...a, counted: false }));
       const last = history[history.length - 1];
       const lastRefused = refused.some((r) => r.at === last.at && r.via === last.via);
       recommendation.staleApproval = { at: last.at, via: last.via, evidence: last.evidence, reason: last.reason, ...(lastRefused ? { refused: true } : {}) };
