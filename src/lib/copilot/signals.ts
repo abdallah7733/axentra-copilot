@@ -1,4 +1,4 @@
-import { findPhrase, normalize } from "./text";
+import { findAffirmed, findPhrase, normalize } from "./text";
 
 /*
   Rules that read meaning from one line of recognised speech. Each rule returns the
@@ -118,13 +118,18 @@ export function agentOffers(text: string): string | null {
   return null;
 }
 
-/** The agent says the resolution is done ("Done. The new tablet ships today."). */
+/**
+ * The agent says the resolution is done ("Done. The new tablet ships today."). "I have" counts as "I've":
+ * recognition writes either (Call 12: "I have set a full refund…").
+ */
 export function agentCommits(text: string): string | null {
-  const found = findPhrase(
-    text,
-    /\b(done|all set|i've (sent|set up|arranged|processed|placed|created|issued|booked)|it's on (its|the) way|(has|have) been (sent|processed|arranged|issued)|ships? today|is on its way)\b/
-  );
-  return found && !found.negated ? found.phrase : null;
+  const pattern =
+    /\b(done|all set|i(?:'ve| have) (sent|set up|arranged|processed|placed|created|issued|booked)|it's on (its|the) way|(has|have) been (sent|processed|arranged|issued)|ships? today|is on its way)\b/;
+  // Both checks must pass, so the stricter one can only remove an approval, never add one: "It won't ship
+  // today." and "That won't be done until Monday." approved on f629e71 (Call 13 review).
+  const found = findPhrase(text, pattern);
+  const strict = findAffirmed(text, pattern);
+  return found && !found.negated && strict && !strict.negated ? found.phrase : null;
 }
 
 const NAME_WORDS = /\b(full name|your name|the name|name on the order)\b/;

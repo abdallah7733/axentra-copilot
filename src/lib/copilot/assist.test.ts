@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkWording, parseIntentLabel } from "./assist";
+import { checkWording, parseIntentLabel, sameWording } from "./assist";
 import { sunlake } from "@/lib/live/sunlake-data";
 
 const names = ["Sam", "Sunlake Tab 11"];
@@ -86,4 +86,13 @@ test("I-03: a neutral rewording with no name is kept", () => {
   ]) {
     assert.equal(checkWording(sorry, worded, names, people), worded, worded);
   }
+});
+
+test("Call 12: the draft given back unchanged is not called reworded", () => {
+  const d = "Sorry, could you say your full name once more?";
+  assert.equal(sameWording(d, d), true);
+  assert.equal(sameWording(d, `"${d}"`), true, "quotes around it");
+  assert.equal(sameWording(d, " sorry,  could you say your full name once more? "), true, "case and spaces");
+  assert.equal(sameWording("I can’t hear you.", "I can't hear you."), true, "curly apostrophe");
+  assert.equal(sameWording(d, "Sorry, could you say your full name again, please?"), false);
 });

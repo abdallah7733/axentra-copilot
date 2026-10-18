@@ -2,6 +2,9 @@
   Live-call client: Sunlake Electronics (fictional), damaged delivery.
   Taken word for word from MILESTONE3_SUNLAKE_CONTENT.md, approved by Abdallah
   on 27 Sep 2026. Change the content document first, then this file.
+  Changed 18 Oct 2026 by Abdallah's decision: the replacement ships the same day by
+  expedited shipping (was "within 1 business day"). Same day is the ship date, not the
+  delivery date. The content document still needs the matching line.
   Everything here is invented: the company, customers, orders, products and SOP.
 */
 
@@ -44,7 +47,7 @@ export const sunlakeSop = {
         "The customer wants a replacement, or has no preference",
       ],
       action:
-        "Create a replacement order at no charge. It ships within 1 business day by expedited shipping. Email a prepaid return label for the damaged item; the customer has 30 days to send it back.",
+        "Create a replacement order at no charge. It ships the same day by expedited shipping. Same day is the ship date, not the delivery date. Email a prepaid return label for the damaged item; the customer has 30 days to send it back.",
       authority: "Per the resolution authority table. Under $500, the agent approves.",
     },
     {
@@ -148,7 +151,7 @@ export const sunlake: ClientPack = {
       { upTo: null, approver: "Customer Care Manager", agentCanApprove: false, row: 2 },
     ],
     refundTiming: "3 to 5 business days",
-    replacementShipping: "expedited shipping, within 1 business day",
+    replacementShipping: "ships the same day by expedited shipping",
     returnDays: 30,
     escalationCallbackHours: 4,
   },

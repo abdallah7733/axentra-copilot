@@ -78,6 +78,7 @@ export function CallDetails({ className }: { className?: string }) {
   const micId = useLive((s) => s.micId);
   const replaying = useLive((s) => s.replaying);
   const assistTimes = useCopilot((s) => s.assistTimes);
+  const assistLog = useCopilot((s) => s.assistLog);
   const [now, setNow] = useState(0);
 
   useEffect(() => {
@@ -145,7 +146,13 @@ export function CallDetails({ className }: { className?: string }) {
                 {health.assistModel === "qwen15b" ? "Qwen 2.5 1.5B" : "Llama 3.2 3B"} ({health.assistGpu ? "GPU" : "CPU"}){health.assistReady ? "" : ", loading"}
               </Row>
               <Row label="Suggestion time">
-                <Mono>{median(assistTimes) === null ? "n/a" : `${(median(assistTimes)! / 1000).toFixed(1)} s median`}</Mono>
+                <Mono>
+                  {median(assistTimes) === null ? "n/a" : `${(median(assistTimes)! / 1000).toFixed(1)} s median (${assistTimes.length})`}
+                  {(["rejected", "late", "timeout"] as const).map((outcome) => {
+                    const count = assistLog.filter((r) => r.outcome === outcome).length;
+                    return count ? ` · ${count} ${outcome === "timeout" ? "timed out" : outcome}` : "";
+                  })}
+                </Mono>
               </Row>
             </>
           )}

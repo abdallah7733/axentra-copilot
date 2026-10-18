@@ -1,6 +1,6 @@
 import { findOrderMentions, matchOrder, type MentionMethod, type OrderMention } from "./orders";
 import { agentAsksChoice, agentAsksFor, agentCommits, agentDisclosesFactor, agentOffers, escalationWords, readChoice, readIntent, safetyWords, type Choice } from "./signals";
-import { findPhrase, normalize, repeatsItself, soundsLike, words as textWords } from "./text";
+import { findAffirmed, normalize, repeatsItself, soundsLike, words as textWords } from "./text";
 import type { AgentAction, AuthorityBand, ClientPack, Customer, Order, Side, TranscriptEvent } from "./types";
 import { deniesIdentity, isFiller, matchAddress, matchName, soundsLikeRecord } from "./verification";
 
@@ -106,14 +106,26 @@ export type Recommendation = {
    * An earlier approval that doesn't cover this recommendation: given before what it needed was
    * known, or for a different outcome or order. Kept so the history shows it; a fresh approval is needed.
    */
-  staleApproval?: { at: number; via: "call" | "panel"; evidence?: Evidence; reason: string };
+  staleApproval?: {
+    at: number;
+    via: "call" | "panel";
+    evidence?: Evidence;
+    reason: string;
+    /** Approval words that never counted (the line named the other outcome): not an approval to give "again". */
+    refused?: boolean;
+  };
   /**
    * The agent's line about this outcome, while it waits for approval, with no approval heard in it:
    * "offset a full refund…" for "I've set up a full refund…" (call 7). Never approves; the agent decides.
    */
   unheardApproval?: Evidence;
   /** The approval is on hold while a caller line that may change the choice is being checked. */
-  suspended?: { at: number; via: "call" | "panel"; evidence: Evidence; reason: string };
+  suspended?: { at: number; via: "call" | "panel"; evidence: Evidence; reason: string; /** The line the held approval was heard in. */ heard?: Evidence };
+  /**
+   * A caller line that may change the choice is still being checked: nothing can be approved until it
+   * settles, whether or not an approval was given (Call 11 review, I-22).
+   */
+  checkingChoice?: Evidence;
   /** Every approval given for this call, in order: whether it counted, and why not. */
   history?: { at: number; via: "call" | "panel"; evidence?: Evidence; counted: boolean; reason?: string }[];
 };
@@ -147,12 +159,13 @@ export type CopilotView = {
     state: "none" | "heard" | "matched" | "unmatched";
     /** Before verification only what was heard is shown, never order details. */
     heard?: { text: string; reading: string; method: MentionMethod; evidence: Evidence };
-    match?: { order: OrderView; method: MentionMethod | "closest" | "only-recent"; note: string; needsConfirmation: boolean; confirmed: boolean; confirmedBy?: Evidence | "panel"; evidence?: Evidence };
+    match?: { order: OrderView; method: MentionMethod | "closest" | "only-recent"; note: string; needsConfirmation: boolean; confirmed: boolean; confirmedBy?: Evidence | "panel"; evidence?: Evidence; /** The Confirm press that counts, kept even once a read-back carries the confirmation (I-25). */ pressedAt?: number; readBack?: Evidence };
   };
   checks: Check[];
   choice: { value: Choice; evidence: Evidence } | null;
   recommendation: Recommendation | null;
-  suggestedReply: { text: string; sopRef: string; basis: "rules" } | null;
+  /** `rewordable`: the line has no amounts, outcomes, order facts or status, so the local model may reword it (I-21). */
+  suggestedReply: { text: string; sopRef: string; basis: "rules"; rewordable: boolean } | null;
   alerts: Alert[];
   prompts: ConfirmPrompt[];
   steps: SopStep[];
@@ -261,7 +274,14 @@ export function orderView(order: Order, now: number): OrderView {
 export const bandFor = (bands: AuthorityBand[], amount: number) => bands.find((b) => b.upTo === null || amount <= b.upTo) ?? bands[bands.length - 1];
 
 const money = (n: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
-const clock = (at: number) => new Date(at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+/**
+ * Clock time with seconds, so each record entry can be found in the recording (I-28). A line is always
+ * shown at its start; an approval heard on the call at the start of its line, though it counts from the end.
+ */
+const clock = (at: number) => new Date(at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+/** How a factor was verified, as a step detail: "Confirmed by the agent", not "By confirmed by the agent" (I-27). */
+const byMethod = (method: string) => (/^(confirmed|typed) by/.test(method) ? method[0].toUpperCase() + method.slice(1) : `By ${method}`);
 
 /** What the optional local model read in lines the rules could not. It never ticks a step. */
 export type ModelHints = { intent?: { id: "damaged" | "order-status"; key: string } };
@@ -317,6 +337,8 @@ function notCovered(then: CopilotView, kind: "replacement" | "refund", orderId: 
 
 /** An approval as given: by the agent's commitment on the call, or in the panel. */
 type GivenApproval = { at: number; via: "call" | "panel"; evidence?: Evidence };
+/** Approval words in a line that named the other outcome: never counted, but kept in the history. */
+type RefusedApproval = GivenApproval & { reason: string };
 /** The approvals each pass heard, so a later pass can find the ones an undo took away. */
 const givenIn = new WeakMap<CopilotView, GivenApproval[]>();
 
@@ -385,6 +407,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
   let causedAfter: { phrase: string; ev: Evidence } | null = null;
   // Every approval given, checked against what was known at its moment once the recommendation is built.
   const given: GivenApproval[] = [];
+  const refused: RefusedApproval[] = [];
   let unheardApproval: { ev: Evidence; value: "replacement" | "refund" } | null = null;
   const keyAnswers: string[] = [];
   const agentChecks: CopilotView["agentChecks"] = [];
@@ -643,8 +666,13 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       const offeringOptions = /\?/.test(line.text) && /\bor\b/i.test(line.text);
       if (choice && !offeringOptions && verified() && !escalations.length && ev.at > choice.evidence.at) {
         const commit = ev.lowConfidence ? null : agentCommits(line.text);
-        const fitsChoice =
-          choice.value === "refund" ? /\b(refund|money)\b/i.test(line.text) || /\b(done|all set)\b/i.test(line.text) : !/\brefund\b/i.test(line.text);
+        // A line that names the other outcome is never this one's approval: "Done. The new tablet ships
+        // today." counted as the approval of a refund (Call 11 review, I-23).
+        const namesReplacement = /\b(replace(ment)?|ships?|shipped|shipping|new (one|\w+))\b/i.test(line.text);
+        const namesRefund = /\brefund\b/i.test(line.text);
+        const other = choice.value === "refund" ? "replacement" : "refund";
+        const namesOther = choice.value === "refund" ? namesReplacement : namesRefund;
+        const fitsChoice = !namesOther && (choice.value === "refund" ? /\b(refund|money|done|all set)\b/i.test(line.text) : true);
         const aboutChoice =
           choice.value === "refund"
             ? /\b(refund|money|dollars|visa|card)\b|\$\d/i.test(line.text)
@@ -655,6 +683,11 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
           given.push({ at: line.endedAt, via: "call", evidence: ev });
           unheardApproval = null;
           note = "approval heard in this line";
+        } else if (commit && namesOther && readyToApprove()) {
+          // Recorded and checked again, not dropped (the 01:43 "free refund" line in Call 11, I-24).
+          refused.push({ at: line.endedAt, via: "call", evidence: ev, reason: `it named a ${other}, not the ${choice.value}` });
+          keyAnswers.push(line.key);
+          note = `approval words, but the line named the ${other}`;
         } else if (aboutChoice && readyToApprove() && !earlier) {
           // About the chosen outcome, but no approval heard in it: flag it, and let the second speech model
           // hear it again (call 7: "offset a full refund" for "I've set up a full refund").
@@ -735,7 +768,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
         (a) => !a.ev.lowConfidence && a.mention.candidates.includes(found.order.id) && stands(a.ev.at)
       );
       // A Confirm press counts only for the order the panel showed when it was pressed.
-      const pressed = orderPresses.some(
+      const pressedAt = orderPresses.find(
         (at) =>
           stands(at) &&
           rules(pack, lines.filter((l) => (l.availableAt ?? l.endedAt) <= at), allActions.filter((x) => x.at < at), at, hints, true).order.match?.order.id === found.order.id
@@ -747,9 +780,11 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
         method: found.method,
         note: found.note,
         needsConfirmation,
-        confirmed: !!readBack || pressed,
-        confirmedBy: readBack?.ev ?? (pressed ? "panel" : undefined),
+        confirmed: !!readBack || pressedAt !== undefined,
+        confirmedBy: readBack?.ev ?? (pressedAt !== undefined ? "panel" : undefined),
         evidence: source?.ev,
+        ...(pressedAt !== undefined ? { pressedAt } : {}),
+        ...(readBack ? { readBack: readBack.ev } : {}),
       };
     } else if (latestCaller.length) {
       order.state = "unmatched";
@@ -882,7 +917,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
               kind: "replacement",
               reference: pack.references.replacement,
               lines: [
-                `${o.shortName} at no charge, ${pack.policy.replacementShipping}`,
+                `${o.shortName} at no charge; ${pack.policy.replacementShipping}`,
                 `Prepaid return label by email; ${pack.policy.returnDays} days to send the damaged one back`,
                 ...(o.price < pack.policy.photoRequiredFrom ? [`Photo of the damage requested within ${pack.policy.photoDays} days`] : []),
               ],
@@ -894,7 +929,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       title: scenario === "A" ? (choice?.value === "replacement" ? "Replacement (customer's choice)" : "Replacement") : "Refund",
       action:
         scenario === "A"
-          ? `Replace the ${o.shortName} at no charge; it ships by ${pack.policy.replacementShipping}. Email a prepaid return label.`
+          ? `Replace the ${o.shortName} at no charge; it ${pack.policy.replacementShipping}. Email a prepaid return label.`
           : `Refund ${money(o.price)} to ${o.payment ?? "the original payment method"} when the return is scanned. Email a prepaid return label.`,
       reasons,
       sopRef: ref(`Scenario ${scenario}`),
@@ -923,11 +958,19 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
           if (g.via === "call" && g.at >= u.confirmedAt && !given.some(known) && !withdrawn.some(known)) withdrawn.push(g);
         }
       }
-      for (const a of [...given, ...withdrawn].sort((x, y) => x.at - y.at)) {
-        if (withdrawn.includes(a)) {
-          const reason = "a confirmation it relied on was undone";
-          if (recommendation.approval.state !== "approved") recommendation.staleApproval = { ...a, reason };
-          history.push({ ...a, counted: false, reason });
+      // Which approval came first is decided by when the panel could accept it: the press, or when the line's
+      // text reached the copilot (its checked text, if it went to the second model). A spoken line checked
+      // after a press no longer takes the credit back from the press the panel already showed as approved
+      // (Call 13 Card A, outside review 6.2). Whether each one holds is still judged at its own `at`, as before.
+      const acceptedAt = (g: GivenApproval) => g.evidence?.knownAt ?? g.at;
+      for (const a of [...given, ...withdrawn, ...refused].sort((x, y) => acceptedAt(x) - acceptedAt(y))) {
+        // The note under the card still names the latest one not counted by when it was given, as before.
+        const latest = !(recommendation.staleApproval && recommendation.staleApproval.at > a.at);
+        const refusal = refused.find((r) => r === a);
+        if (refusal || withdrawn.includes(a)) {
+          const reason = refusal?.reason ?? "a confirmation it relied on was undone";
+          if (recommendation.approval.state !== "approved" && latest) recommendation.staleApproval = { at: a.at, via: a.via, evidence: a.evidence, reason, ...(refusal ? { refused: true } : {}) };
+          history.push({ at: a.at, via: a.via, evidence: a.evidence, counted: false, reason });
           continue;
         }
         const then = rules(pack, lines.filter((l) => (l.availableAt ?? l.endedAt) <= a.at), allActions.filter((x) => x.at <= a.at), a.at, hints, true);
@@ -935,11 +978,16 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
         const changedSince = choiceChanges.some((t) => t > a.at);
         // A Confirm press the approval relied on was taken back after it: confirming again doesn't revive it.
         const undoneSince = undone.some((u) => u.confirmedAt <= a.at && u.undoneAt > a.at);
-        if (recommendation.approval.state === "approved") {
-          history.push({ ...a, counted: false, reason: "already approved" });
+        const holds = !changedSince && !undoneSince && !!r?.prepared && r.scenario === scenario && r.prepared.kind === prepared.kind && then.order.match?.order.id === o.id;
+        const first = recommendation.approval;
+        // Said before the approval that counted but available only after it: one that holds says why it
+        // didn't count; one that doesn't hold keeps its own reason, as it had before this ordering.
+        const overtaken = first.state === "approved" && a.at < first.at!;
+        if (first.state === "approved" && (!overtaken || holds)) {
+          history.push({ ...a, counted: false, reason: overtaken ? `already approved ${first.via === "panel" ? "in the panel" : "on the call"} before this line's text arrived` : "already approved" });
           continue;
         }
-        if (!changedSince && !undoneSince && r?.prepared && r.scenario === scenario && r.prepared.kind === prepared.kind && then.order.match?.order.id === o.id) {
+        if (holds) {
           recommendation.approval = { state: "approved", ...a, by: `${pack.agent.name} (${pack.agent.id})` };
           recommendation.staleApproval = undefined;
           history.push({ ...a, counted: true });
@@ -951,7 +999,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
           : changedSince && covered === "the outcome has changed since"
             ? "the customer changed their choice after it"
             : covered;
-        recommendation.staleApproval = { ...a, reason };
+        if (first.state !== "approved" && latest) recommendation.staleApproval = { ...a, reason };
         history.push({ ...a, counted: false, reason });
       }
       if (recommendation.approval.state === "awaiting" && unheardApproval?.value === prepared.kind && choice && unheardApproval.ev.at > choice.evidence.at) {
@@ -959,19 +1007,45 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       }
       if (lowConfidenceChoice) {
         // A possible change of mind: nothing is approved until the agent confirms what the customer wants.
-        const held = recommendation.approval.state === "approved" ? recommendation.approval : recommendation.staleApproval;
+        // Words that never counted are no approval to hold: their note stays as it is.
+        const held = recommendation.approval.state === "approved" ? recommendation.approval : recommendation.staleApproval?.refused ? undefined : recommendation.staleApproval;
         recommendation.approval = { state: "not-ready" };
         if (held?.at !== undefined && held.via) {
           recommendation.staleApproval = { at: held.at, via: held.via, evidence: held.evidence, reason: "the customer may have changed their mind" };
         }
-      } else if (checkingChange && recommendation.approval.state === "approved") {
+      } else if (checkingChange) {
         // A caller line that may change the choice is still with the second speech model: the approval is
         // on hold until its checked text arrives, then stands or falls by the usual rules (call 8 review).
-        const held = recommendation.approval;
+        // Nothing can be approved meanwhile, given or not (Call 11 review, I-22).
+        const held = recommendation.approval.state === "approved" ? recommendation.approval : null;
         recommendation.approval = { state: "not-ready" };
-        recommendation.suspended = { at: held.at!, via: held.via!, evidence: evidenceOf(checkingChange), reason: "a possible change of choice is being checked" };
+        recommendation.checkingChoice = evidenceOf(checkingChange);
+        if (held)
+          recommendation.suspended = {
+            at: held.at!,
+            via: held.via!,
+            evidence: evidenceOf(checkingChange),
+            reason: "a possible change of choice is being checked",
+            ...(held.evidence ? { heard: held.evidence } : {}),
+          };
       }
       if (history.length) recommendation.history = history;
+    } else if (!past && (given.length || refused.length)) {
+      // Nothing is prepared, so nothing can be approved: say why at once, rather than only once the item
+      // is read back (Call 11 review, I-24). "Done." before the read-back used to show no reason at all.
+      const missing = !itemConfirmed ? "the item wasn't confirmed with the caller yet" : "the customer's choice wasn't known yet";
+      // Given while a Confirm press stood that is now undone: say so, as the history does once the item is confirmed again.
+      const reasonFor = (a: GivenApproval) => (undone.some((u) => u.confirmedAt <= a.at && u.undoneAt > a.at) ? "a confirmation it relied on was undone" : missing);
+      const history = [...given.map((a) => ({ ...a, reason: reasonFor(a) })), ...refused].sort((x, y) => x.at - y.at).map((a) => ({ ...a, counted: false }));
+      const last = history[history.length - 1];
+      const lastRefused = refused.some((r) => r.at === last.at && r.via === last.via);
+      recommendation.staleApproval = { at: last.at, via: last.via, evidence: last.evidence, reason: last.reason, ...(lastRefused ? { refused: true } : {}) };
+      recommendation.history = history;
+    }
+    // The transcript note for a line whose approval words didn't count says so, and why.
+    for (const h of recommendation.history ?? []) {
+      const check = h.evidence && !h.counted && agentChecks.find((c) => c.key === h.evidence!.key);
+      if (check && check.reason === "approval heard in this line") check.reason = `approval words heard, not counted: ${h.reason}`;
     }
   }
 
@@ -1148,12 +1222,12 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       evidence: intent?.evidence[0],
       sopRef: sopId,
     },
-    { id: "name", label: "Verify: full name", status: factorStep(name), detail: name.state === "ok" && name.method ? `By ${name.method}` : factorDetail(name), evidence: name.evidence, sopRef: ref("Verification") },
+    { id: "name", label: "Verify: full name", status: factorStep(name), detail: name.state === "ok" && name.method ? byMethod(name.method) : factorDetail(name), evidence: name.evidence, sopRef: ref("Verification") },
     {
       id: "address",
       label: "Verify: email, or street and city",
       status: factorStep(address),
-      detail: address.state === "ok" ? `By ${address.method}` : factorDetail(address),
+      detail: address.state === "ok" && address.method ? byMethod(address.method) : factorDetail(address),
       evidence: address.evidence,
       sopRef: ref("Verification"),
     },
@@ -1222,7 +1296,8 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
 
   /* ---------- Suggested reply (rules templates; wording only) ---------- */
   const o = match?.order;
-  const reply = (text: string, section: string) => ({ text, sopRef: ref(section), basis: "rules" as const });
+  const reply = (text: string, section: string, rewordable = false) => ({ text, sopRef: ref(section), basis: "rules" as const, rewordable });
+  const neutral = (text: string, section: string) => reply(text, section, true);
   let suggestedReply: CopilotView["suggestedReply"] = null;
   let termRecord: { label: string; said: boolean; evidence?: Evidence }[] = [];
   if (locked) {
@@ -1239,22 +1314,22 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
     );
   } else if (intent || earlyOffers.length || isVerified) {
     if (name.state === "failed" || address.state === "failed") {
-      suggestedReply = reply("I wasn't able to match those details. Could you check them and try once more?", "Verification");
+      suggestedReply = neutral("I wasn't able to match those details. Could you check them and try once more?", "Verification");
     } else if (name.state === "confirm") {
-      suggestedReply = reply("Sorry, could you say your full name once more?", "Verification");
+      suggestedReply = neutral("Sorry, could you say your full name once more?", "Verification");
     } else if (name.state === "partial") {
-      suggestedReply = reply("Thank you. And your last name, please?", "Verification");
+      suggestedReply = neutral("Thank you. And your last name, please?", "Verification");
     } else if (name.state === "idle") {
-      suggestedReply = reply(
+      suggestedReply = neutral(
         earlyOffers.length
           ? "Before I arrange anything, I need to check a couple of details. Can I have your full name, please?"
           : "I'm sorry to hear that. Before I look at the order, can I have your full name, please?",
         "Verification"
       );
     } else if (name.state === "ok" && address.state === "idle") {
-      suggestedReply = reply("Thank you. And the email address on the order, or the street and city for the delivery?", "Verification");
+      suggestedReply = neutral("Thank you. And the email address on the order, or the street and city for the delivery?", "Verification");
     } else if (address.state === "partial" || address.state === "confirm") {
-      suggestedReply = reply("Sorry, could you give me the street and the city once more?", "Verification");
+      suggestedReply = neutral("Sorry, could you give me the street and the city once more?", "Verification");
     } else if (isVerified && !match) {
       suggestedReply = reply(`Thanks, ${firstName}, you're verified. Could you give me the order number, please?`, "Verification");
     } else if (isVerified && o && match && !orderLocated) {
@@ -1277,6 +1352,10 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       suggestedReply = reply(`Sorry, just to be sure: would you like the new ${o.noun}, or the refund?`, "Scenario A and B");
     } else if (o && match && choice && !match.confirmed && !lowConfidenceChoice) {
       suggestedReply = reply(`Just to confirm, that's order ${o.id}, the ${o.shortName}?`, "Claim rules");
+    } else if (o && recommendation?.checkingChoice) {
+      // While the caller's possible change of choice is being checked, never an outcome as done: reading
+      // that aloud could approve whichever outcome the check settles on (Call 11 review, I-22 and I-23).
+      suggestedReply = neutral("One moment, please, while I make sure I have your choice right.", "Scenario A and B");
     } else if (o && recommendation?.prepared && !approved) {
       suggestedReply =
         recommendation.prepared.kind === "replacement"
@@ -1291,19 +1370,25 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       // negated and heard clearly: keywords alone passed "a refund of 999 dollars… we do not need a scan"
       // (outside review of call 7, §6). Only then the closing question.
       const since = choice.evidence.at;
-      const told = normalize(
-        ordered
-          .filter((l) => l.side === "agent" && l.startedAt >= since && !evidenceOf(l).lowConfidence)
-          .map((l) => l.text)
-          .join(" ")
-      );
+      const toldRaw = ordered
+        .filter((l) => l.side === "agent" && l.startedAt >= since && !evidenceOf(l).lowConfidence)
+        .map((l) => l.text)
+        .join(" ");
+      const told = normalize(toldRaw);
+      // Sentence by sentence over the agent's own words, with every negation (contractions included):
+      // the first affirmed sentence counts, so a term repeated after a negated one is heard (Call 13 review).
       const says = (pattern: RegExp) => {
-        const found = findPhrase(told, pattern);
+        const found = findAffirmed(toldRaw, pattern);
         return !!found && !found.negated;
       };
-      // Every amount and card number said must be the record's, and the record's must be said.
+      // Every amount and card number said must be the record's, and the record's must be said. Recognition
+      // often drops the "$": "a full refund of 329 to your visa ending 2208" (Call 12 review, RC12-01), so a
+      // number straight after "refund of" counts too. Any other bare number (order 427, 3 to 5 days) doesn't.
       const cents = Math.round((o.price % 1) * 100);
-      const amounts = [...told.matchAll(/\$ ?(\d+)(?: (\d{2})\b)?|\b(\d+) dollars\b/g)].map((m) => ({ whole: Number(m[1] ?? m[3]), cents: Number(m[2] ?? 0) }));
+      const amounts = [...told.matchAll(/\$ ?(\d+)(?: (\d{2})\b)?|\b(\d+) dollars\b|\brefund (?:of|for) (\d+)(?: (\d{2})\b)?/g)].map((m) => ({
+        whole: Number(m[1] ?? m[3] ?? m[4]),
+        cents: Number(m[2] ?? m[5] ?? 0),
+      }));
       const rightAmount = amounts.length > 0 && amounts.every((a) => a.whole === Math.floor(o.price) && a.cents === cents);
       const last4 = o.payment?.match(/\d{4}$/)?.[0];
       const cards = [...told.matchAll(/\bending (?:in )?(\d[\d ]*\d)\b/g)].map((m) => m[1].replace(/ /g, ""));
@@ -1324,22 +1409,37 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
               { label: "Return label", key: /\blabel\b/, said: says(/\blabel\b/), text: "You'll get an email with a free return label." },
             ]
           : [
-              { label: "Ships today", key: /\bships?\b/, said: says(/\bships?\b/), text: `The new ${o.noun} ships today.` },
+              { label: "Ships today", key: /\bships? (out )?today\b/, said: says(/\bships? (out )?today\b/), text: `The new ${o.noun} ships today.` },
               { label: "Return label", key: /\blabel\b/, said: says(/\blabel\b/), text: "You'll get an email with a free return label for the damaged one." },
             ];
       // The record keeps each term with the line that said it (call 8 review).
       const agentSince = ordered.filter((l) => l.side === "agent" && l.startedAt >= since && !evidenceOf(l).lowConfidence);
       termRecord = terms.map((t) => {
-        const line = t.said ? agentSince.find((l) => { const f = findPhrase(normalize(l.text), t.key); return !!f && !f.negated; }) : undefined;
+        const affirmed = (text: string) => { const f = findAffirmed(text, t.key); return !!f && !f.negated; };
+        // A term split across lines ("…ships" / "today.") is quoted by the line that completed it.
+        const line = t.said ? (agentSince.find((l) => affirmed(l.text)) ?? agentSince.find((_, i) => affirmed(agentSince.slice(0, i + 1).map((l) => l.text).join(" ")))) : undefined;
         return { label: t.label, said: t.said, evidence: line ? evidenceOf(line) : undefined };
       });
       const unsaid = terms.filter((t) => !t.said).map((t) => t.text);
       suggestedReply = unsaid.length
         ? reply(unsaid.join(" "), recommendation.prepared.kind === "refund" ? "Scenario B" : "Scenario A")
-        : reply("Is there anything else I can help with?", "Required documentation");
+        : neutral("Is there anything else I can help with?", "Required documentation");
     } else if (approved) {
-      suggestedReply = reply("Is there anything else I can help with?", "Required documentation");
+      suggestedReply = neutral("Is there anything else I can help with?", "Required documentation");
     }
+  }
+
+  // Approval alone doesn't complete the documentation: the step stays open while a term the customer must
+  // hear isn't heard yet, so a finished-looking checklist can't hide "not heard yet" in the record (Call 12
+  // review, RC12-03).
+  const unheardTerms = termRecord.filter((t) => !t.said).map((t) => t.label.toLowerCase());
+  if (approved && termRecord.length) {
+    const docs = steps.find((s) => s.id === "docs")!;
+    if (unheardTerms.length) {
+      // The step in progress, as the checklist marks the first open step (above).
+      docs.status = steps.some((s) => s !== docs && s.status !== "done" && s.status !== "skipped") ? "pending" : "active";
+      docs.detail = `Not heard yet: ${unheardTerms.join(", ")}`;
+    } else docs.detail = "Terms heard on the call";
   }
 
   /* ---------- Documentation (filled once approved; nothing is sent) ---------- */
@@ -1363,7 +1463,17 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
     { label: "Resolution", value: approved && recommendation?.prepared ? `${recommendation.prepared.kind === "replacement" ? "Replacement order" : "Refund"} ${recommendation.prepared.reference}` : null },
     {
       label: "Approval record",
-      value: approved && recommendation ? `${pack.agent.name} (${pack.agent.id}), ${recommendation.approver}, ${clock(recommendation.approval.at ?? now)}` : null,
+      value: approved && recommendation ? `${pack.agent.name} (${pack.agent.id}), ${recommendation.approver}, ${clock(recommendation.approval.evidence?.at ?? recommendation.approval.at ?? now)}` : null,
+    },
+    {
+      // Both ways the item was confirmed, and any press taken back (I-25, I-02).
+      label: "Item confirmation",
+      value:
+        [
+          ...undone.filter((u) => u.target === "order").map((u) => `confirmed in the panel at ${clock(u.confirmedAt)}, undone at ${clock(u.undoneAt)}`),
+          ...(match?.pressedAt !== undefined ? [`confirmed in the panel at ${clock(match.pressedAt)}`] : []),
+          ...(match?.readBack ? [`read back at ${clock(match.readBack.at)} ("${match.readBack.text}")`] : []),
+        ].join("; ") || null,
     },
     { label: "Customer communication", value: approved ? "Confirmation email and prepaid return label (prepared; nothing is sent in this demo)" : null },
     {
@@ -1371,13 +1481,14 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       value:
         approved && recommendation?.history
           ? recommendation.history
-              .map((h) => `${clock(h.at)} ${h.via === "call" ? "on the call" : "in the panel"}: ${h.counted ? "counted" : `not counted (${h.reason})`}`)
+              .map((h) => `${clock(h.evidence?.at ?? h.at)} ${h.via === "call" ? "on the call" : "in the panel"}: ${h.counted ? "counted" : `not counted (${h.reason})`}`)
               .join("; ")
           : null,
     },
     {
-      label: "Terms said",
-      value: approved && termRecord.length ? termRecord.map((t) => `${t.label}: ${t.evidence ? `"${t.evidence.text}" (${clock(t.evidence.at)})` : "not said yet"}`).join("; ") : null,
+      // "Not heard": the copilot only knows what recognition gave it, not what the customer heard (Call 12 review).
+      label: "Terms heard",
+      value: approved && termRecord.length ? termRecord.map((t) => `${t.label}: ${t.evidence ? `"${t.evidence.text}" (${clock(t.evidence.at)})` : "not heard yet"}`).join("; ") : null,
     },
   ];
 
@@ -1405,4 +1516,27 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
   };
   givenIn.set(view, given);
   return view;
+}
+
+/**
+ * The recommendation card's line on who may approve and whether it can be approved now (I-27): the
+ * old "You can approve this." showed while nothing could be approved.
+ */
+export function approvalReadiness(view: CopilotView): string | null {
+  const rec = view.recommendation;
+  if (!rec) return null;
+  if (!rec.agentCanApprove) return `Needs approval from ${rec.approver}.`;
+  const state =
+    rec.approval.state === "approved"
+      ? "Approved."
+      : rec.approval.state === "awaiting"
+        ? "Ready to approve."
+        : rec.checkingChoice || rec.suspended
+          ? "Not ready: checking a possible change of choice."
+          : !view.choice
+            ? "Not ready: the customer hasn't chosen yet."
+            : view.order.match && !view.order.match.confirmed
+              ? "Not ready: read back the order first."
+              : "Not ready.";
+  return `Within your authority. ${state}`;
 }
