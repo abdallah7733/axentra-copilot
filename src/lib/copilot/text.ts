@@ -84,6 +84,28 @@ export function negatedAt(tokens: string[], index: number): boolean {
   return false;
 }
 
+/** Every negation, contractions included. Used only for the agent's own commitments (approval words, terms). */
+const NEGATOR = /^(not|no|never|cannot|without|unable|\p{L}+n't|dont|doesnt|isnt|wasnt|didnt|wont|cant|havent|hasnt|hadnt|arent|werent|couldnt|wouldnt|shouldnt)$/u;
+
+/**
+ * Stricter than `findPhrase`, for what the agent commits to: the text is read sentence by sentence, and a
+ * match counts only if no negation comes anywhere before it in its sentence. The first such sentence wins.
+ * Caller-side rules keep `findPhrase`: widening its list would hide safety words ("I can't stand the burning smell").
+ */
+export function findAffirmed(text: string, pattern: RegExp): { phrase: string; negated: boolean } | null {
+  let negated: { phrase: string; negated: boolean } | null = null;
+  for (const sentence of text.split(/[.!?;]+(?:\s|$)/)) {
+    const norm = normalize(sentence);
+    const match = new RegExp(pattern.source, pattern.flags.replace("g", "")).exec(norm);
+    if (!match) continue;
+    const before = norm.slice(0, match.index).trim();
+    const isNegated = (before ? before.split(" ") : []).some((t) => NEGATOR.test(t));
+    if (!isNegated) return { phrase: match[0].trim(), negated: false };
+    negated ??= { phrase: match[0].trim(), negated: true };
+  }
+  return negated;
+}
+
 /** Finds a phrase pattern in normalised text and reports whether it is negated. */
 export function findPhrase(text: string, pattern: RegExp): { phrase: string; negated: boolean } | null {
   const norm = normalize(text);

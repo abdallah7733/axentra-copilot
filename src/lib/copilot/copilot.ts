@@ -1,6 +1,6 @@
 import { findOrderMentions, matchOrder, type MentionMethod, type OrderMention } from "./orders";
 import { agentAsksChoice, agentAsksFor, agentCommits, agentDisclosesFactor, agentOffers, escalationWords, readChoice, readIntent, safetyWords, type Choice } from "./signals";
-import { findPhrase, normalize, repeatsItself, soundsLike, words as textWords } from "./text";
+import { findAffirmed, normalize, repeatsItself, soundsLike, words as textWords } from "./text";
 import type { AgentAction, AuthorityBand, ClientPack, Customer, Order, Side, TranscriptEvent } from "./types";
 import { deniesIdentity, isFiller, matchAddress, matchName, soundsLikeRecord } from "./verification";
 
@@ -1370,14 +1370,15 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       // negated and heard clearly: keywords alone passed "a refund of 999 dollars… we do not need a scan"
       // (outside review of call 7, §6). Only then the closing question.
       const since = choice.evidence.at;
-      const told = normalize(
-        ordered
-          .filter((l) => l.side === "agent" && l.startedAt >= since && !evidenceOf(l).lowConfidence)
-          .map((l) => l.text)
-          .join(" ")
-      );
+      const toldRaw = ordered
+        .filter((l) => l.side === "agent" && l.startedAt >= since && !evidenceOf(l).lowConfidence)
+        .map((l) => l.text)
+        .join(" ");
+      const told = normalize(toldRaw);
+      // Sentence by sentence over the agent's own words, with every negation (contractions included):
+      // the first affirmed sentence counts, so a term repeated after a negated one is heard (Call 13 review).
       const says = (pattern: RegExp) => {
-        const found = findPhrase(told, pattern);
+        const found = findAffirmed(toldRaw, pattern);
         return !!found && !found.negated;
       };
       // Every amount and card number said must be the record's, and the record's must be said. Recognition
@@ -1408,13 +1409,15 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
               { label: "Return label", key: /\blabel\b/, said: says(/\blabel\b/), text: "You'll get an email with a free return label." },
             ]
           : [
-              { label: "Ships today", key: /\bships?\b/, said: says(/\bships?\b/), text: `The new ${o.noun} ships today.` },
+              { label: "Ships today", key: /\bships? (out )?today\b/, said: says(/\bships? (out )?today\b/), text: `The new ${o.noun} ships today.` },
               { label: "Return label", key: /\blabel\b/, said: says(/\blabel\b/), text: "You'll get an email with a free return label for the damaged one." },
             ];
       // The record keeps each term with the line that said it (call 8 review).
       const agentSince = ordered.filter((l) => l.side === "agent" && l.startedAt >= since && !evidenceOf(l).lowConfidence);
       termRecord = terms.map((t) => {
-        const line = t.said ? agentSince.find((l) => { const f = findPhrase(normalize(l.text), t.key); return !!f && !f.negated; }) : undefined;
+        const affirmed = (text: string) => { const f = findAffirmed(text, t.key); return !!f && !f.negated; };
+        // A term split across lines ("…ships" / "today.") is quoted by the line that completed it.
+        const line = t.said ? (agentSince.find((l) => affirmed(l.text)) ?? agentSince.find((_, i) => affirmed(agentSince.slice(0, i + 1).map((l) => l.text).join(" ")))) : undefined;
         return { label: t.label, said: t.said, evidence: line ? evidenceOf(line) : undefined };
       });
       const unsaid = terms.filter((t) => !t.said).map((t) => t.text);
