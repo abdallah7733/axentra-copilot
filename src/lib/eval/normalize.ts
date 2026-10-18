@@ -178,38 +178,34 @@ function runToken(pieces: Piece[]): NumToken {
 }
 
 /**
- * Number-collapsed tokens of one or more lines. Each run of numbers becomes one token, and
- * "NUM to NUM <unit>" becomes one range token. A line boundary ends a run: a number split over
- * two transcript lines is two tokens, not one.
+ * Number-collapsed tokens of a text. Each run of numbers becomes one token, and "NUM to NUM <unit>"
+ * becomes one range token. A segment's lines are joined before this (score.ts, fields.ts), so a
+ * number split over two lines is still one span at the word level; the split is an L3 code (SPLIT).
  */
-export function collapsedTokens(lines: string | string[]): Token[] {
-  const out: Token[] = [];
-  for (const line of typeof lines === "string" ? [lines] : lines) {
-    const { words } = normalizeText(line);
-    const tokens: Token[] = [];
-    let i = 0;
-    while (i < words.length) {
-      const pieces: Piece[] = [];
-      let j = i;
-      for (let r = readPiece(words, j, false); r; r = readPiece(words, j, true)) {
-        pieces.push(r.piece);
-        j = r.next;
-      }
-      if (pieces.length) {
-        tokens.push(runToken(pieces));
-        i = j;
-      } else tokens.push({ kind: "word", word: words[i++] });
+export function collapsedTokens(text: string): Token[] {
+  const { words } = normalizeText(text);
+  const tokens: Token[] = [];
+  let i = 0;
+  while (i < words.length) {
+    const pieces: Piece[] = [];
+    let j = i;
+    for (let r = readPiece(words, j, false); r; r = readPiece(words, j, true)) {
+      pieces.push(r.piece);
+      j = r.next;
     }
-    // Ranges: "4 to 7 days", "four to seven days".
-    for (let k = 0; k + 3 < tokens.length; k++) {
-      const [a, to, b, unit] = tokens.slice(k, k + 4);
-      if (a?.kind === "num" && a.value !== null && to?.kind === "word" && to.word === "to" && b?.kind === "num" && b.value !== null && unit?.kind === "word" && MEASURE.test(unit.word) && !/^dollars?$/.test(unit.word)) {
-        tokens.splice(k, 4, { kind: "range", from: a.value, to: b.value, unit: unit.word.replace(/s$/, ""), text: `${a.text} to ${b.text} ${unit.word}` });
-      }
-    }
-    out.push(...tokens);
+    if (pieces.length) {
+      tokens.push(runToken(pieces));
+      i = j;
+    } else tokens.push({ kind: "word", word: words[i++] });
   }
-  return out;
+  // Ranges: "4 to 7 days", "four to seven days".
+  for (let k = 0; k + 3 < tokens.length; k++) {
+    const [a, to, b, unit] = tokens.slice(k, k + 4);
+    if (a?.kind === "num" && a.value !== null && to?.kind === "word" && to.word === "to" && b?.kind === "num" && b.value !== null && unit?.kind === "word" && MEASURE.test(unit.word) && !/^dollars?$/.test(unit.word)) {
+      tokens.splice(k, 4, { kind: "range", from: a.value, to: b.value, unit: unit.word.replace(/s$/, ""), text: `${a.text} to ${b.text} ${unit.word}` });
+    }
+  }
+  return tokens;
 }
 
 /** Tags the reference's number and range tokens with its spans, in order (ORDER_ID, AMOUNT, …). */

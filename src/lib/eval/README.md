@@ -35,6 +35,7 @@ npm test                                          # includes the harness checks 
     "D05": {
       "A": { "lines": [{ "first": "And which order is this about?", "start": 0.0, "end": 1.9, "firstTextS": 1.0 }] },
       "C": {
+        "reference": "Order seven one four [pause 1.2 s] two six.",
         "lines": [
           { "first": "Order 714.", "checked": "Order 714.", "start": 3.1, "end": 4.2, "firstTextS": 1.0, "checkS": 2.3 },
           { "first": "26.", "start": 5.2, "end": 5.6, "firstTextS": 0.9 }
@@ -46,6 +47,7 @@ npm test                                          # includes the harness checks 
 }
 ```
 
+- `reference` is what was actually said, written by a listener from the recording, with `[pause N s]` and `[unclear]` marks. v1 scores against it, not the script. When it is absent the script is used, each measurement row says so, and the report counts those segments as provisional. A reference whose numbers don't match the case's tagged spans is refused: a misread number means a new take.
 - `first` is the first-pass text (L1), `""` for an empty result. `checked` is the checked text (L2), only when the line was checked.
 - `start` and `end` are seconds from the start of the case; `firstTextS` is the delay the console shows after the end of speech; `checkS` is "checked in". Tier 1 adds `engineResponseS` (and `queueS`, `decodeS` when known).
 - A case or segment left out of the file counts as missing (LOST), never dropped from the denominators. `missingStage` says why, when known.
@@ -65,7 +67,7 @@ v1 is frozen and left unchanged. Where it doesn't say exactly how to compute som
 1. **Numerals in conventional WER.** A numeral is expanded digit by digit when it has a leading zero, four or more digits, or follows "order" ("order 714" → "seven one four"); otherwise as a cardinal ("48" → "forty eight"). So "26" written for a spoken "two six" is one substitution in conventional WER. NC-ER is reported beside it for this reason.
 2. **Amounts.** "a hundred" reads as "one hundred", and "and" after "hundred" is dropped, on both sides, so the AMOUNT forms v1 lists as equal read the same. "oh" for zero is equal inside a number span (v1's table) but stays its own word in conventional WER.
 3. **Hyphens.** Digits joined by hyphens ("0-6-2-9-1") are digits said one by one; "4-7 days" is "4 to 7 days"; any other hyphen is a space.
-4. **NC-ER.** Equality follows the span's tag: an order number by its digits (written or said digit by digit), an amount or house number by its value (written or said as a value, so "4 8" isn't 48), a range by both ends and the unit. A number split over two transcript lines is two tokens, so the split counts against NC-ER. Order digits grouped differently ("four twenty seven", "714 26") are accepted as the same digits.
+4. **NC-ER.** Equality follows the span's tag: an order number by its digits (written or said digit by digit), an amount or house number by its value (written or said as a value, so "4 8" isn't 48), a range by both ends and the unit. A segment's lines are joined first, as for conventional WER and the fields, so a number split over two lines is still one span here; the split itself shows at L3 (SPLIT). Order digits grouped differently ("four twenty seven", "714 26") are accepted as the same digits.
 5. **Fields at L1 and L2** are read from the case's caller lines joined in order; SPLIT is an L3 code only, as v1 says. Intent and choice are read at text level only as "the deciding words are there": a damage word; "replacement" not negated; "refund" negated. D02's "choice unchanged" at text level means no choice word was invented.
 6. **L3** is the copilot's own reading: the latest order number it heard, the name or address answer it assembled. SPLIT when the joined text is right but the copilot didn't read it whole; FROM_RECORD when only its "only recent order" suggestion filled the field.
 7. **L4.**

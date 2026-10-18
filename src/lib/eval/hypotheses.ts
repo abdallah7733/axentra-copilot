@@ -5,7 +5,8 @@
   fixtures check the harness, they are never speech accuracy or latency results.
 */
 
-import { CASES, callerParts, MANIFEST_VERSION, type CaseId, type DevCase } from "./cases";
+import { CASES, callerParts, caseById, MANIFEST_VERSION, type CaseId, type DevCase } from "./cases";
+import { collapsedTokens, tagReference } from "./normalize";
 import type { CaseLine } from "./workflow";
 
 /** One recognised line. Delays are seconds after the line's end of speech, as the console shows them. */
@@ -31,6 +32,12 @@ export type HypLine = {
 
 export type HypSegment = {
   lines: HypLine[];
+  /**
+   * What was actually said, written by a listener from the recording, with [pause N s] and [unclear]
+   * marks (cases file, sections 4 and 5). It is the scored reference. When absent the script is used,
+   * and a measurement row says so.
+   */
+  reference?: string;
   take?: number;
   speaker?: string;
   audioVariant?: string;
@@ -145,6 +152,17 @@ export function validate(file: unknown): HypothesisFile {
     if (!ids.has(id as CaseId)) errors.push(`unknown case ${id}`);
     for (const [name, seg] of Object.entries(segs ?? {})) {
       if (name !== "A" && name !== "C") errors.push(`${id}: unknown segment ${name}`);
+      if (seg?.reference !== undefined) {
+        if (typeof seg.reference !== "string") errors.push(`${id}.${name}: reference must be text`);
+        else if (ids.has(id as CaseId) && (name === "A" || name === "C")) {
+          // The listener's reference must carry the case's tagged numbers, in order (agent cues have none); a misread number means a new take.
+          try {
+            tagReference(collapsedTokens(seg.reference), name === "C" ? caseById(id as CaseId).spans : []);
+          } catch (e) {
+            errors.push(`${id}.${name}: reference doesn't match the case's tagged numbers (${(e as Error).message}); a misread number means re-recording the take`);
+          }
+        }
+      }
       if (!Array.isArray(seg?.lines)) errors.push(`${id}.${name}: lines must be a list`);
       else
         seg.lines.forEach((l: HypLine, i: number) => {

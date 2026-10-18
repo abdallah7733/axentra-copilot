@@ -31,7 +31,8 @@ function one(id: CaseId, caller: (string | HypLine)[], gapS = 1, kind: Hypothesi
 test("reference words, run through B0: every field right in the text; what the rules read and did", () => {
   const s = scoreFile(fixtureFile("reference-words")).scores;
   for (const id of ["D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09"] as CaseId[]) assert.ok(Object.values(codes(C(s, id), "l1Fields")).every((c) => c === "OK"), id);
-  assert.equal(s.filter((x) => x.segment === "C" && x.inventedWords === null).reduce((n, x) => n + x.l1.sub + x.l1.del + x.l1.ins, 0), 0);
+  const errors = (k: "l1" | "nc") => s.filter((x) => x.inventedWords === null).reduce((n, x) => { const w = k === "l1" ? x.l1 : x.l1.nc; return n + w.sub + w.del + w.ins; }, 0);
+  assert.deepEqual([errors("l1"), errors("nc")], [0, 0]); // the reference scores itself as exact, split number included
   // B0 behaviour (observed in this harness on fixture text; live behaviour untested):
   assert.deepEqual(codes(C(s, "D03"), "l3Fields"), { intent: "OK", choice: "OK", refund_wanted: "OK", order_id: "OK" });
   assert.equal(C(s, "D03").l3Fields!.intent!.note, "low certainty");
@@ -52,8 +53,8 @@ test("reference with numerals, run through B0: written numbers are read; the spl
   assert.deepEqual(codes(C(s, "D05"), "l3Fields"), { order_id: "SPLIT" });
   assert.deepEqual(codes(C(s, "D08"), "l3Fields"), { house_no: "OK", street: "OK", city: "OK", address: "OK" });
   assert.deepEqual([C(s, "D04").l4, C(s, "D05").l4, C(s, "D06").l4], ["DONE_RIGHT", "CLARIFY", "DONE_RIGHT"]);
-  // "26" for spoken "two six" is a conventional-WER substitution; NC-ER counts the split number instead.
-  assert.deepEqual([C(s, "D05").l1.sub, C(s, "D05").l1.nc.sub, C(s, "D05").l1.nc.ins], [1, 1, 1]);
+  // "26" for spoken "two six" is a conventional-WER substitution; NC-ER reads "714" and "26" as the one order number.
+  assert.deepEqual([C(s, "D05").l1.sub, C(s, "D05").l1.nc.sub, C(s, "D05").l1.nc.ins], [1, 0, 0]);
 });
 
 test("the safety list: decoys and sound-alikes are never accepted on their own", () => {
@@ -126,6 +127,22 @@ test("the report and score sheet: v1 columns, labelled kind, no target marked pa
   const measured = summary(scoreFile({ ...fixtureFile("reference-words"), kind: "measurement" }), { matchesB0: false, files: [{ path: "src/lib/copilot/orders.ts", matches: false }] });
   assert.match(measured, /differs from B0/);
   assert.match(measured, /not demonstrated \(no timed results\)/);
+});
+
+test("the listener's reference is what gets scored; without one, a measurement row says it used the script", () => {
+  const base = fixtureFile("reference-words");
+  const said = "Sure, it is order five eight three one six. It was a hundred twenty-nine dollars.";
+  const file: HypothesisFile = { ...base, kind: "measurement", cases: { D04: { A: base.cases.D04!.A, C: { reference: said, lines: [{ first: said }] } }, D07: base.cases.D07 } };
+  const report = scoreFile(validate(file));
+  const d04 = C(report.scores, "D04");
+  assert.deepEqual([d04.referenceFrom, d04.l1.sub + d04.l1.del + d04.l1.ins, d04.l1.nc.sub], ["listener", 0, 0]);
+  const row = (id: string, seg: string) => report.rows.find((r) => r.case_id === id && r.segment === seg)!;
+  assert.equal(row("D04", "C").reference, said);
+  assert.equal(row("D04", "C").reviewer_note, "");
+  assert.equal(row("D07", "C").reviewer_note, "scored against the script: no listener reference in the file");
+  assert.match(summary(report, { matchesB0: true, files: [] }), /3 segment\(s\) scored against the script/);
+  // A reference whose numbers don't match the case's tagged spans is refused, not scored.
+  assert.throws(() => validate({ ...file, cases: { D04: { C: { reference: "Sure, it's order five eight three one six.", lines: [] } } } }), /tagged numbers.*re-recording/);
 });
 
 test("hypotheses files are checked before scoring", () => {

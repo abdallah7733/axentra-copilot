@@ -43,8 +43,8 @@ test("2.2 number spans: the equal and not-equal forms in the v1 table", () => {
   for (const t of ["forty-eight", "48"]) assert.ok(sameNumber(house, num(t)), t);
   for (const t of ["4 8", "408"]) assert.ok(!sameNumber(house, num(t)), t);
   for (const t of ["four to seven days", "4 to 7 days", "4-7 days"]) assert.deepEqual(collapsedTokens(t).map((x) => x.kind), ["range"], t);
-  // A number split over two transcript lines is two tokens.
-  assert.equal(collapsedTokens(["Order 714.", "26."]).filter((t) => t.kind === "num").length, 2);
+  // Lines joined: a number split over two lines is one span at the word level (SPLIT is L3 only).
+  assert.deepEqual(collapsedTokens(["Order 714.", "26."].join(" ")).flatMap((t) => (t.kind === "num" ? [t.digits] : [])), ["71426"]);
   assert.equal(collapsedTokens("Oh, okay.")[0].kind, "word");
 });
 

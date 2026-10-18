@@ -5,7 +5,7 @@
   demonstrated" or "not contradicted by this small sample" (section 5).
 */
 
-import { CASES, MANIFEST_VERSION, callerParts, type DevCase } from "./cases";
+import { CASES, MANIFEST_VERSION, callerParts, type CaseId, type DevCase } from "./cases";
 import { fieldsOf, textFieldCodes, type FieldCodes } from "./fields";
 import type { HypothesisFile, HypSegment } from "./hypotheses";
 import { toCaseLines } from "./hypotheses";
@@ -38,6 +38,8 @@ export type SegmentScore = {
   l4: WorkflowCode | null;
   l4Note: string;
   confirmationTurns: number | null;
+  /** Where the scored reference came from: the listener's transcript in the file, or the script. */
+  referenceFrom: "listener" | "script";
   missing: boolean;
   missingStage: string;
   timing: { firstText: number | null; checkedText: number | null; usableText: number | null; correctField: number | null; engine: number[] };
@@ -55,7 +57,7 @@ const codesText = (codes: FieldCodes | null) =>
 
 function wordCounts(reference: string, refSpans: DevCase["spans"], lines: string[]) {
   const counts = align(conventionalWords(reference), conventionalWords(lines.join(" ")), (a, b) => a === b);
-  const nc = align(tagReference(collapsedTokens(reference), refSpans), collapsedTokens(lines), sameToken);
+  const nc = align(tagReference(collapsedTokens(reference), refSpans), collapsedTokens(lines.join(" ")), sameToken);
   return { ...counts, nc };
 }
 
@@ -63,7 +65,8 @@ function wordCounts(reference: string, refSpans: DevCase["spans"], lines: string
 function scoreSegment(file: HypothesisFile, c: DevCase, segment: "A" | "C"): { row: Row; score: SegmentScore } {
   const segs = file.cases[c.id] ?? {};
   const seg: HypSegment | undefined = segs[segment];
-  const reference = segment === "A" ? c.agent : c.caller;
+  const reference = seg?.reference ?? (segment === "A" ? c.agent : c.caller);
+  const referenceFrom = seg?.reference !== undefined ? "listener" : "script";
   const hyp = seg?.lines ?? [];
   const l1Lines = hyp.map((l) => l.first);
   const anyChecked = hyp.some((l) => l.checked !== undefined);
@@ -152,7 +155,7 @@ function scoreSegment(file: HypothesisFile, c: DevCase, segment: "A" | "C"): { r
     L4_outcome: l4 ?? "",
     confirmation_turns: turns !== null ? String(turns) : "",
     missing_stage: missingStage,
-    reviewer_note: seg?.note ?? "",
+    reviewer_note: [seg?.note ?? "", file.kind === "measurement" && seg && referenceFrom === "script" ? "scored against the script: no listener reference in the file" : ""].filter(Boolean).join("; "),
     kind: file.kind,
     L2_sub: l2 ? String(l2.sub) : "",
     L2_del: l2 ? String(l2.del) : "",
@@ -175,6 +178,7 @@ function scoreSegment(file: HypothesisFile, c: DevCase, segment: "A" | "C"): { r
       l4,
       l4Note,
       confirmationTurns: turns,
+      referenceFrom,
       missing,
       missingStage,
       timing,
@@ -242,7 +246,16 @@ export function summary(report: Report, code: { matchesB0: boolean; files: { pat
       ? "- Copilot code run: matches B0 (5bb7bf2 / 4883603), file by file."
       : `- Copilot code run: **differs from B0** in ${code.files.filter((f) => !f.matches).map((f) => f.path).join(", ")}. These results are not the baseline.`
   );
-  out.push("- Workflow (L4): each case on a new call, from its own starting state and evaluation record; nothing carries over between cases.", "");
+  out.push("- Workflow (L4): each case on a new call, from its own starting state and evaluation record; nothing carries over between cases.");
+  if (!fixture) {
+    const fromScript = scores.filter((s) => s.referenceFrom === "script" && file.cases[s.caseId as CaseId]?.[s.segment]).length;
+    out.push(
+      fromScript
+        ? `- References: **${fromScript} segment(s) scored against the script**, not a listener's transcript of the recording. v1 scores what was actually said, so word scores for those segments are provisional.`
+        : "- References: every segment scored against the listener's transcript of the recording."
+    );
+  }
+  out.push("");
 
   out.push("## Words", "", "| Channel | Layer | Segments | Ref words | S | D | I | Conventional WER | NC-ER (number-collapsed; not WER) |", "|---|---|---|---|---|---|---|---|---|");
   for (const seg of ["C", "A"] as const) {
