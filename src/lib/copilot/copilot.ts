@@ -958,11 +958,18 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
           if (g.via === "call" && g.at >= u.confirmedAt && !given.some(known) && !withdrawn.some(known)) withdrawn.push(g);
         }
       }
-      for (const a of [...given, ...withdrawn, ...refused].sort((x, y) => x.at - y.at)) {
+      // Which approval came first is decided by when the panel could accept it: the press, or when the line's
+      // text reached the copilot (its checked text, if it went to the second model). A spoken line checked
+      // after a press no longer takes the credit back from the press the panel already showed as approved
+      // (Call 13 Card A, outside review 6.2). Whether each one holds is still judged at its own `at`, as before.
+      const acceptedAt = (g: GivenApproval) => g.evidence?.knownAt ?? g.at;
+      for (const a of [...given, ...withdrawn, ...refused].sort((x, y) => acceptedAt(x) - acceptedAt(y))) {
+        // The note under the card still names the latest one not counted by when it was given, as before.
+        const latest = !(recommendation.staleApproval && recommendation.staleApproval.at > a.at);
         const refusal = refused.find((r) => r === a);
         if (refusal || withdrawn.includes(a)) {
           const reason = refusal?.reason ?? "a confirmation it relied on was undone";
-          if (recommendation.approval.state !== "approved") recommendation.staleApproval = { at: a.at, via: a.via, evidence: a.evidence, reason, ...(refusal ? { refused: true } : {}) };
+          if (recommendation.approval.state !== "approved" && latest) recommendation.staleApproval = { at: a.at, via: a.via, evidence: a.evidence, reason, ...(refusal ? { refused: true } : {}) };
           history.push({ at: a.at, via: a.via, evidence: a.evidence, counted: false, reason });
           continue;
         }
@@ -971,11 +978,16 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
         const changedSince = choiceChanges.some((t) => t > a.at);
         // A Confirm press the approval relied on was taken back after it: confirming again doesn't revive it.
         const undoneSince = undone.some((u) => u.confirmedAt <= a.at && u.undoneAt > a.at);
-        if (recommendation.approval.state === "approved") {
-          history.push({ ...a, counted: false, reason: "already approved" });
+        const holds = !changedSince && !undoneSince && !!r?.prepared && r.scenario === scenario && r.prepared.kind === prepared.kind && then.order.match?.order.id === o.id;
+        const first = recommendation.approval;
+        // Said before the approval that counted but available only after it: one that holds says why it
+        // didn't count; one that doesn't hold keeps its own reason, as it had before this ordering.
+        const overtaken = first.state === "approved" && a.at < first.at!;
+        if (first.state === "approved" && (!overtaken || holds)) {
+          history.push({ ...a, counted: false, reason: overtaken ? `already approved ${first.via === "panel" ? "in the panel" : "on the call"} before this line's text arrived` : "already approved" });
           continue;
         }
-        if (!changedSince && !undoneSince && r?.prepared && r.scenario === scenario && r.prepared.kind === prepared.kind && then.order.match?.order.id === o.id) {
+        if (holds) {
           recommendation.approval = { state: "approved", ...a, by: `${pack.agent.name} (${pack.agent.id})` };
           recommendation.staleApproval = undefined;
           history.push({ ...a, counted: true });
@@ -987,7 +999,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
           : changedSince && covered === "the outcome has changed since"
             ? "the customer changed their choice after it"
             : covered;
-        recommendation.staleApproval = { ...a, reason };
+        if (first.state !== "approved" && latest) recommendation.staleApproval = { ...a, reason };
         history.push({ ...a, counted: false, reason });
       }
       if (recommendation.approval.state === "awaiting" && unheardApproval?.value === prepared.kind && choice && unheardApproval.ev.at > choice.evidence.at) {
