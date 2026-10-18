@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import { classifyMessages, parseIntentLabel, replyMessages, wordingProblem } from "@/lib/copilot/assist";
+import { classifyMessages, parseIntentLabel, replyMessages, sameWording, wordingProblem } from "@/lib/copilot/assist";
 import { ANSWER_GAP_MS, analyze, type CopilotView, type ModelHints } from "@/lib/copilot/copilot";
 import type { AgentAction, TranscriptEvent } from "@/lib/copilot/types";
 import { assistChat } from "./engine";
@@ -190,7 +190,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
         else if (problem) record({ draft, text: result.text, ms, outcome: "rejected", reason: problem });
         else {
           const text = result.text.trim().replace(/^["“]|["”]$/g, "").trim();
-          record({ draft, text, ms, outcome: "shown" });
+          record({ draft, text, ms, outcome: "shown", ...(sameWording(draft, text) ? { reason: "kept the draft's wording" } : {}) });
           set({ worded: { seq, draft, text, ms, model: result.model } });
         }
       });

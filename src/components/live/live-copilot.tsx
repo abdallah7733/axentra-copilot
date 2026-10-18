@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Explain, LiveDot, Mono, PanelHeader, ease } from "@/components/workspace/bits";
+import { sameWording } from "@/lib/copilot/assist";
 import { approvalReadiness, isAcknowledgement, type Alert, type Evidence, type SopStep } from "@/lib/copilot/copilot";
 import { money } from "@/lib/demo-data";
 import { pack, useCopilot } from "@/lib/live/copilot-store";
@@ -339,7 +340,9 @@ export function LiveCopilot({ className }: { className?: string }) {
                 <>
                   <p className="rounded-md border-l-2 border-cyan bg-muted/40 px-3 py-2 text-sm leading-relaxed">{byModel ? byModel.text : suggestedReply.text}</p>
                   <p className="mt-1 text-[11px] text-muted-foreground">
-                    {byModel
+                    {byModel && sameWording(suggestedReply.text, byModel.text)
+                      ? `The local model kept the SOP wording (${(byModel.ms / 1000).toFixed(1)} s). You decide what to say.`
+                      : byModel
                       ? `Reworded by the local model in ${(byModel.ms / 1000).toFixed(1)} s. This line has no amounts, outcomes or order facts. You decide what to say.`
                       : assist === "off" || !suggestedReply.rewordable
                         ? "A suggestion from the SOP rules. You decide what to say."

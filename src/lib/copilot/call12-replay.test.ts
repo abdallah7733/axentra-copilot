@@ -8,11 +8,11 @@ import { scriptV2, sunlake } from "@/lib/live/sunlake-data";
 /*
   Call 12 (18 Oct 2026, console 834b17b) replayed with its real timings, and the fixes its review
   adopted (AXENTRA_CALL12_REVIEW_AND_RECONCILIATION_2026-10-18.md). Call clock C is seconds since call
-  start, placed at 02:25:05.2 PM Cairo; the recording V runs 3.75 s ahead (V 0 = 02:25:01.45 PM). Line
-  starts and ends come from a silence map of the recording, first-text delays and check times from the
-  end-of-call transcript, the two panel actions from video frames: the name typed at about C 37, Approve
-  pressed at about C 133.85, while the 02:04 refund line was still being checked. There was no item
-  press and no Undo.
+  start, placed at 02:25:05.2 PM Cairo; the call connected about 3.5 s into the recording. Line starts and
+  ends come from a silence map of the recording (C = V - 3.75, within about 0.3 s of the engine's own
+  times), first-text delays and check times from the end-of-call transcript, the two panel actions from
+  video frames: the name typed at about C 37, Approve pressed at about C 133.85, while the 02:04 refund
+  line was still being checked. There was no item press and no Undo.
 */
 
 const T0 = Date.parse("2026-10-18T11:25:05.200Z"); // C 00:00 = 02:25:05.2 PM Cairo (UTC+3)

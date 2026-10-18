@@ -153,6 +153,12 @@ export function wordingProblem(draft: string, worded: string, names: string[], p
 
 const cleanWording = (worded: string) => worded.trim().replace(/^["“]|["”]$/g, "").trim();
 
+/** The model gave the draft back unchanged (Call 12 at 00:21: labelled "Reworded" with the same words). */
+export function sameWording(draft: string, worded: string): boolean {
+  const flat = (s: string) => cleanWording(s).replace(/’/g, "'").replace(/\s+/g, " ").toLowerCase();
+  return flat(draft) === flat(worded);
+}
+
 /** The model's wording, or null if `wordingProblem` finds one (then the draft stays). */
 export function checkWording(draft: string, worded: string, names: string[], people: string[] = [], neutral = false): string | null {
   return wordingProblem(draft, worded, names, people, neutral) ? null : cleanWording(worded);
