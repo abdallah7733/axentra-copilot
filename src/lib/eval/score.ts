@@ -7,7 +7,7 @@
 
 import { CASES, MANIFEST_VERSION, callerParts, type CaseId, type DevCase } from "./cases";
 import { fieldsOf, textFieldCodes, type FieldCodes } from "./fields";
-import type { HypothesisFile, HypSegment } from "./hypotheses";
+import type { HypLine, HypothesisFile, HypSegment } from "./hypotheses";
 import { toCaseLines } from "./hypotheses";
 import { collapsedTokens, conventionalWords, sameToken, tagReference } from "./normalize";
 import { align, errorRate, type ErrorCounts } from "./wer";
@@ -22,9 +22,57 @@ export const COLUMNS = [
   "workflow_start_state", "L4_outcome", "confirmation_turns", "missing_stage", "reviewer_note",
   // Harness additions:
   "kind", "L2_sub", "L2_del", "L2_ins", "L2_wer", "L2_nc_er", "L4_note", "check_engine_response_s",
+  "engine_elapsed_s", "check_engine_elapsed_s", "engine_failures",
 ] as const;
 export type Column = (typeof COLUMNS)[number];
 export type Row = Record<Column, string>;
+
+/** A request with no usable answer: what happened and seconds from sending, or null when the file has no record of it. */
+export type FailedRequest = { outcome: string; afterS: number | null };
+
+/** A segment's engine requests of one kind (first pass or check), Tier 1. */
+export type EngineRequests = {
+  /** Round trips of the answered requests, and the engine's own elapsedMs. */
+  responseS: number[];
+  elapsedS: number[];
+  /** Answered requests whose round trip, or elapsedMs, isn't in the file. */
+  noResponseS: number;
+  noElapsedS: number;
+  /** Requests that got no usable answer, never averaged in. */
+  failed: FailedRequest[];
+};
+
+type Request = { answered: true; responseS?: number; elapsedS?: number } | ({ answered: false } & FailedRequest);
+
+/**
+ * One line's request of one kind, or null when the file says nothing about it. A replay that checked every
+ * caller line (checks "all") sent every line, and checked every line with a check result: when such a file
+ * records neither a time nor a failure (an older replay toolkit), text means an answer and none means no
+ * usable answer, with the outcome not in the file.
+ */
+function requestOf(l: HypLine, kind: "first" | "check", all: boolean): Request | null {
+  const [responseS, elapsedS, failure] = kind === "first" ? [l.engineResponseS, l.engineElapsedS, l.engineFailure] : [l.checkEngineResponseS, l.checkEngineElapsedS, l.checkEngineFailure];
+  if (failure) return { answered: false, ...failure };
+  if (responseS !== undefined) return { answered: true, responseS, elapsedS };
+  if (!all || (kind === "check" && l.checked === undefined && !l.checkFailed)) return null;
+  return (kind === "first" ? l.first.trim() : l.checked !== undefined) ? { answered: true, elapsedS } : { answered: false, outcome: "outcome not in the file", afterS: null };
+}
+
+function engineRequests(hyp: HypLine[], kind: "first" | "check", all: boolean): EngineRequests {
+  const r: EngineRequests = { responseS: [], elapsedS: [], noResponseS: 0, noElapsedS: 0, failed: [] };
+  for (const q of hyp.map((l) => requestOf(l, kind, all))) {
+    if (!q) continue;
+    if (!q.answered) {
+      r.failed.push({ outcome: q.outcome, afterS: q.afterS });
+      continue;
+    }
+    if (q.responseS !== undefined) r.responseS.push(q.responseS);
+    else r.noResponseS++;
+    if (q.elapsedS !== undefined) r.elapsedS.push(q.elapsedS);
+    else r.noElapsedS++;
+  }
+  return r;
+}
 
 export type SegmentScore = {
   caseId: string;
@@ -42,7 +90,18 @@ export type SegmentScore = {
   referenceFrom: "listener" | "script";
   missing: boolean;
   missingStage: string;
-  timing: { firstText: number | null; checkedText: number | null; usableText: number | null; correctField: number | null; engine: number[]; checkEngine: number[] };
+  /** LOST at L4 though a line has text: only the replay's check of a blank or failed first pass, which the console never sends. */
+  lostBeforeCopilot: boolean;
+  /** A replay: with 9 s checks, early checks or later first passes 1.5 s late (all, or one at a time), the console would hold a different set of caller lines (workflow.ts). */
+  timingDependent: boolean;
+  timing: {
+    firstText: number | null;
+    checkedText: number | null;
+    usableText: number | null;
+    correctField: number | null;
+    /** Engine requests (Tier 1), first pass and check apart. */
+    engine: { first: EngineRequests; check: EngineRequests };
+  };
 };
 
 export type Report = { file: HypothesisFile; rows: Row[]; scores: SegmentScore[] };
@@ -77,7 +136,7 @@ function scoreSegment(file: HypothesisFile, c: DevCase, segment: "A" | "C"): { r
   const expectsSpeech = !!reference.trim();
   const hasText = hyp.some((l) => (l.checked ?? l.first).trim());
   const missing = expectsSpeech && !hasText;
-  const missingStage = missing ? seg?.missingStage ?? (seg ? "filtered or blank (unknown which)" : "no result in the file") : "";
+  let missingStage = missing ? seg?.missingStage ?? (seg ? "filtered or blank (unknown which)" : "no result in the file") : "";
   const emptyReason = hyp.some((l) => !l.first.trim()) || missing ? seg?.missingStage ?? "filtered or blank (unknown which)" : "";
 
   let l1Fields: FieldCodes = {};
@@ -87,7 +146,8 @@ function scoreSegment(file: HypothesisFile, c: DevCase, segment: "A" | "C"): { r
   let l4Note = "";
   let turns: number | null = null;
   let correctField: number | null = null;
-  const { lines: caseLines } = toCaseLines(segs, callerParts(c.caller).map((p) => p.pauseBeforeS));
+  let timingDependent = false;
+  const { lines: caseLines, times } = toCaseLines(segs, callerParts(c.caller).map((p) => p.pauseBeforeS));
   // Timing needs measured times on this segment's own lines: a start, an end and a first-text delay each.
   const segTimed = hyp.length > 0 && hyp.every((l) => l.start !== undefined && l.end !== undefined && l.firstTextS !== undefined);
   if (segment === "C") {
@@ -95,23 +155,40 @@ function scoreSegment(file: HypothesisFile, c: DevCase, segment: "A" | "C"): { r
     l2Fields = l2Lines ? textFieldCodes(c, l2Lines) : null;
     // The agent's cue comes from the file when present, otherwise from the reference (reported in the note).
     const cue = caseLines.some((l) => l.side === "agent") ? caseLines : [{ side: "agent" as const, first: c.agent, start: 0, end: 2 }, ...caseLines];
-    const w = runCase(c, cue, { timed: segTimed, checks: file.checks });
+    const w = runCase(c, cue, { timed: segTimed, checks: file.checks, times, combined: /combined pass/.test(file.route) });
     l3Fields = fieldsOf(c).length ? w.l3 : null;
     l4 = w.l4;
     l4Note = [w.note, cue === caseLines ? "" : "agent cue from the reference"].filter(Boolean).join("; ");
     turns = w.confirmationTurns;
     correctField = w.correctFieldS;
+    timingDependent = w.timingDependent;
+  }
+  // Text in the file but none reached the copilot: the replay checked a first pass that was blank or whose request failed.
+  const lostBeforeCopilot = l4 === "LOST" && hasText;
+  if (lostBeforeCopilot) {
+    const onlyChecked = hyp.filter((l) => !l.first.trim() && l.checked?.trim());
+    const why = [
+      onlyChecked.some((l) => !l.engineFailure) ? "drops a blank first pass before any check" : "",
+      onlyChecked.some((l) => l.engineFailure) ? "never gets a line from a failed request" : "",
+    ].filter(Boolean);
+    missingStage = `${seg?.missingStage ?? "filtered or blank (unknown which)"}; only the replay's own check has text, and the console ${why.join(" and ")}`;
   }
   const segEnd = segTimed ? Math.max(...hyp.map((l) => l.end!)) : 0;
   const last = hyp[hyp.length - 1];
+  // Screen times only: validate() refuses firstTextS and checkS in a replay (checks "all"), so a replay's lines are never timed here.
   const timing = {
     firstText: segTimed ? ms(last.firstTextS!) : null,
     checkedText: segTimed && last.checked !== undefined && last.checkS !== undefined ? ms(last.firstTextS! + last.checkS) : null,
     usableText: segTimed ? ms(finite(Math.max(...hyp.map((l) => l.end! + l.firstTextS! + (l.checked !== undefined ? l.checkS ?? NaN : 0))) - segEnd)) : null,
     correctField: segment === "C" && segTimed ? correctField : null,
-    engine: hyp.flatMap((l) => (l.engineResponseS !== undefined ? [l.engineResponseS] : [])),
-    checkEngine: hyp.flatMap((l) => (l.checkEngineResponseS !== undefined ? [l.checkEngineResponseS] : [])),
+    engine: { first: engineRequests(hyp, "first", file.checks === "all"), check: engineRequests(hyp, "check", file.checks === "all") },
   };
+  const failures = (["first", "check"] as const).flatMap((kind) =>
+    hyp.flatMap((l, i) => {
+      const q = requestOf(l, kind, file.checks === "all");
+      return q && !q.answered ? [`${kind} p${i + 1}: ${q.afterS === null ? q.outcome : `${q.outcome}, ${r3(q.afterS)} s from sending`}`] : [];
+    })
+  );
   const hypWords = conventionalWords(l1Lines.join(" ")).length;
   const row: Row = {
     case_id: c.id,
@@ -149,14 +226,21 @@ function scoreSegment(file: HypothesisFile, c: DevCase, segment: "A" | "C"): { r
     checked_text_s: r3(timing.checkedText),
     usable_text_s: r3(timing.usableText),
     correct_field_s: r3(timing.correctField),
-    engine_response_s: timing.engine.map((n) => r3(n)).join("|"),
+    engine_response_s: timing.engine.first.responseS.map((n) => r3(n)).join("|"),
     queue_s: hyp.some((l) => l.queueS !== undefined) ? hyp.map((l) => r3(l.queueS)).join("|") : "unknown",
     decode_s: hyp.some((l) => l.decodeS !== undefined) ? hyp.map((l) => r3(l.decodeS)).join("|") : "unknown",
     workflow_start_state: segment === "C" ? c.startStateText : "",
     L4_outcome: l4 ?? "",
     confirmation_turns: turns !== null ? String(turns) : "",
     missing_stage: missingStage,
-    reviewer_note: [seg?.note ?? "", file.kind === "measurement" && seg && referenceFrom === "script" ? "scored against the script: no listener reference in the file" : ""].filter(Boolean).join("; "),
+    reviewer_note: [
+      seg?.note ?? "",
+      file.kind === "measurement" && seg && referenceFrom === "script" ? "scored against the script: no listener reference in the file" : "",
+      // Once only, when the segment's own note doesn't already say it.
+      seg?.referenceCheckedBy && !seg.note?.includes(`reference checked by ${seg.referenceCheckedBy}`) ? `reference checked by ${seg.referenceCheckedBy}` : "",
+    ]
+      .filter(Boolean)
+      .join("; "),
     kind: file.kind,
     L2_sub: l2 ? String(l2.sub) : "",
     L2_del: l2 ? String(l2.del) : "",
@@ -164,7 +248,10 @@ function scoreSegment(file: HypothesisFile, c: DevCase, segment: "A" | "C"): { r
     L2_wer: l2 ? r3(errorRate(l2)) : "",
     L2_nc_er: l2 ? r3(errorRate(l2.nc)) : "",
     L4_note: l4Note,
-    check_engine_response_s: timing.checkEngine.map((n) => r3(n)).join("|"),
+    check_engine_response_s: timing.engine.check.responseS.map((n) => r3(n)).join("|"),
+    engine_elapsed_s: timing.engine.first.elapsedS.map((n) => r3(n)).join("|"),
+    check_engine_elapsed_s: timing.engine.check.elapsedS.map((n) => r3(n)).join("|"),
+    engine_failures: failures.join("; "),
   };
   return {
     row,
@@ -183,6 +270,8 @@ function scoreSegment(file: HypothesisFile, c: DevCase, segment: "A" | "C"): { r
       referenceFrom,
       missing,
       missingStage,
+      lostBeforeCopilot,
+      timingDependent,
       timing,
     },
   };
@@ -249,13 +338,20 @@ export function summary(report: Report, code: { matchesB0: boolean; files: { pat
       : `- Copilot code run: **differs from B0** in ${code.files.filter((f) => !f.matches).map((f) => f.path).join(", ")}. These results are not the baseline.`
   );
   out.push("- Workflow (L4): each case on a new call, from its own starting state and evaluation record; nothing carries over between cases.");
-  if (file.checks === "all") out.push("- Checked text: the replay checked every caller line, so L2 scores all of them; the copilot (L3, L4) used a checked text only where the console would have asked for the check.");
+  if (file.checks === "all") {
+    out.push("- Checked text: the replay checked every caller line, so L2 scores all of them; the copilot (L3, L4) used a checked text only where the console would have asked for the check.");
+    const noConfidence = Object.values(file.cases).flatMap((segs) => [segs?.A, segs?.C]).flatMap((s) => s?.lines ?? []).filter((l) => l.checked !== undefined && l.checkedConfidence === undefined).length;
+    if (noConfidence)
+      out.push(`- Check confidence: **${noConfidence} checked line(s) have no checkedConfidence**, as in a file from an older replay toolkit, so for those the copilot used the first pass's confidence. Re-run with the current toolkit.`);
+  }
   if (!fixture) {
     const fromScript = scores.filter((s) => s.referenceFrom === "script" && file.cases[s.caseId as CaseId]?.[s.segment]).length;
+    const bySpeaker = scores.filter((s) => file.cases[s.caseId as CaseId]?.[s.segment]?.referenceCheckedBy?.startsWith("speaker")).length;
     out.push(
-      fromScript
+      (fromScript
         ? `- References: **${fromScript} segment(s) scored against the script**, not a listener's transcript of the recording. v1 scores what was actually said, so word scores for those segments are provisional.`
-        : "- References: every segment scored against the listener's transcript of the recording."
+        : "- References: every segment scored against a reference written from the recording.") +
+        (bySpeaker ? ` Checked by the speaker only (one playback) for ${bySpeaker} segment(s); v1's second-person check of numbers, names and addresses was not done.` : "")
     );
   }
   out.push("");
@@ -305,8 +401,15 @@ export function summary(report: Report, code: { matchesB0: boolean; files: { pat
   }
   const unsafe = scores.filter((s) => s.l4 === "UNSAFE").length;
   out.push("", `UNSAFE observed: ${unsafe}. The plan's rule is zero observed in this suite; this is an observation on ${fixture ? "fixture text" : "these results"}, not a pass.`, "");
+  if (file.checks === "all") {
+    const dependent = scores.filter((s) => s.timingDependent).map((s) => s.caseId);
+    out.push(
+      `Timing-dependent cases (the console's choice of checked lines changes with 9 s checks, with checks landing early, or with later first passes 1.5 s late): ${dependent.length}${dependent.length ? ` (${dependent.join(", ")})` : ""}.`,
+      ""
+    );
+  }
 
-  const missing = scores.filter((s) => s.missing);
+  const missing = scores.filter((s) => s.missing || s.lostBeforeCopilot);
   out.push("## Missing results", "", missing.length ? missing.map((s) => `- ${s.caseId} ${s.segment}: ${s.missingStage}`).join("\n") : "None. Missing results always stay in the denominators.", "");
 
   out.push("## Timing");
@@ -336,14 +439,40 @@ export function summary(report: Report, code: { matchesB0: boolean; files: { pat
       }
     }
     out.push("", `Target for usable text (live path): median ≤ 1.5 s and p90 ≤ 2.5 s. Observed: ${targetVerdict(usable, usableMissing)}. Ten cases can't certify a p90.`, "");
-    const engine = [
-      ["First pass (main model)", scores.flatMap((s) => s.timing.engine)],
-      ["Check (second model)", scores.flatMap((s) => s.timing.checkEngine)],
-    ] as const;
-    if (engine.some(([, xs]) => xs.length)) {
-      out.push("Engine response (Tier 1): request sent to response received. Not speech end to screen, and never compared with the target.", "", "| Request | Count | Median | p90 (nearest rank) | Max |", "|---|---|---|---|---|");
-      for (const [label, xs] of engine) out.push(`| ${label} | ${xs.length} | ${sec(median([...xs]))} | ${sec(p90([...xs]))} | ${sec(xs.length ? Math.max(...xs) : null)} |`);
-      out.push("");
+    // Per channel, as the timing table: Sent = answered + failed. Statistics are over the answered requests with
+    // that time in the file; failures are counted and listed beside them, never averaged in.
+    const rows: string[] = [];
+    for (const [label, kind, time] of [
+      ["First pass (main model)", "first", "responseS"],
+      ["Check (second model)", "check", "responseS"],
+      ["First pass: engine's own time (elapsedMs)", "first", "elapsedS"],
+      ["Check: engine's own time (elapsedMs)", "check", "elapsedS"],
+    ] as const) {
+      for (const seg of ["C", "A"] as const) {
+        const reqs = scores.filter((s) => s.segment === seg).map((s) => s.timing.engine[kind]);
+        const xs = reqs.flatMap((r) => r[time]);
+        const untimed = reqs.reduce((n, r) => n + (time === "responseS" ? r.noResponseS : r.noElapsedS), 0);
+        const failed = reqs.flatMap((r) => r.failed);
+        if (!xs.length && !untimed && !failed.length) continue;
+        const known = failed.filter((f) => f.afterS !== null).map((f) => `${f.outcome}, ${f.afterS!.toFixed(2)} s from sending`);
+        const unknown = failed.length - known.length;
+        const listed = [...known, ...(unknown ? [`${unknown} with the outcome not in the file`] : [])];
+        rows.push(
+          `| ${label} | ${seg === "C" ? "Caller" : "Agent"} | ${xs.length + untimed + failed.length} | ${xs.length + untimed} | ${sec(median(xs))} | ${sec(p90(xs))} | ${sec(xs.length ? Math.max(...xs) : null)} | ${untimed} | ${failed.length}${listed.length ? ` (${listed.join("; ")})` : ""} |`
+        );
+      }
+    }
+    if (rows.length) {
+      out.push(
+        "Engine response (Tier 1): request sent to response received, and the engine's own elapsedMs beside it. Not speech end to screen, and never compared with the target.",
+        "",
+        "| Request | Channel | Sent | Answered | Median | p90 (nearest rank) | Max | Answered, time not in the file | Failed or no answer |",
+        "|---|---|---|---|---|---|---|---|---|",
+        ...rows,
+        "",
+        "Failed requests are counted beside the answered ones and listed; they are never averaged in. An answered request whose time isn't in the file is counted apart, not as failed.",
+        ""
+      );
     } else out.push("Engine response: none in this file.", "");
   }
   return out.join("\n");

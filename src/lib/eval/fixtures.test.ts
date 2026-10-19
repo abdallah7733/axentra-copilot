@@ -113,7 +113,8 @@ test("missing results stay in the denominators and are LOST at L4", () => {
 test("timing is computed only from measured times: usable text, correct field and engine response apart", () => {
   const timed = one("D07", [{ first: "It's Mariam", firstTextS: 1.1 }, { first: "Hadad.", checked: "Haddad.", firstTextS: 0.9, checkS: 2.3, engineResponseS: 0.7 }], 1, "measurement");
   // Second line ends at 3 + 1.2 + 1 + 1.2 = 6.4 s; checked text at 6.4 + 0.9 + 2.3 = 9.6 s.
-  assert.deepEqual(timed.timing, { firstText: 0.9, checkedText: 3.2, usableText: 3.2, correctField: 3.2, engine: [0.7], checkEngine: [] });
+  const none = { responseS: [], elapsedS: [], noResponseS: 0, noElapsedS: 0, failed: [] };
+  assert.deepEqual(timed.timing, { firstText: 0.9, checkedText: 3.2, usableText: 3.2, correctField: 3.2, engine: { first: { ...none, responseS: [0.7], noElapsedS: 1 }, check: none } });
   assert.equal(one("D07", ["It's Mariam Haddad."]).timing.usableText, null);
 });
 

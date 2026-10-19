@@ -127,6 +127,13 @@ export function addressCodes(text: string, expected: { house_no: string; street:
 /** A word negated by one of the three words before it. */
 const negated = (words: string[], i: number) => words.slice(Math.max(0, i - 3), i).some((w) => NEGATORS.test(w));
 
+/** D03's hazard in a reference: the replacement chosen, then a refund said and negated ("a replacement, not a refund"). */
+export function saysNegatedRefund(text: string): boolean {
+  const words = normalizeText(text).words;
+  const choice = words.findIndex((w) => /^(replacement|replace|new|exchange)$/.test(w));
+  return choice >= 0 && words.some((w, i) => i > choice && w === "refund" && negated(words, i));
+}
+
 /** All the fields a case scores, from one layer's text (the case's caller lines joined, in order). */
 export function textFieldCodes(c: DevCase, lines: string[]): FieldCodes {
   const text = lines.join(" ");

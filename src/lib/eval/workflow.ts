@@ -14,8 +14,10 @@
 
 import { ANSWER_GAP_MS, analyze, type CopilotView } from "@/lib/copilot/copilot";
 import type { AgentAction, ClientPack, TranscriptEvent } from "@/lib/copilot/types";
+import { CHECK_TIMEOUT_MS } from "@/lib/live/engine";
 import type { DevCase } from "./cases";
 import { addressCodes, fieldsOf, nameCode, textFieldCodes, type FieldCodes, type FieldResult } from "./fields";
+import type { TimesMethod } from "./hypotheses";
 import { evalPack } from "./records";
 
 export type WorkflowCode = "DONE_RIGHT" | "CLARIFY" | "NO_EFFECT" | "MISSED" | "UNSAFE" | "LOST";
@@ -28,13 +30,21 @@ export type CaseLine = {
   /** Checked text (L2), when the second model checked the line. */
   checked?: string;
   checkFailed?: boolean;
+  /** The first pass's confidence. */
   confidence?: number | null;
+  /** The check's own confidence: the console puts it on the line with the checked text (store.ts). */
+  checkedConfidence?: number | null;
   start: number;
   end: number;
   /** When the first text was on screen; defaults to 1 s after the line ends. */
   firstAt?: number;
-  /** When the checked text was on screen; defaults to 2 s after the first text. */
+  /** When the checked text (or a failed check) landed; defaults to 2 s after the first text. */
   checkedAt?: number;
+  /**
+   * A replay: the soonest the check could land after the first text. The engine's own time for an answered
+   * check (its elapsedMs), or the wait of a check that timed out (it can't have answered sooner).
+   */
+  checkEngineS?: number;
 };
 
 export type WorkflowResult = {
@@ -48,6 +58,8 @@ export type WorkflowResult = {
   confirmationTurns: number;
   /** Seconds from the end of the caller's speech until every field of the case was first OK at L3; null if never or not timed. */
   correctFieldS: number | null;
+  /** A replay (checks "all"): with 9 s checks, early checks or later first passes 1.5 s late (all, or one at a time), the console would hold a different set of caller lines. */
+  timingDependent: boolean;
 };
 
 /** A fixed clock, so "delivered today" and every time in the view are the same on every run. */
@@ -60,6 +72,8 @@ const firstAtOf = (l: CaseLine) => l.firstAt ?? l.end + 1;
 const checkedAtOf = (l: CaseLine) => l.checkedAt ?? firstAtOf(l) + 2;
 /** When the copilot could use the line's final text. */
 const usableAt = (l: CaseLine) => (l.checked !== undefined ? checkedAtOf(l) : firstAtOf(l));
+/** A landed check brings its own confidence, as in store.ts; a failed one leaves the first pass's. */
+const checkedConfidence = (l: CaseLine, first: number | null) => (l.checkedConfidence !== undefined ? l.checkedConfidence : first);
 
 type Built = { lines: TranscriptEvent[]; actions: AgentAction[] };
 
@@ -102,7 +116,7 @@ function caseEvents(c: DevCase, caseLines: CaseLine[], firstSeq: number, t = Inf
     if (l.checked === undefined) return [{ ...base, text: l.first, availableAt: inCase(firstAtOf(l)), ...(l.checkFailed ? { checkFailed: true } : {}) }];
     // While the check runs the copilot leaves the line out, as on a live call.
     if (checkedAtOf(l) > t) return [{ ...base, text: l.first, availableAt: inCase(firstAtOf(l)), checking: true }];
-    return [{ ...base, text: l.checked, availableAt: inCase(checkedAtOf(l)), ...(l.checked !== l.first ? { firstHeard: l.first } : {}) }];
+    return [{ ...base, text: l.checked, confidence: checkedConfidence(l, base.confidence), availableAt: inCase(checkedAtOf(l)), ...(l.checked !== l.first ? { firstHeard: l.first } : {}) }];
   });
 }
 
@@ -111,9 +125,9 @@ function caseEvents(c: DevCase, caseLines: CaseLine[], firstSeq: number, t = Inf
  * it: a line arriving while the copilot awaits an answer (issue, name, address or choice), and any line
  * the copilot names as a key answer once a later line or check result arrives. The settle re-run after
  * the answer gap refreshes the view the next line is judged against. Used when a replay checked every
- * caller line (checks "all"): the copilot then sees a checked text only where the console would have
- * asked for one, at the moment it would have asked. A line the console would check but the file has no
- * check for (an agent line) keeps its first text.
+ * caller line (checks "all"): the copilot then sees a checked text, with the check's own confidence,
+ * only where the console would have asked for one, at an estimated moment (the line times given). A
+ * line the console would check but the file has no check for (an agent line) keeps its first text.
  */
 export function consoleChecks(c: DevCase, pack: ClientPack, built: Built, caseLines: CaseLine[]): { lines: CaseLine[]; checked: number[] } {
   const firstSeq = built.lines.length + 1;
@@ -134,7 +148,7 @@ export function consoleChecks(c: DevCase, pack: ClientPack, built: Built, caseLi
       if (!requestedAt.has(i)) return [{ ...base, text: l.first }];
       if (!done.has(i)) return [{ ...base, text: l.first, checking: true }];
       if (l.checked === undefined) return [{ ...base, text: l.first, checkFailed: true }];
-      return [{ ...base, text: l.checked, ...(l.checked !== l.first ? { firstHeard: l.first } : {}) }];
+      return [{ ...base, text: l.checked, confidence: checkedConfidence(l, base.confidence), ...(l.checked !== l.first ? { firstHeard: l.first } : {}) }];
     });
   const view = (t: number) => analyze(pack, [...built.lines, ...events()], built.actions, inCase(t));
   const request = (i: number, t: number) => {
@@ -286,15 +300,8 @@ function verifyAfter(c: DevCase, pack: ClientPack, built: Built, caseLines: Case
   return analyze(pack, events, actions, inCase(end + 15));
 }
 
-/**
- * Runs one case from its own starting state on a new call. With `checks: "all"` (a replay that checked
- * every caller line), the copilot uses a checked text only where the console would have asked for it.
- */
-export function runCase(c: DevCase, given: CaseLine[], opts: { timed?: boolean; checks?: "console" | "all" } = {}): WorkflowResult {
-  const pack = evalPack(c.record);
-  const built = startState(c, pack);
-  const replayChecks = opts.checks === "all" ? consoleChecks(c, pack, built, given) : null;
-  const caseLines = replayChecks ? replayChecks.lines : given;
+/** What the copilot read (L3) and did (L4) with these case lines, the prompts left, and with `timed` when every field was first right. */
+function judge(c: DevCase, pack: ClientPack, built: Built, caseLines: CaseLine[], timed = false): Omit<WorkflowResult, "timingDependent"> {
   const agentLines = caseLines.filter((l) => l.side === "agent");
   const callerLines = caseLines.filter((l) => l.side === "caller");
   const callerTexts = callerLines.map((l) => l.checked ?? l.first);
@@ -317,7 +324,7 @@ export function runCase(c: DevCase, given: CaseLine[], opts: { timed?: boolean; 
     ? view.prompts.filter((p) => targets.includes(p.target)).length
     : view.prompts.filter((p) => !before.prompts.some((b) => b.target === p.target && b.text === p.text)).length;
   let correctFieldS: number | null = null;
-  if (opts.timed && callerLines.length && fieldsOf(c).length) {
+  if (timed && callerLines.length && fieldsOf(c).length) {
     // Step through every moment new caller text arrived; the first moment every field reads OK.
     const tEnd = Math.max(...callerLines.map((l) => l.end));
     const moments = [...new Set(callerLines.flatMap((l) => [firstAtOf(l), ...(l.checked !== undefined ? [checkedAtOf(l)] : [])]))].sort((a, b) => a - b);
@@ -330,6 +337,77 @@ export function runCase(c: DevCase, given: CaseLine[], opts: { timed?: boolean; 
       }
     }
   }
-  const checkNote = replayChecks ? `console would check: ${replayChecks.checked.filter((i) => given[i].side === "caller").length} of ${callerLines.length} caller line(s)` : "";
-  return { view, before, l3, l4: code, note: [note, checkNote].filter(Boolean).join("; "), confirmationTurns: turns, correctFieldS };
+  return { view, before, l3, l4: code, note, confirmationTurns: turns, correctFieldS };
+}
+
+const TIMES_NOTE: Record<TimesMethod, string> = {
+  estimated: "check times estimated from the replay (phrase release + measured engine time); the estimate leaves out the 100 ms capture-block lag, waits inside the engine and the GPU shared with running checks",
+  synthesized: "check times synthesized (1 s to first text, 2 s checks): which lines the console would check may differ live",
+  measured: "",
+};
+/** The combined pass sends both sides at once, so its measured engine times already include that overlap. */
+const COMBINED_NOTE = "check times estimated from the replay (phrase release + measured engine time, which in this combined pass includes the overlap of both sides' requests and the checks); the estimate leaves out the 100 ms capture-block lag";
+
+/**
+ * An assumed shared-GPU slowdown, not measured and not given in the step's documents: a first pass running
+ * beside a check may land up to this much later.
+ */
+const SHARED_GPU_S = 1.5;
+
+/**
+ * Runs one case from its own starting state on a new call. A blank first pass is dropped first, as the
+ * console drops it before the copilot sees it (store.ts). With `checks: "all"` (a replay that checked
+ * every caller line), the copilot uses a checked text only where the console would have asked for it.
+ * The line times are an estimate, so the case runs again with other times: every check taking as long as
+ * the console waits (9 s); every check landing early (after the engine's own time, a timed-out check after
+ * its own wait, or at once when neither is recorded); every later first pass 1.5 s late; and each later
+ * first pass 1.5 s late on its own, with the check times as estimated and with checks landing early. When
+ * any of these changes which caller lines the console would check, the case is timing-dependent and the
+ * note says which run changed it and its L4. `combined` marks the replay's combined pass, whose engine
+ * times include both sides' overlap.
+ */
+export function runCase(c: DevCase, given: CaseLine[], opts: { timed?: boolean; checks?: "console" | "all"; times?: TimesMethod; combined?: boolean } = {}): WorkflowResult {
+  const pack = evalPack(c.record);
+  const built = startState(c, pack);
+  const heard = given.filter((l) => l.first.trim());
+  if (opts.checks !== "all") return { ...judge(c, pack, built, heard, opts.timed), timingDependent: false };
+  const callers = heard.filter((l) => l.side === "caller").length;
+  const callerChecks = (r: { checked: number[] }) => r.checked.filter((i) => heard[i].side === "caller");
+  const own = consoleChecks(c, pack, built, heard);
+  const result = judge(c, pack, built, own.lines, opts.timed);
+  const hasCheck = (l: CaseLine) => l.checked !== undefined || !!l.checkFailed;
+  const slowest = (l: CaseLine): CaseLine => (hasCheck(l) ? { ...l, checkedAt: firstAtOf(l) + CHECK_TIMEOUT_MS / 1000 } : l);
+  const earliest = (l: CaseLine): CaseLine => (hasCheck(l) ? { ...l, checkedAt: firstAtOf(l) + (l.checkEngineS ?? 0) } : l);
+  /** The line's first text at `t`, its check (if any) keeping its duration. */
+  const moved = (l: CaseLine, t: number): CaseLine => ({ ...l, firstAt: t, ...(l.checkedAt !== undefined ? { checkedAt: l.checkedAt + t - firstAtOf(l) } : {}) });
+  // A first pass landing after the case's first caller check could start may share the GPU with a check
+  // (two engine processes on one GPU), so it may come up to the assumed slowdown later.
+  const firstCheck = Math.min(...heard.filter((l) => l.side === "caller" && hasCheck(l)).map(firstAtOf));
+  const later = (l: CaseLine): CaseLine => (firstAtOf(l) > firstCheck ? moved(l, firstAtOf(l) + SHARED_GPU_S) : l);
+  // One first pass slowed on its own, while the checks already running keep their times: the slowdown can
+  // then change which lands first. That side's later first passes wait behind it, as in its queue (store.ts).
+  const lateOne = (lines: CaseLine[], k: number): CaseLine[] => {
+    const t = firstAtOf(lines[k]) + SHARED_GPU_S;
+    return lines.map((l, i) => (i === k ? moved(l, t) : i > k && l.side === lines[k].side && firstAtOf(l) < t ? moved(l, t) : l));
+  };
+  const lineName = (k: number) => `${heard[k].side} line ${heard.slice(0, k + 1).filter((l) => l.side === heard[k].side).length}`;
+  const lateLines = heard.flatMap((l, k) => (firstAtOf(l) > firstCheck ? [k] : []));
+  const variants: [string, CaseLine[]][] = [
+    [`with ${CHECK_TIMEOUT_MS / 1000} s checks`, heard.map(slowest)],
+    ["with checks landing early (after the engine's own time, a timed-out check after its own wait, or at once when neither is recorded)", heard.map(earliest)],
+    [`with every later first pass ${SHARED_GPU_S} s late (a GPU shared with a running check)`, heard.map(later)],
+    ...lateLines.flatMap((k): [string, CaseLine[]][] => [
+      [`with only ${lineName(k)}'s first pass ${SHARED_GPU_S} s late`, lateOne(heard, k)],
+      [`with only ${lineName(k)}'s first pass ${SHARED_GPU_S} s late and checks landing early`, lateOne(heard.map(earliest), k)],
+    ]),
+  ];
+  // Two runs with the same times (one later first pass in all) are one run.
+  const runs = variants.filter(([, lines], i) => !variants.slice(0, i).some(([, other]) => JSON.stringify(other) === JSON.stringify(lines)));
+  const changed = runs.flatMap(([label, lines]) => {
+    const r = consoleChecks(c, pack, built, lines);
+    return callerChecks(r).join() === callerChecks(own).join() ? [] : [`${label} the console would check ${callerChecks(r).length} of ${callers} caller line(s), L4 ${judge(c, pack, built, r.lines).l4}`];
+  });
+  const notes = [result.note, `console would check: ${callerChecks(own).length} of ${callers} caller line(s)`, opts.combined && opts.times === "estimated" ? COMBINED_NOTE : TIMES_NOTE[opts.times ?? "synthesized"]];
+  if (changed.length) notes.push(`timing-dependent: ${changed.join("; ")}`);
+  return { ...result, note: notes.filter(Boolean).join("; "), timingDependent: changed.length > 0 };
 }
