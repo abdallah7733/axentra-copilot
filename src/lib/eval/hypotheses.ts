@@ -24,8 +24,10 @@ export type HypLine = {
   firstTextS?: number;
   /** "Checked in": seconds from the first text to the checked text. */
   checkS?: number;
-  /** Tier 1 only: request sent to response received. Never compared with the target. */
+  /** Tier 1 only: request sent to response received, first pass. Never compared with the target. */
   engineResponseS?: number;
+  /** Tier 1 only: the same for the check request (the second model), reported apart. */
+  checkEngineResponseS?: number;
   queueS?: number;
   decodeS?: number;
 };
@@ -60,6 +62,12 @@ export type HypothesisFile = {
   runNo?: number;
   coldOrWarm?: "cold" | "warm";
   label?: string;
+  /**
+   * "all": the replay checked every caller line, so L2 scores every check, and the copilot (L3, L4) uses a
+   * checked text only where the console would have asked for it. Absent or "console": a checked text is
+   * one the console asked for (a live call), and the copilot uses it.
+   */
+  checks?: "console" | "all";
   cases: Partial<Record<CaseId, { A?: HypSegment; C?: HypSegment }>>;
 };
 
@@ -147,6 +155,7 @@ export function validate(file: unknown): HypothesisFile {
   if (f.kind !== "fixture" && f.kind !== "measurement") errors.push(`kind must be "fixture" or "measurement"`);
   if (typeof f.configId !== "string" || !f.configId) errors.push("configId is required");
   if (typeof f.route !== "string" || !f.route) errors.push("route is required");
+  if (f.checks !== undefined && f.checks !== "console" && f.checks !== "all") errors.push(`checks must be "console" or "all"`);
   const ids = new Set(CASES.map((c) => c.id));
   for (const [id, segs] of Object.entries(f.cases ?? {})) {
     if (!ids.has(id as CaseId)) errors.push(`unknown case ${id}`);
@@ -168,7 +177,7 @@ export function validate(file: unknown): HypothesisFile {
         seg.lines.forEach((l: HypLine, i: number) => {
           if (typeof l?.first !== "string") errors.push(`${id}.${name}.lines[${i}]: "first" text is required ("" for an empty result)`);
           if (l?.checked !== undefined && typeof l.checked !== "string") errors.push(`${id}.${name}.lines[${i}]: "checked" must be text`);
-          for (const k of ["start", "end", "firstTextS", "checkS", "engineResponseS", "queueS", "decodeS"] as const) {
+          for (const k of ["start", "end", "firstTextS", "checkS", "engineResponseS", "checkEngineResponseS", "queueS", "decodeS"] as const) {
             if (l?.[k] !== undefined && typeof l[k] !== "number") errors.push(`${id}.${name}.lines[${i}]: ${k} must be a number of seconds`);
           }
         });

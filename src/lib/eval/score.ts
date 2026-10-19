@@ -21,7 +21,7 @@ export const COLUMNS = [
   "t_end_method", "first_text_s", "checked_text_s", "usable_text_s", "correct_field_s", "engine_response_s", "queue_s", "decode_s",
   "workflow_start_state", "L4_outcome", "confirmation_turns", "missing_stage", "reviewer_note",
   // Harness additions:
-  "kind", "L2_sub", "L2_del", "L2_ins", "L2_wer", "L2_nc_er", "L4_note",
+  "kind", "L2_sub", "L2_del", "L2_ins", "L2_wer", "L2_nc_er", "L4_note", "check_engine_response_s",
 ] as const;
 export type Column = (typeof COLUMNS)[number];
 export type Row = Record<Column, string>;
@@ -42,7 +42,7 @@ export type SegmentScore = {
   referenceFrom: "listener" | "script";
   missing: boolean;
   missingStage: string;
-  timing: { firstText: number | null; checkedText: number | null; usableText: number | null; correctField: number | null; engine: number[] };
+  timing: { firstText: number | null; checkedText: number | null; usableText: number | null; correctField: number | null; engine: number[]; checkEngine: number[] };
 };
 
 export type Report = { file: HypothesisFile; rows: Row[]; scores: SegmentScore[] };
@@ -95,7 +95,7 @@ function scoreSegment(file: HypothesisFile, c: DevCase, segment: "A" | "C"): { r
     l2Fields = l2Lines ? textFieldCodes(c, l2Lines) : null;
     // The agent's cue comes from the file when present, otherwise from the reference (reported in the note).
     const cue = caseLines.some((l) => l.side === "agent") ? caseLines : [{ side: "agent" as const, first: c.agent, start: 0, end: 2 }, ...caseLines];
-    const w = runCase(c, cue, { timed: segTimed });
+    const w = runCase(c, cue, { timed: segTimed, checks: file.checks });
     l3Fields = fieldsOf(c).length ? w.l3 : null;
     l4 = w.l4;
     l4Note = [w.note, cue === caseLines ? "" : "agent cue from the reference"].filter(Boolean).join("; ");
@@ -110,6 +110,7 @@ function scoreSegment(file: HypothesisFile, c: DevCase, segment: "A" | "C"): { r
     usableText: segTimed ? ms(finite(Math.max(...hyp.map((l) => l.end! + l.firstTextS! + (l.checked !== undefined ? l.checkS ?? NaN : 0))) - segEnd)) : null,
     correctField: segment === "C" && segTimed ? correctField : null,
     engine: hyp.flatMap((l) => (l.engineResponseS !== undefined ? [l.engineResponseS] : [])),
+    checkEngine: hyp.flatMap((l) => (l.checkEngineResponseS !== undefined ? [l.checkEngineResponseS] : [])),
   };
   const hypWords = conventionalWords(l1Lines.join(" ")).length;
   const row: Row = {
@@ -163,6 +164,7 @@ function scoreSegment(file: HypothesisFile, c: DevCase, segment: "A" | "C"): { r
     L2_wer: l2 ? r3(errorRate(l2)) : "",
     L2_nc_er: l2 ? r3(errorRate(l2.nc)) : "",
     L4_note: l4Note,
+    check_engine_response_s: timing.checkEngine.map((n) => r3(n)).join("|"),
   };
   return {
     row,
@@ -247,6 +249,7 @@ export function summary(report: Report, code: { matchesB0: boolean; files: { pat
       : `- Copilot code run: **differs from B0** in ${code.files.filter((f) => !f.matches).map((f) => f.path).join(", ")}. These results are not the baseline.`
   );
   out.push("- Workflow (L4): each case on a new call, from its own starting state and evaluation record; nothing carries over between cases.");
+  if (file.checks === "all") out.push("- Checked text: the replay checked every caller line, so L2 scores all of them; the copilot (L3, L4) used a checked text only where the console would have asked for the check.");
   if (!fixture) {
     const fromScript = scores.filter((s) => s.referenceFrom === "script" && file.cases[s.caseId as CaseId]?.[s.segment]).length;
     out.push(
@@ -333,13 +336,15 @@ export function summary(report: Report, code: { matchesB0: boolean; files: { pat
       }
     }
     out.push("", `Target for usable text (live path): median ≤ 1.5 s and p90 ≤ 2.5 s. Observed: ${targetVerdict(usable, usableMissing)}. Ten cases can't certify a p90.`, "");
-    const engine = scores.flatMap((s) => s.timing.engine);
-    out.push(
-      engine.length
-        ? `Engine response (Tier 1; request to response, not speech end to screen, never compared with the target): count ${engine.length}, median ${sec(median(engine))}, p90 ${sec(p90(engine))}, max ${sec(Math.max(...engine))}.`
-        : "Engine response: none in this file.",
-      ""
-    );
+    const engine = [
+      ["First pass (main model)", scores.flatMap((s) => s.timing.engine)],
+      ["Check (second model)", scores.flatMap((s) => s.timing.checkEngine)],
+    ] as const;
+    if (engine.some(([, xs]) => xs.length)) {
+      out.push("Engine response (Tier 1): request sent to response received. Not speech end to screen, and never compared with the target.", "", "| Request | Count | Median | p90 (nearest rank) | Max |", "|---|---|---|---|---|");
+      for (const [label, xs] of engine) out.push(`| ${label} | ${xs.length} | ${sec(median([...xs]))} | ${sec(p90([...xs]))} | ${sec(xs.length ? Math.max(...xs) : null)} |`);
+      out.push("");
+    } else out.push("Engine response: none in this file.", "");
   }
   return out.join("\n");
 }

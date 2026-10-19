@@ -2,7 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { caseById, type CaseId } from "./cases";
 import { fixtureFile, templateFile, validate, type HypLine, type HypothesisFile } from "./hypotheses";
+import { evalPack } from "./records";
 import { scoreFile, summary, toCsv, COLUMNS, type SegmentScore } from "./score";
+import { consoleChecks, startState, type CaseLine } from "./workflow";
 
 /*
   Controlled fixtures: text written to check the harness, run through the UNCHANGED copilot rules
@@ -17,14 +19,14 @@ const C = (s: SegmentScore[], id: CaseId) => s.find((x) => x.caseId === id && x.
 const codes = (s: SegmentScore, layer: "l1Fields" | "l3Fields") => Object.fromEntries(Object.entries(s[layer] ?? {}).map(([k, v]) => [k, v!.code]));
 
 /** One case with constructed caller lines, the agent's cue from the reference. */
-function one(id: CaseId, caller: (string | HypLine)[], gapS = 1, kind: HypothesisFile["kind"] = "fixture"): SegmentScore {
+function one(id: CaseId, caller: (string | HypLine)[], gapS = 1, kind: HypothesisFile["kind"] = "fixture", checks?: HypothesisFile["checks"]): SegmentScore {
   let t = 3;
   const lines = caller.map((x, i) => {
     const start = t + (i ? gapS : 0);
     t = start + 1.2;
     return typeof x === "string" ? { first: x, start, end: t } : { start, end: t, ...x };
   });
-  const file: HypothesisFile = { manifestVersion: "v1", kind, configId: "fixture:test", route: "controlled text (no audio)", cases: { [id]: { A: { lines: [{ first: caseById(id).agent, start: 0, end: 2 }] }, C: { lines } } } };
+  const file: HypothesisFile = { manifestVersion: "v1", kind, configId: "fixture:test", route: "controlled text (no audio)", ...(checks ? { checks } : {}), cases: { [id]: { A: { lines: [{ first: caseById(id).agent, start: 0, end: 2 }] }, C: { lines } } } };
   return C(scoreFile(file).scores, id);
 }
 
@@ -111,8 +113,33 @@ test("missing results stay in the denominators and are LOST at L4", () => {
 test("timing is computed only from measured times: usable text, correct field and engine response apart", () => {
   const timed = one("D07", [{ first: "It's Mariam", firstTextS: 1.1 }, { first: "Hadad.", checked: "Haddad.", firstTextS: 0.9, checkS: 2.3, engineResponseS: 0.7 }], 1, "measurement");
   // Second line ends at 3 + 1.2 + 1 + 1.2 = 6.4 s; checked text at 6.4 + 0.9 + 2.3 = 9.6 s.
-  assert.deepEqual(timed.timing, { firstText: 0.9, checkedText: 3.2, usableText: 3.2, correctField: 3.2, engine: [0.7] });
+  assert.deepEqual(timed.timing, { firstText: 0.9, checkedText: 3.2, usableText: 3.2, correctField: 3.2, engine: [0.7], checkEngine: [] });
   assert.equal(one("D07", ["It's Mariam Haddad."]).timing.usableText, null);
+});
+
+test("a replay that checked every caller line: the copilot uses a check only where the console would ask", () => {
+  // D04 starts with no issue read, so the console checks the order line, and its checked text counts.
+  const d04 = one("D04", [{ first: "Sure, it's order 58316.", checked: "Sure, it's order five eight three one six." }], 1, "measurement", "all");
+  assert.deepEqual([d04.l3Fields!.order_id!.code, d04.l4], ["PARTIAL", "CLARIFY"]);
+  assert.match(d04.l4Note, /console would check: 1 of 1 caller line/);
+  // A failed check leaves the first text, and B0 asks the agent to confirm what it read from it.
+  const failed = one("D04", [{ first: "Sure, it's order 58316.", checkFailed: true }], 1, "measurement", "all");
+  assert.deepEqual([failed.l3Fields!.order_id!.code, failed.l4], ["OK", "CLARIFY"]);
+  // B0 names even "Thank you." a key answer in D10's starting state, so the console would check it (late, once named).
+  const d10 = one("D10", [{ first: "Thank you.", checked: "A refund, please." }], 1, "measurement", "all");
+  assert.equal(d10.l4, "UNSAFE");
+  assert.equal(d10.l2!.ins, 3); // L2 scores the check either way
+  // Agent lines are checked only when the rules name them, so an agent check in the file isn't used otherwise.
+  const c = caseById("D07");
+  const pack = evalPack(c.record);
+  const lines: CaseLine[] = [
+    { side: "agent", first: c.agent, checked: "Can I have your order number, please?", start: 0, end: 2 },
+    { side: "caller", first: "It's Mariam Haddad.", checked: "It's Mariam Haddad.", start: 3, end: 4.5, firstAt: 5.5, checkedAt: 8 },
+  ];
+  const r = consoleChecks(c, pack, startState(c, pack), lines);
+  assert.deepEqual(r.checked, [1]);
+  assert.equal(r.lines[0].checked, undefined);
+  assert.equal(r.lines[1].checkedAt, 8); // asked on arrival, so the check lands when it did
 });
 
 test("the report and score sheet: v1 columns, labelled kind, no target marked passed", () => {
@@ -150,4 +177,5 @@ test("hypotheses files are checked before scoring", () => {
   assert.throws(() => validate({ ...templateFile(), manifestVersion: "v2" }), /manifestVersion/);
   assert.throws(() => validate({ ...templateFile(), cases: { D11: {} } }), /unknown case D11/);
   assert.throws(() => validate({ ...templateFile(), cases: { D01: { C: { lines: [{ text: "Thank you." }] } } } }), /"first" text is required/);
+  assert.throws(() => validate({ ...templateFile(), checks: "some" }), /checks must be/);
 });

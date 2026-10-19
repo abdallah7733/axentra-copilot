@@ -12,7 +12,7 @@
   The copilot rules are called exactly as the console calls them (analyze), unchanged.
 */
 
-import { analyze, type CopilotView } from "@/lib/copilot/copilot";
+import { ANSWER_GAP_MS, analyze, type CopilotView } from "@/lib/copilot/copilot";
 import type { AgentAction, ClientPack, TranscriptEvent } from "@/lib/copilot/types";
 import type { DevCase } from "./cases";
 import { addressCodes, fieldsOf, nameCode, textFieldCodes, type FieldCodes, type FieldResult } from "./fields";
@@ -104,6 +104,69 @@ function caseEvents(c: DevCase, caseLines: CaseLine[], firstSeq: number, t = Inf
     if (checkedAtOf(l) > t) return [{ ...base, text: l.first, availableAt: inCase(firstAtOf(l)), checking: true }];
     return [{ ...base, text: l.checked, availableAt: inCase(checkedAtOf(l)), ...(l.checked !== l.first ? { firstHeard: l.first } : {}) }];
   });
+}
+
+/**
+ * Which case lines the console would have held for the second model's check, as copilot-store.ts decides
+ * it: a line arriving while the copilot awaits an answer (issue, name, address or choice), and any line
+ * the copilot names as a key answer once a later line or check result arrives. The settle re-run after
+ * the answer gap refreshes the view the next line is judged against. Used when a replay checked every
+ * caller line (checks "all"): the copilot then sees a checked text only where the console would have
+ * asked for one, at the moment it would have asked. A line the console would check but the file has no
+ * check for (an agent line) keeps its first text.
+ */
+export function consoleChecks(c: DevCase, pack: ClientPack, built: Built, caseLines: CaseLine[]): { lines: CaseLine[]; checked: number[] } {
+  const firstSeq = built.lines.length + 1;
+  const hasCheck = (l: CaseLine) => l.checked !== undefined || !!l.checkFailed;
+  const duration = (l: CaseLine) => checkedAtOf(l) - firstAtOf(l);
+  const requestedAt = new Map<number, number>();
+  const ignored = new Set(built.lines.map((l) => l.key));
+  type Ev = { t: number; i: number; kind: "first" | "checked" };
+  const queue: Ev[] = caseLines.map((l, i) => ({ t: firstAtOf(l), i, kind: "first" as const }));
+  const arrived = new Set<number>();
+  const done = new Set<number>();
+  // The case's lines as the console holds them at a moment: first text, held for a check, or the check's result.
+  const events = (): TranscriptEvent[] =>
+    caseLines.flatMap((l, i): TranscriptEvent[] => {
+      if (!arrived.has(i)) return [];
+      const base = { callId: `EVAL-${c.id}`, seq: firstSeq + i, key: `c${i + 1}`, side: l.side, startedAt: inCase(l.start), endedAt: inCase(l.end), final: true as const, confidence: l.confidence ?? 0.9, availableAt: inCase(firstAtOf(l)) };
+      if (!requestedAt.has(i)) return [{ ...base, text: l.first }];
+      if (!done.has(i)) return [{ ...base, text: l.first, checking: true }];
+      if (l.checked === undefined) return [{ ...base, text: l.first, checkFailed: true }];
+      return [{ ...base, text: l.checked, ...(l.checked !== l.first ? { firstHeard: l.first } : {}) }];
+    });
+  const view = (t: number) => analyze(pack, [...built.lines, ...events()], built.actions, inCase(t));
+  const request = (i: number, t: number) => {
+    if (requestedAt.has(i) || !hasCheck(caseLines[i])) return;
+    requestedAt.set(i, t);
+    queue.push({ t: t + duration(caseLines[i]), i, kind: "checked" });
+  };
+  let last: number | null = null;
+  while (queue.length) {
+    queue.sort((a, b) => a.t - b.t || a.i - b.i);
+    const ev = queue.shift()!;
+    if (ev.kind === "first") {
+      // The view the console holds when the line arrives: from the last line event, or its settle re-run.
+      const seen = last === null ? ev.t : ev.t - last >= (ANSWER_GAP_MS + 100) / 1000 ? last + (ANSWER_GAP_MS + 100) / 1000 : last;
+      if (caseLines[ev.i].side === "caller" && view(seen).awaiting) request(ev.i, ev.t);
+      arrived.add(ev.i);
+    } else done.add(ev.i);
+    for (const key of view(ev.t).keyAnswers) {
+      if (ignored.has(key)) continue;
+      const i = Number(key.slice(1)) - 1;
+      if (key.startsWith("c") && !requestedAt.has(i)) request(i, ev.t);
+    }
+    last = ev.t;
+  }
+  const lines = caseLines.map((l, i): CaseLine => {
+    if (requestedAt.has(i)) return { ...l, checkedAt: requestedAt.get(i)! + duration(l) };
+    const rest = { ...l };
+    delete rest.checked;
+    delete rest.checkFailed;
+    delete rest.checkedAt;
+    return rest;
+  });
+  return { lines, checked: [...requestedAt.keys()].sort((a, b) => a - b) };
 }
 
 /** The copilot's decisions, for judging whether a line changed anything (NO_EFFECT vs UNSAFE). */
@@ -222,10 +285,15 @@ function verifyAfter(c: DevCase, pack: ClientPack, built: Built, caseLines: Case
   return analyze(pack, events, actions, inCase(end + 15));
 }
 
-/** Runs one case from its own starting state on a new call. */
-export function runCase(c: DevCase, caseLines: CaseLine[], opts: { timed?: boolean } = {}): WorkflowResult {
+/**
+ * Runs one case from its own starting state on a new call. With `checks: "all"` (a replay that checked
+ * every caller line), the copilot uses a checked text only where the console would have asked for it.
+ */
+export function runCase(c: DevCase, given: CaseLine[], opts: { timed?: boolean; checks?: "console" | "all" } = {}): WorkflowResult {
   const pack = evalPack(c.record);
   const built = startState(c, pack);
+  const replayChecks = opts.checks === "all" ? consoleChecks(c, pack, built, given) : null;
+  const caseLines = replayChecks ? replayChecks.lines : given;
   const agentLines = caseLines.filter((l) => l.side === "agent");
   const callerLines = caseLines.filter((l) => l.side === "caller");
   const callerTexts = callerLines.map((l) => l.checked ?? l.first);
@@ -261,5 +329,6 @@ export function runCase(c: DevCase, caseLines: CaseLine[], opts: { timed?: boole
       }
     }
   }
-  return { view, before, l3, l4: code, note, confirmationTurns: turns, correctFieldS };
+  const checkNote = replayChecks ? `console would check: ${replayChecks.checked.filter((i) => given[i].side === "caller").length} of ${callerLines.length} caller line(s)` : "";
+  return { view, before, l3, l4: code, note: [note, checkNote].filter(Boolean).join("; "), confirmationTurns: turns, correctFieldS };
 }
