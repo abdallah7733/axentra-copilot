@@ -140,6 +140,10 @@ test("a replay that checked every caller line: the copilot uses a check only whe
   assert.deepEqual(r.checked, [1]);
   assert.equal(r.lines[0].checked, undefined);
   assert.equal(r.lines[1].checkedAt, 8); // asked on arrival, so the check lands when it did
+  // A blank first pass never reaches the console, so its check isn't used.
+  const blank = consoleChecks(c, pack, startState(c, pack), [lines[0], { ...lines[1], first: "" }]);
+  assert.deepEqual(blank.checked, []);
+  assert.equal(blank.lines[1].checked, undefined);
 });
 
 test("the report and score sheet: v1 columns, labelled kind, no target marked passed", () => {

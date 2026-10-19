@@ -117,7 +117,8 @@ function caseEvents(c: DevCase, caseLines: CaseLine[], firstSeq: number, t = Inf
  */
 export function consoleChecks(c: DevCase, pack: ClientPack, built: Built, caseLines: CaseLine[]): { lines: CaseLine[]; checked: number[] } {
   const firstSeq = built.lines.length + 1;
-  const hasCheck = (l: CaseLine) => l.checked !== undefined || !!l.checkFailed;
+  // A blank first pass never reaches the console (store.ts drops it), so it can't be held for a check.
+  const hasCheck = (l: CaseLine) => !!l.first.trim() && (l.checked !== undefined || !!l.checkFailed);
   const duration = (l: CaseLine) => checkedAtOf(l) - firstAtOf(l);
   const requestedAt = new Map<number, number>();
   const ignored = new Set(built.lines.map((l) => l.key));
