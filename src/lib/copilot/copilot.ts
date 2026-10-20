@@ -1,4 +1,4 @@
-import { findOrderMentions, matchOrder, type MentionMethod, type OrderMention } from "./orders";
+import { findOrderMentions, findSplitOrder, matchOrder, type MentionMethod, type OrderMention } from "./orders";
 import { agentAsksChoice, agentAsksFor, agentCommits, agentDisclosesFactor, agentOffers, escalationWords, readChoice, readIntent, safetyWords, type Choice } from "./signals";
 import { findAffirmed, normalize, repeatsItself, soundsLike, words as textWords } from "./text";
 import type { AgentAction, AuthorityBand, ClientPack, Customer, Order, Side, TranscriptEvent } from "./types";
@@ -372,7 +372,15 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
   let verifiedAt: Evidence | undefined;
   let locked = false;
   let expecting: "name" | "address" | "order" | null = null;
-  const callerMentions: { mention: OrderMention; ev: Evidence }[] = [];
+  /**
+   * `differ`: the two speech models read different complete order numbers from this answer (or the
+   * check lost one the fast model had). Both readings are kept as candidates and the order needs a
+   * read-back (register I-44). `several`: one answer named different complete order numbers ("06291.
+   * Sorry, no, 06294"); the later one is read, and the agent confirms it (I-43).
+   */
+  const callerMentions: { mention: OrderMention; ev: Evidence; differ?: { first: string; checked: string }; several?: string[] }[] = [];
+  // The caller's previous line, while no agent line has come since: a pause can split one order number (I-43).
+  let lastCaller: { line: TranscriptEvent; ev: Evidence; expecting: "name" | "address" | "order" | null } | null = null;
   const agentMentionsAfterVerify: { mention: OrderMention; ev: Evidence }[] = [];
   // Assigned through setChoice too, so declared wide: TypeScript doesn't follow assignments in closures.
   let choice = null as CopilotView["choice"];
@@ -526,6 +534,51 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
     if (factor.attempts >= pack.policy.maxVerificationAttempts) locked = true;
   }
 
+  /**
+   * The order numbers in one caller line. When the second speech model checked the line, the fast
+   * model's text is read too: if the check lost a complete order number or read a different one, both
+   * readings stay candidates and the answer needs a read-back, never an exact match (I-44). A line
+   * that only finishes a number the caller began in the previous line, inside one answer, is read
+   * together with it (I-43).
+   */
+  const readOrder = (line: TranscriptEvent, ev: Evidence, prev: typeof lastCaller): typeof callerMentions => {
+    const expectingOrder = expecting === "order";
+    const joinable = !!prev && line.startedAt - prev.line.endedAt < ANSWER_GAP_MS;
+    // One model's reading: the line's own mentions, else the number it finishes from the previous line.
+    const read = (text: string, prevText: string | undefined) => {
+      const own = findOrderMentions(text, idLengths, expectingOrder);
+      if (own.length || !joinable || prevText === undefined) return { mentions: own, joined: false };
+      const split = findSplitOrder(prevText, text, idLengths, prev!.expecting === "order" || expectingOrder);
+      return { mentions: split ? [split] : [], joined: !!split };
+    };
+    const checked = read(line.text, prev?.line.text);
+    const firstText = ev.typedFrom === undefined ? line.firstHeard : undefined;
+    const prevFirst = prev && (prev.ev.typedFrom === undefined ? prev.line.firstHeard ?? prev.line.text : prev.line.text);
+    const first = firstText === undefined ? null : read(firstText, prevFirst ?? undefined);
+    const at: Evidence =
+      prev && (checked.joined || first?.joined)
+        ? { ...ev, text: `${prev.line.text} ${line.text}`, lowConfidence: ev.lowConfidence || prev.ev.lowConfidence }
+        : ev;
+
+    const complete = (ms: OrderMention[]) => [...new Set(ms.flatMap((m) => m.candidates.filter((c) => idLengths.includes(c.length))))];
+    const checkedNumbers = complete(checked.mentions);
+    const firstNumbers = first ? complete(first.mentions) : [];
+    if (!firstNumbers.length || firstNumbers.some((n) => checkedNumbers.includes(n))) {
+      const said = checked.mentions.map((m) => m.candidates.find((c) => idLengths.includes(c.length))).filter((n) => n !== undefined);
+      const several = new Set(said).size > 1 ? said : undefined;
+      return checked.mentions.map((mention) => ({ mention, ev: at, ...(several ? { several } : {}) }));
+    }
+    // The models disagree: keep both readings, the checked one first, and never call it exact.
+    const [c, f] = [checked.mentions[0], first!.mentions[0]];
+    const mention: OrderMention = {
+      ...(c ?? f),
+      heard: c ? `${c.heard}" or "${f.heard}` : f.heard,
+      candidates: [...new Set([...checkedNumbers, ...firstNumbers])],
+      method: "sound-alike",
+    };
+    return [{ mention, ev: at, differ: { first: firstNumbers.join(" or "), checked: checkedNumbers.join(" or ") || "no order number" } }];
+  };
+
   for (const item of timeline) {
     if (pending && item.at - pending.endedAt >= ANSWER_GAP_MS) closeAnswer();
     if (item.kind === "action") {
@@ -613,7 +666,9 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       }
       askedDamage = null;
 
-      for (const mention of findOrderMentions(line.text, idLengths, expecting === "order")) callerMentions.push({ mention, ev });
+      const heard = readOrder(line, ev, lastCaller);
+      callerMentions.push(...heard);
+      lastCaller = { line, ev, expecting };
 
       if (!locked) {
         // The factor the agent asked for; the other only counts if volunteered as a clear match.
@@ -650,6 +705,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       askedDamage = kind ? { ev, kind } : null;
 
       closeAnswer();
+      lastCaller = null;
       const asks = agentAsksFor(line.text, !verified() && !locked);
       if (!asks && (expecting === "name" || expecting === "address")) expecting = null;
       if (asks) {
@@ -751,13 +807,13 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
   const order: CopilotView["order"] = { state: "none" };
   const latestCaller = [...callerMentions].reverse();
   if (latestCaller.length) {
-    const { mention, ev } = latestCaller[0];
-    const reading = mention.method === "sound-alike" ? `probably ${mention.candidates[0]}` : mention.candidates[0];
+    const { mention, ev, differ } = latestCaller[0];
+    const reading = differ ? mention.candidates.join(" or ") : mention.method === "sound-alike" ? `probably ${mention.candidates[0]}` : mention.candidates[0];
     order.heard = { text: mention.heard, reading, method: mention.method, evidence: ev };
     order.state = "heard";
   }
   if (isVerified) {
-    const sources = [...latestCaller, ...agentMentionsAfterVerify];
+    const sources: { mention: OrderMention; ev: Evidence; differ?: { first: string; checked: string }; several?: string[] }[] = [...latestCaller, ...agentMentionsAfterVerify];
     const found = matchOrder(sources.map((s) => s.mention), customerOrders, pack.policy.claimWindowDays);
     if (found) {
       const source = sources.find((s) => s.mention === found.mention);
@@ -773,12 +829,18 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
           stands(at) &&
           rules(pack, lines.filter((l) => (l.availableAt ?? l.endedAt) <= at), allActions.filter((x) => x.at < at), at, hints, true).order.match?.order.id === found.order.id
       );
-      const needsConfirmation = found.needsConfirmation || !!source?.ev.lowConfidence;
+      const differ = source?.differ;
+      const several = source?.several;
+      const needsConfirmation = found.needsConfirmation || !!source?.ev.lowConfidence || !!differ || !!several;
       order.state = "matched";
       order.match = {
         order: orderView(found.order, now),
         method: found.method,
-        note: found.note,
+        note: differ
+          ? `The two speech models heard different order numbers: ${differ.checked} on the check, ${differ.first} first. Read the order number back to the caller.`
+          : several
+            ? `The caller named ${several.join(", then ")}. ${found.note} Read the order number back to the caller.`
+            : found.note,
         needsConfirmation,
         confirmed: !!readBack || pressedAt !== undefined,
         confirmedBy: readBack?.ev ?? (pressedAt !== undefined ? "panel" : undefined),

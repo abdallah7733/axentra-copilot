@@ -13,6 +13,7 @@ import { consoleChecks, startState, type CaseLine } from "./workflow";
 
   When a later fix changes the copilot (I-43, I-44), the lines marked "B0 behaviour" change with it,
   and the fix's pull request updates them, so each change shows up here as a difference from B0.
+  Updated for the order-number fixes (candidate C1): each changed line keeps its B0 value in a comment.
 */
 
 const C = (s: SegmentScore[], id: CaseId) => s.find((x) => x.caseId === id && x.segment === "C")!;
@@ -35,26 +36,29 @@ test("reference words, run through B0: every field right in the text; what the r
   for (const id of ["D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09"] as CaseId[]) assert.ok(Object.values(codes(C(s, id), "l1Fields")).every((c) => c === "OK"), id);
   const errors = (k: "l1" | "nc") => s.filter((x) => x.inventedWords === null).reduce((n, x) => { const w = k === "l1" ? x.l1 : x.l1.nc; return n + w.sub + w.del + w.ins; }, 0);
   assert.deepEqual([errors("l1"), errors("nc")], [0, 0]); // the reference scores itself as exact, split number included
-  // B0 behaviour (observed in this harness on fixture text; live behaviour untested):
+  // C1 behaviour (observed in this harness on fixture text; live behaviour untested):
   assert.deepEqual(codes(C(s, "D03"), "l3Fields"), { intent: "OK", choice: "OK", refund_wanted: "OK", order_id: "OK" });
   assert.equal(C(s, "D03").l3Fields!.intent!.note, "low certainty");
-  assert.deepEqual(codes(C(s, "D04"), "l3Fields"), { order_id: "PARTIAL" }); // 5831: digit by digit, read to four digits (I-43)
-  assert.deepEqual(codes(C(s, "D05"), "l3Fields"), { order_id: "SPLIT" }); // two lines, not joined (I-43)
-  assert.deepEqual(codes(C(s, "D06"), "l3Fields"), { order_id: "FROM_RECORD" }); // nothing read; the only recent order offered
+  assert.deepEqual(codes(C(s, "D04"), "l3Fields"), { order_id: "OK" }); // B0: PARTIAL, digit by digit read to four digits (I-43)
+  assert.deepEqual(codes(C(s, "D05"), "l3Fields"), { order_id: "OK" }); // B0: SPLIT, two lines not joined (I-43)
+  assert.deepEqual(codes(C(s, "D06"), "l3Fields"), { order_id: "OK" }); // B0: FROM_RECORD, nothing read; the only recent order offered
+  assert.match(C(s, "D06").l4Note, /The caller named 06291, then 06294/); // the correction asks for a read-back
   assert.deepEqual(
     Object.fromEntries(s.filter((x) => x.segment === "C").map((x) => [x.caseId, x.l4])),
-    { D01: "NO_EFFECT", D02: "NO_EFFECT", D03: "CLARIFY", D04: "CLARIFY", D05: "CLARIFY", D06: "CLARIFY", D07: "DONE_RIGHT", D08: "DONE_RIGHT", D09: "DONE_RIGHT", D10: "NO_EFFECT" }
+    // B0: D04 CLARIFY, D05 CLARIFY (D06 was CLARIFY through the only-recent suggestion).
+    { D01: "NO_EFFECT", D02: "NO_EFFECT", D03: "CLARIFY", D04: "DONE_RIGHT", D05: "DONE_RIGHT", D06: "CLARIFY", D07: "DONE_RIGHT", D08: "DONE_RIGHT", D09: "DONE_RIGHT", D10: "NO_EFFECT" }
   );
   assert.equal(s.filter((x) => x.l4 === "UNSAFE").length, 0);
 });
 
-test("reference with numerals, run through B0: written numbers are read; the split number still isn't", () => {
+test("reference with numerals: written numbers are read, the split number is joined, the correction asks", () => {
   const s = scoreFile(fixtureFile("reference-numerals")).scores;
   assert.deepEqual(codes(C(s, "D04"), "l3Fields"), { order_id: "OK" });
   assert.deepEqual(codes(C(s, "D06"), "l3Fields"), { order_id: "OK" }); // the later number wins, leading zero kept
-  assert.deepEqual(codes(C(s, "D05"), "l3Fields"), { order_id: "SPLIT" });
+  assert.deepEqual(codes(C(s, "D05"), "l3Fields"), { order_id: "OK" }); // B0: SPLIT
   assert.deepEqual(codes(C(s, "D08"), "l3Fields"), { house_no: "OK", street: "OK", city: "OK", address: "OK" });
-  assert.deepEqual([C(s, "D04").l4, C(s, "D05").l4, C(s, "D06").l4], ["DONE_RIGHT", "CLARIFY", "DONE_RIGHT"]);
+  // B0: D05 CLARIFY, D06 DONE_RIGHT (the corrected number was matched without a read-back).
+  assert.deepEqual([C(s, "D04").l4, C(s, "D05").l4, C(s, "D06").l4], ["DONE_RIGHT", "DONE_RIGHT", "CLARIFY"]);
   // "26" for spoken "two six" is a conventional-WER substitution; NC-ER reads "714" and "26" as the one order number.
   assert.deepEqual([C(s, "D05").l1.sub, C(s, "D05").l1.nc.sub, C(s, "D05").l1.nc.ins], [1, 0, 0]);
 });
@@ -94,11 +98,12 @@ test("observed on constructed text: a pause over 2 s splits answers, and a house
 });
 
 test("the copilot reads the checked text, and the checker's effect is paired field by field", () => {
-  // Hyphenated digits from a recognizer (probe finding 3): right in the text, unread by the rules.
+  // Hyphenated digits from a recognizer (probe finding 3): B0 left them unread (FROM_RECORD).
   const hyphen = one("D06", ["It's 0-6-2-9-1. Sorry, no, 0-6-2-9-4."]);
-  assert.deepEqual([hyphen.l1Fields.order_id!.code, hyphen.l3Fields!.order_id!.code], ["OK", "FROM_RECORD"]);
+  assert.deepEqual([hyphen.l1Fields.order_id!.code, hyphen.l3Fields!.order_id!.code, hyphen.l4], ["OK", "OK", "CLARIFY"]);
   const rewritten = one("D04", [{ first: "Sure, it's order 58316. It was $129.", checked: "Sure, it's order five eight three one six. It was a hundred and twenty-nine dollars." }]);
-  assert.deepEqual([rewritten.l1Fields.order_id!.code, rewritten.l2Fields!.order_id!.code, rewritten.l3Fields!.order_id!.code], ["OK", "OK", "PARTIAL"]);
+  // B0: PARTIAL at L3 (five spoken digits read to four).
+  assert.deepEqual([rewritten.l1Fields.order_id!.code, rewritten.l2Fields!.order_id!.code, rewritten.l3Fields!.order_id!.code], ["OK", "OK", "OK"]);
 });
 
 test("missing results stay in the denominators and are LOST at L4", () => {
@@ -121,7 +126,7 @@ test("timing is computed only from measured times: usable text, correct field an
 test("a replay that checked every caller line: the copilot uses a check only where the console would ask", () => {
   // D04 starts with no issue read, so the console checks the order line, and its checked text counts.
   const d04 = one("D04", [{ first: "Sure, it's order 58316.", checked: "Sure, it's order five eight three one six." }], 1, "measurement", "all");
-  assert.deepEqual([d04.l3Fields!.order_id!.code, d04.l4], ["PARTIAL", "CLARIFY"]);
+  assert.deepEqual([d04.l3Fields!.order_id!.code, d04.l4], ["OK", "DONE_RIGHT"]); // B0: PARTIAL, CLARIFY
   assert.match(d04.l4Note, /console would check: 1 of 1 caller line/);
   // A failed check leaves the first text, and B0 asks the agent to confirm what it read from it.
   const failed = one("D04", [{ first: "Sure, it's order 58316.", checkFailed: true }], 1, "measurement", "all");
