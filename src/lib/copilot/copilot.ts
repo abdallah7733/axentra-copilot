@@ -1525,10 +1525,13 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       // Heard clearly as recognised: a failed check leaves a line as first heard. The recheck below asks for a
       // better reading; it never takes away a term the line was heard saying.
       const clear = (l: TranscriptEvent) => !(l.confidence !== null && l.confidence < LOW_CONFIDENCE);
-      const toldRaw = ordered
+      // A line the second model is still checking counts as first heard meanwhile; its checked text replaces it
+      // when it comes back. Held back, every term stayed "not heard yet" while the stage card's short row 15
+      // lines queued for their checks (21 Oct).
+      const agentSince = corrected
         .filter((l) => l.side === "agent" && l.startedAt >= since && clear(l))
-        .map((l) => l.text)
-        .join(" ");
+        .sort((a, b) => a.startedAt - b.startedAt || a.seq - b.seq);
+      const toldRaw = agentSince.map((l) => l.text).join(" ");
       const told = normalize(toldRaw);
       // Sentence by sentence over the agent's own words, with every negation (contractions included):
       // the first affirmed sentence counts, so a term repeated after a negated one is heard (Call 13 review).
@@ -1568,7 +1571,6 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
               { label: "Return label", key: /\blabel\b/, said: says(/\blabel\b/), text: "You'll get an email with a free return label for the damaged one." },
             ];
       // The record keeps each term with the line that said it (call 8 review).
-      const agentSince = ordered.filter((l) => l.side === "agent" && l.startedAt >= since && clear(l));
       termRecord = terms.map((t) => {
         const affirmed = (text: string) => { const f = findAffirmed(text, t.key); return !!f && !f.negated; };
         // A term split across lines ("…ships" / "today.") is quoted by the line that completed it.

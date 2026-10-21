@@ -89,3 +89,48 @@ test("after approval, a terms line goes to the check while a term is missing, an
   assert.equal(asked.filter((k) => k === "a7").length, 1, "checked once");
   liveEvents.emit({ type: "cleared" });
 });
+
+test("the stage card's short row 15 lines count as first heard while their checks run; a checked text replaces them", () => {
+  const run = (sentences: string[]) => {
+    const asked: string[] = [];
+    useLive.setState({ checkLine: (key) => (asked.push(key), key.startsWith("a") ? "started" : "no-audio") });
+    liveEvents.emit({ type: "call-started", callId: "CA-4", at: T0 });
+    const said: [string, "caller" | "agent", string][] = [
+      ["a1", "agent", "Thank you for calling Sunlake. How can I help you today?"],
+      ["c1", "caller", "Hello. I need help with order 427. The tablet came yesterday, and the screen is cracked."],
+      ["a2", "agent", "First, can I have your full name, please?"],
+      ["c2", "caller", "Sam Miller."],
+      ["a3", "agent", "Thank you. And the street and city for the delivery?"],
+      ["c3", "caller", "Hill Road, in Dallas."],
+      ["a4", "agent", "Thank you, Sam. I can see the tablet on order 427. Is the damage only on the screen?"],
+      ["c4", "caller", "Yes, only the screen."],
+      ["a5", "agent", "You can have either. A new tablet ships today at no cost, or a full refund. Which do you prefer?"],
+      ["c5", "caller", "The refund, please."],
+    ];
+    said.forEach(([key, side, text], i) => emit(line("CA-4", i + 1, key, side, text, i * 5000)));
+    useCopilot.getState().approve();
+    const now = Date.now() - T0;
+    const lines = ["I've set up a full refund of $329.00 to your Visa ending 2208.", ...sentences].map((text, i) =>
+      line("CA-4", 11 + i, `a${6 + i}`, "agent", text, now + 1000 + i * 2500)
+    );
+    lines.forEach(emit);
+    return { asked, lines };
+  };
+  const docs = () => useCopilot.getState().view.steps.find((s) => s.id === "docs")?.detail;
+  const row15 = ["The carrier will scan your return.", "The refund is issued at that scan.", "It takes 3 to 5 business days to appear.", "You'll get an email with a free return label."];
+
+  const clean = run(row15);
+  assert.equal(docs(), "Terms heard on the call", "heard as soon as the last line arrives, before any check comes back");
+  assert.deepEqual(clean.asked.filter((k) => k.startsWith("a") && Number(k.slice(1)) >= 6), ["a6", "a7", "a8", "a9"], "the line that completes the terms isn't checked");
+  liveEvents.emit({ type: "cleared" });
+
+  // The first "scan" heard as "can't": the second one still counts.
+  const cant = run(["The carrier can't return.", ...row15.slice(1)]);
+  assert.equal(docs(), "Terms heard on the call");
+
+  // The check of the second "scan" line comes back without it: the term is no longer heard.
+  const [, , , second] = cant.lines;
+  emit({ ...second, text: "The refund is issued at that.", firstHeard: second.text });
+  assert.match(docs() ?? "", /^Not heard yet: when it's issued and how long it takes$/);
+  liveEvents.emit({ type: "cleared" });
+});
