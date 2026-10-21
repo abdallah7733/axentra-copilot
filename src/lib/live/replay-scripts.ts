@@ -17,6 +17,8 @@ export const replayScripts: { id: string; label: string; lines: ReplayLine[] }[]
   { id: "main", label: "Script v2", lines: variant({}) },
   { id: "4to7", label: 'Heard "4 to 7"', lines: variant({ 2: { side: "caller", text: LINE2.replace("427", "4 to 7") } }) },
   { id: "527", label: 'Heard "527"', lines: variant({ 2: { side: "caller", text: LINE2.replace("427", "527"), confidence: 0.55 } }) },
+  // The 21 Oct stage call's name, heard with low confidence here (a replay has no audio, so no second check).
+  { id: "name", label: 'Heard "Sammílis."', lines: variant({ 5: { side: "caller", text: "Sammílis.", confidence: 0.55 } }) },
   { id: "nonumber", label: "No order number", lines: variant({ 2: { side: "caller", text: "Hello. The tablet came yesterday, and the screen is cracked." } }) },
   {
     id: "chargeback",

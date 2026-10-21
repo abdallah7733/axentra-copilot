@@ -60,6 +60,8 @@ export type Factor = {
    * two candidates or denies something else; asked again, never confirmed.
    */
   confirmReason?: "low-confidence" | "garbled" | "sounds-like" | "disagree" | "ambiguous";
+  /** The caller's yes to the agent's read-back of the name (see Policy.nameReadBack). */
+  confirmedBy?: Evidence;
 };
 
 export type OrderView = Order & { deliveredLabel: string; deliveredDate: string | null };
@@ -189,6 +191,13 @@ export type CopilotView = {
   agentChecks: { key: string; check: boolean; reason: string }[];
   /** The agent's Confirm presses still in effect for the name, address and item: each can be undone. */
   undoable: ("name" | "address" | "order")[];
+  /**
+   * Where the agent types the caller's name: the caller's answer to the name question, from the moment its
+   * line arrives (stage call, 21 Oct: about 10 s went on reaching a field that appeared only once both speech
+   * models had finished). `checking`: the second model is still checking the line. `readBack`: whether saying
+   * the name back counts ("waiting": said back, waiting for the caller's yes). Null once the name is verified.
+   */
+  nameEntry: { key: string; checking: boolean; readBack: "off" | "available" | "waiting" } | null;
 };
 
 const DAY = 86_400_000;
@@ -281,7 +290,7 @@ const money = (n: number) => new Intl.NumberFormat("en-US", { style: "currency",
 const clock = (at: number) => new Date(at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
 /** How a factor was verified, as a step detail: "Confirmed by the agent", not "By confirmed by the agent" (I-27). */
-const byMethod = (method: string) => (/^(confirmed|typed) by/.test(method) ? method[0].toUpperCase() + method.slice(1) : `By ${method}`);
+const byMethod = (method: string) => (/^(confirmed|typed|read back) by/.test(method) ? method[0].toUpperCase() + method.slice(1) : `By ${method}`);
 
 /** What the optional local model read in lines the rules could not. It never ticks a step. */
 export type ModelHints = { intent?: { id: "damaged" | "order-status"; key: string } };
@@ -312,6 +321,19 @@ function damageQuestion(text: string): "arrival" | "extent" | null {
 const saysYes = (text: string) =>
   /^(yes|yeah|yep|yup|correct|that's right|that is right|right|exactly|it is|it was|it did)\b/i.test(text.trim()) &&
   !/\b(not|no|never|but|although|though|except)\b|n't\b/i.test(text.replace(/^\W*\w+/, ""));
+
+/**
+ * The agent says the caller's full name back as a question ("That's Sam Miller, is that right?"): every word of
+ * the record's name, in order and word for word. No sound-alike counts: the point is the agent's clean mic, not
+ * the caller's phone audio. Recognition drops question marks, so a tag question counts too; a negated line never.
+ */
+const readsBackName = (text: string, customer: Customer) => {
+  const said = textWords(text);
+  const name = textWords(customer.name);
+  const named = said.some((_, i) => name.every((w, j) => said[i + j] === w));
+  const asks = /\?/.test(text) || /\b(is that (right|correct)|did i get that( right)?)\b/i.test(text);
+  return named && asks && !/\b(not|no|never)\b|n't\b/i.test(text);
+};
 
 /** The caller says they or someone else damaged it after it arrived: not damage on arrival. */
 const CAUSED_AFTER =
@@ -372,6 +394,9 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
   let verifiedAt: Evidence | undefined;
   let locked = false;
   let expecting: "name" | "address" | "order" | null = null;
+  // The agent's latest question for the name, and their read-back of it still waiting for the caller's answer.
+  let nameAsk: Evidence | null = null;
+  let readBack: Evidence | null = null;
   /**
    * `differ`: the two speech models read different complete order numbers from this answer (or the
    * check lost one the fast model had). Both readings are kept as candidates and the order needs a
@@ -670,9 +695,27 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       callerMentions.push(...heard);
       lastCaller = { line, ev, expecting };
 
+      // The caller's next line after the agent said the name back: a clear yes verifies it, labelled. A bare
+      // yes is never the name itself, so it isn't heard as an answer; anything else is heard as usual.
+      const backed = readBack;
+      readBack = null;
+      const yesToReadBack = !!backed && !locked && name.state !== "ok" && saysYes(line.text);
+      if (yesToReadBack && !ev.lowConfidence) {
+        if (pending?.factor === name) pending = null;
+        name.state = "ok";
+        name.evidence = backed;
+        name.confirmedBy = ev;
+        name.knownAt = Math.max(backed.knownAt, ev.knownAt);
+        name.confirmReason = undefined;
+        name.method = "read back by the agent, confirmed by the caller";
+        markVerified(ev);
+      }
+
       if (!locked) {
         // The factor the agent asked for; the other only counts if volunteered as a clear match.
-        if (expecting === "name") hear(name, line, ev);
+        if (yesToReadBack) {
+          // Handled above.
+        } else if (expecting === "name") hear(name, line, ev);
         else if (name.state !== "ok" && matchName(line.text, customer) === "match") matched(name, ev, doubt([ev], line.text));
         if (expecting === "address") hear(address, line, ev);
         else if (address.state !== "ok" && matchAddress(line.text, customer) === "match") matched(address, ev, doubt([ev], line.text), addressMethod(line.text));
@@ -707,7 +750,14 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       closeAnswer();
       lastCaller = null;
       const asks = agentAsksFor(line.text, !verified() && !locked);
-      if (!asks && (expecting === "name" || expecting === "address")) expecting = null;
+      // Saying the name back is allowed only after the caller answered the name question, before any failed
+      // attempt (a failure is corrected by typing the caller's words), and only when the client allows it.
+      const canReadBack =
+        !!pack.policy.nameReadBack && !locked && name.state !== "ok" && name.attempts === 0 && name.heard !== undefined && name.evidence?.side === "caller";
+      readBack = !asks && canReadBack && !ev.lowConfidence && readsBackName(line.text, customer) ? ev : null;
+      if (readBack) expecting = "name";
+      else if (!asks && (expecting === "name" || expecting === "address")) expecting = null;
+      if (asks === "name") nameAsk = ev;
       if (asks) {
         expecting = asks;
         const factor = asks === "name" ? name : asks === "address" ? address : null;
@@ -1193,8 +1243,31 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
   }
 
   /* ---------- Please-confirm prompts (low confidence never ticks a step) ---------- */
+  // Whether saying the name back counts now (see Policy.nameReadBack and the agent branch above).
+  const readBackState: "off" | "available" | "waiting" = !pack.policy.nameReadBack || locked || name.attempts > 0 ? "off" : readBack ? "waiting" : "available";
+  // The name card leads with what to do: reading a diagnosis first cost about 3 s on the 21 Oct stage call.
+  const nameAction = readBackState === "available" ? "Say it back as you heard it and wait for the caller's yes, or type it (N)." : "Type what the caller said (N), or ask again.";
   for (const f of [name, address]) {
-    if (f.state === "confirm" && f.evidence) {
+    if (f.state === "confirm" && f.evidence && f.id === "name") {
+      const heard = f.heard ?? f.evidence.text;
+      prompts.push({
+        target: "name",
+        askAgain: !confirmable(f) || undefined,
+        text:
+          !confirmable(f) && (f.confirmReason === "low-confidence" || f.confirmReason === "garbled")
+            ? `Name not recognised. ${nameAction} Heard "${heard}"${f.confirmReason === "garbled" ? ", which looks garbled (the same words repeated)" : " with low confidence"}, and it doesn't match the name on the order. Typed words are checked against the order.`
+            : f.confirmReason === "disagree"
+            ? `Name not recognised. ${nameAction} Heard "${f.heard}", first heard as "${f.evidence.firstHeard}": the two speech models disagree, so it isn't counted as a wrong answer.`
+            : f.confirmReason === "ambiguous"
+            ? `Ask for the full name once more. Heard "${f.heard}": it names more than one name, or denies part of one, so it isn't counted either way.`
+            : f.confirmReason === "sounds-like"
+            ? `Name unclear. Confirm if you heard it clearly, or ${nameAction[0].toLowerCase()}${nameAction.slice(1)} Heard "${f.heard}": it sounds like the name on the order but isn't a clear match.`
+            : f.confirmReason === "garbled"
+              ? `Name unclear. Confirm if you heard it clearly, or ${nameAction[0].toLowerCase()}${nameAction.slice(1)} Heard "${f.heard}", which looks garbled (the same words repeated).`
+              : `Name unclear. Confirm if you heard it clearly (recorded as confirmed by you), or ${nameAction[0].toLowerCase()}${nameAction.slice(1)} Heard "${heard}" with low confidence.`,
+        evidence: f.evidence,
+      });
+    } else if (f.state === "confirm" && f.evidence) {
       const what = f.id === "name" ? "name" : "address";
       prompts.push({
         target: f.id,
@@ -1217,7 +1290,10 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       // The caller has finished and only part of the answer matched: never a failed attempt, nothing to confirm.
       prompts.push({
         target: f.id,
-        text: `Heard "${f.heard}", which matches only part of the ${f.id === "name" ? "name" : "address"} on the order. Ask for the ${f.id === "name" ? "full name" : "street and city"} again, without saying which part didn't match.`,
+        text:
+          f.id === "name"
+            ? `Ask for the full name again, without saying which part didn't match. Heard "${f.heard}", which matches only part of the name on the order.`
+            : `Heard "${f.heard}", which matches only part of the address on the order. Ask for the street and city again, without saying which part didn't match.`,
         evidence: f.evidence,
         askAgain: true,
       });
@@ -1267,6 +1343,20 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       evidence: intent?.evidence[0],
       askAgain: true,
     });
+  }
+
+  /* ---------- Where the agent types the caller's name ---------- */
+  // From the moment the caller's answer arrives, while the second speech model still checks it, unless the fast
+  // model already heard a clear match. A typed answer replaces the line and a late check can't overwrite it.
+  let nameEntry: CopilotView["nameEntry"] = null;
+  if (name.state !== "ok") {
+    const asked = nameAsk as Evidence | null;
+    const checkingAnswer =
+      asked && expecting === "name" && !readBack
+        ? [...corrected].reverse().find((l) => l.checking && l.side === "caller" && l.startedAt > asked.at && matchName(l.text, customer) !== "match")
+        : undefined;
+    if (checkingAnswer) nameEntry = { key: checkingAnswer.key, checking: true, readBack: readBackState };
+    else if (name.evidence?.side === "caller") nameEntry = { key: name.evidence.key, checking: false, readBack: readBackState };
   }
 
   /* ---------- SOP steps ---------- */
@@ -1432,8 +1522,11 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       // negated and heard clearly: keywords alone passed "a refund of 999 dollars… we do not need a scan"
       // (outside review of call 7, §6). Only then the closing question.
       const since = choice.evidence.at;
+      // Heard clearly as recognised: a failed check leaves a line as first heard. The recheck below asks for a
+      // better reading; it never takes away a term the line was heard saying.
+      const clear = (l: TranscriptEvent) => !(l.confidence !== null && l.confidence < LOW_CONFIDENCE);
       const toldRaw = ordered
-        .filter((l) => l.side === "agent" && l.startedAt >= since && !evidenceOf(l).lowConfidence)
+        .filter((l) => l.side === "agent" && l.startedAt >= since && clear(l))
         .map((l) => l.text)
         .join(" ");
       const told = normalize(toldRaw);
@@ -1475,7 +1568,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
               { label: "Return label", key: /\blabel\b/, said: says(/\blabel\b/), text: "You'll get an email with a free return label for the damaged one." },
             ];
       // The record keeps each term with the line that said it (call 8 review).
-      const agentSince = ordered.filter((l) => l.side === "agent" && l.startedAt >= since && !evidenceOf(l).lowConfidence);
+      const agentSince = ordered.filter((l) => l.side === "agent" && l.startedAt >= since && clear(l));
       termRecord = terms.map((t) => {
         const affirmed = (text: string) => { const f = findAffirmed(text, t.key); return !!f && !f.negated; };
         // A term split across lines ("…ships" / "today.") is quoted by the line that completed it.
@@ -1483,6 +1576,18 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
         return { label: t.label, said: t.said, evidence: line ? evidenceOf(line) : undefined };
       });
       const unsaid = terms.filter((t) => !t.said).map((t) => t.text);
+      // While a term isn't heard, each agent line since the approval gets the second speech model's check, once:
+      // "It's issued when the carriers can't return" (for "…the carrier scans the return") was never re-heard on
+      // the 21 Oct stage call. What counts is still decided above, negations included.
+      if (unsaid.length) {
+        const approvedAt = recommendation.approval.at ?? Infinity;
+        for (const l of agentSince) {
+          if (l.endedAt <= approvedAt || keyAnswers.includes(l.key)) continue;
+          keyAnswers.push(l.key);
+          const entry = agentChecks.find((c) => c.key === l.key);
+          if (entry) Object.assign(entry, { check: true, reason: "a term isn't heard yet since the approval" });
+        }
+      }
       suggestedReply = unsaid.length
         ? reply(unsaid.join(" "), recommendation.prepared.kind === "refund" ? "Scenario B" : "Scenario A")
         : neutral("Is there anything else I can help with?", "Required documentation");
@@ -1575,6 +1680,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       ...(["name", "address"] as const).filter((t) => confirmedByPress.has(t)),
       ...(match?.confirmedBy === "panel" ? (["order"] as const) : []),
     ],
+    nameEntry,
   };
   givenIn.set(view, given);
   return view;

@@ -111,6 +111,12 @@ export type Policy = {
   photoDays: number;
   repeatClaimWindowDays: number;
   maxVerificationAttempts: number;
+  /**
+   * The agent saying the caller's full name back, word for word, and the caller's clear yes verify the name,
+   * labelled "read back by the agent, confirmed by the caller". Off unless the client's verification rules
+   * allow it (stage call review, 21 Oct: the caller's name arrives as phone audio, the agent's words don't).
+   */
+  nameReadBack?: boolean;
   authority: AuthorityBand[];
   refundTiming: string;
   /** A verb phrase that follows "it": "ships the same day by expedited shipping". Say when it ships, never when it arrives. */

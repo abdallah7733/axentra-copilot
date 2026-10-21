@@ -496,7 +496,7 @@ test("13 Oct call 9: Confirm can't verify a name that doesn't match; the agent t
   const prompt = v.prompts.find((p) => p.target === "name")!;
   assert.equal(prompt.askAgain, true, "no Confirm button for text that doesn't match");
   assert.match(prompt.text, /doesn't match the name on the order/);
-  assert.match(prompt.text, /type what they said/);
+  assert.match(prompt.text, /^Name not recognised\. Type what the caller said \(N\)/, "the card leads with what to do");
 
   // An accidental press (call 9) verifies nothing.
   const at = events(s)[5].endedAt + 500;
@@ -520,7 +520,7 @@ test("a low-confidence name that matches the order keeps the plain confirm promp
   const v = after(s, 6);
   assert.equal(v.verification.factors[0].state, "confirm");
   const prompt = v.prompts.find((p) => p.target === "name")!.text;
-  assert.match(prompt, /confirm if you heard it clearly/);
+  assert.match(prompt, /^Name unclear\. Confirm if you heard it clearly/);
   assert.doesNotMatch(prompt, /doesn't match/);
 });
 
