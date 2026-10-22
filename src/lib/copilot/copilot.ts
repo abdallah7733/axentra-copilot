@@ -17,6 +17,8 @@ import { deniesIdentity, isFiller, matchAddress, matchName, soundsLikeRecord } f
 
 /** Recognition confidence below this is "low confidence", as shown in the transcript. */
 export const LOW_CONFIDENCE = 0.6;
+/** A sentence that restates a term on purpose, superseding a wrong number said before it (normalised text). */
+const CORRECTION = /^(sorry )?(just )?(to be clear|to confirm|correction|i mean|i meant|i misspoke|let me correct( that)?|to correct that)\b/;
 
 /**
  * A pause can split one identity answer into two lines ("Hill Road, in Dallas" came out as
@@ -210,6 +212,13 @@ export type CopilotView = {
     /** After a refusal: ask for the full name again, or type the name (only for a yes the system couldn't confirm). */
     readBackRecovery?: "ask" | "type";
   } | null;
+  /**
+   * Where the agent types the caller's street and city, the same way as the name: from the moment the caller's
+   * answer to the address question arrives, while the second speech model still checks it (22 Oct call: about
+   * 20 s went on the address, typed into a card that came only after both models had heard it wrong). Shown once
+   * the name is verified; null once the address is. Typed words are checked against the order as before.
+   */
+  addressEntry: { key: string; checking: boolean } | null;
 };
 
 const DAY = 86_400_000;
@@ -469,6 +478,8 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
   let expecting: "name" | "address" | "order" | null = null;
   // The agent's latest question for the name, and their read-back of it still waiting for the caller's answer.
   let nameAsk: Evidence | null = null;
+  // The agent's latest question for the street and city (or email).
+  let addressAsk: Evidence | null = null;
   // The agent's read-back waiting for the caller's reply, and the reply that ended read-back for this call.
   let readBack: { ev: Evidence; endedAt: number } | null = null;
   let readBackRefused: { ev: Evidence; why: string; recovery: "ask" | "type" } | null = null;
@@ -872,6 +883,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       if (readBack) expecting = "name";
       else if (!asks && (expecting === "name" || expecting === "address")) expecting = null;
       if (asks === "name") nameAsk = ev;
+      if (asks === "address") addressAsk = ev;
       if (asks) {
         expecting = asks;
         const factor = asks === "name" ? name : asks === "address" ? address : null;
@@ -1524,6 +1536,20 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
     else if (name.evidence?.side === "caller") nameEntry = { key: name.evidence.key, checking: false, readBack: readBackState, ...extra };
   }
 
+  /* ---------- Where the agent types the street and city ---------- */
+  // The same as the name field, once the name is verified: from the moment the caller's answer arrives, unless the
+  // fast model already heard a clear match. Never while identity is locked after too many failed attempts.
+  let addressEntry: CopilotView["addressEntry"] = null;
+  if (name.state === "ok" && address.state !== "ok" && !locked) {
+    const asked = addressAsk as Evidence | null;
+    const checkingAnswer =
+      asked && expecting === "address"
+        ? [...corrected].reverse().find((l) => l.checking && l.side === "caller" && l.startedAt > asked.at && matchAddress(l.text, customer) !== "match")
+        : undefined;
+    if (checkingAnswer) addressEntry = { key: checkingAnswer.key, checking: true };
+    else if (address.evidence?.side === "caller") addressEntry = { key: address.evidence.key, checking: false };
+  }
+
   /* ---------- SOP steps ---------- */
   const factorStep = (f: Factor): StepStatus =>
     locked && f.state !== "ok" ? "blocked" : f.state === "ok" ? "done" : f.state === "confirm" || f.state === "failed" || f.state === "partial" ? "attention" : f.state === "asking" ? "active" : "pending";
@@ -1616,7 +1642,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
   const reply = (text: string, section: string, rewordable = false) => ({ text, sopRef: ref(section), basis: "rules" as const, rewordable });
   const neutral = (text: string, section: string) => reply(text, section, true);
   let suggestedReply: CopilotView["suggestedReply"] = null;
-  let termRecord: { label: string; said: boolean; evidence?: Evidence }[] = [];
+  let termRecord: { label: string; said: boolean; evidence?: Evidence; saidInstead?: string; corrected?: string }[] = [];
   if (locked) {
     suggestedReply = reply("For your security I can't discuss the order on this call. I can arrange a call back to the phone number on the order.", "Verification");
   } else if (safety.length) {
@@ -1697,7 +1723,6 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
         .filter((l) => l.side === "agent" && l.startedAt >= since && clear(l))
         .sort((a, b) => a.startedAt - b.startedAt || a.seq - b.seq);
       const toldRaw = agentSince.map((l) => l.text).join(" ");
-      const told = normalize(toldRaw);
       // Sentence by sentence over the agent's own words, with every negation (contractions included):
       // the first affirmed sentence counts, so a term repeated after a negated one is heard (Call 13 review).
       const says = (pattern: RegExp) => {
@@ -1708,21 +1733,66 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       // often drops the "$": "a full refund of 329 to your visa ending 2208" (Call 12 review, RC12-01), so a
       // number straight after "refund of" counts too. Any other bare number (order 427, 3 to 5 days) doesn't.
       const cents = Math.round((o.price % 1) * 100);
-      const amounts = [...told.matchAll(/\$ ?(\d+)(?: (\d{2})\b)?|\b(\d+) dollars\b|\brefund (?:of|for) (\d+)(?: (\d{2})\b)?/g)].map((m) => ({
-        whole: Number(m[1] ?? m[3] ?? m[4]),
-        cents: Number(m[2] ?? m[5] ?? 0),
-      }));
-      const rightAmount = amounts.length > 0 && amounts.every((a) => a.whole === Math.floor(o.price) && a.cents === cents);
+      const amountsIn = (text: string) =>
+        [...normalize(text).matchAll(/\$ ?(\d+)(?: (\d{2})\b)?|\b(\d+) dollars\b|\brefund (?:of|for) (\d+)(?: (\d{2})\b)?/g)].map((m) => ({
+          whole: Number(m[1] ?? m[3] ?? m[4]),
+          cents: Number(m[2] ?? m[5] ?? 0),
+        }));
+      const isPrice = (a: { whole: number; cents: number }) => a.whole === Math.floor(o.price) && a.cents === cents;
       const last4 = o.payment?.match(/\d{4}$/)?.[0];
-      const cards = [...told.matchAll(/\bending (?:in )?(\d[\d ]*\d)\b/g)].map((m) => m[1].replace(/ /g, ""));
-      const rightCard = last4 ? cards.length > 0 && cards.every((c) => c === last4) : says(/\boriginal payment\b/);
+      const cardsIn = (text: string) => [...normalize(text).matchAll(/\bending (?:in )?(\d[\d ]*\d)\b/g)].map((m) => m[1].replace(/ /g, ""));
+      // A wrong number is put right only explicitly (outside review of 22 Oct, item 7: no "last number wins"): a
+      // sentence that opens "To be clear", "To confirm", "Correction", "I mean", "I misspoke" or "Let me correct that"
+      // and says the record's number supersedes the numbers of that kind said before it, and the record keeps both.
+      // Everything said from there on must be right. A plain repeat, or "299, sorry, 329" in one sentence, doesn't.
+      const corrections = agentSince
+        .flatMap((l, i) =>
+          l.text.split(/(?<=[.!?;])\s+/).flatMap((part, j, parts) =>
+            CORRECTION.test(normalize(part)) ? [{ line: l, text: [parts.slice(j).join(" "), ...agentSince.slice(i + 1).map((x) => x.text)].join(" ") }] : []
+          )
+        )
+        .reverse();
+      const saidAmounts = amountsIn(toldRaw);
+      const saidCards = cardsIn(toldRaw);
+      // The correction itself must not be negated ("To be clear: it doesn't go to the Visa ending 2208").
+      const affirmedIn = (text: string, pattern: RegExp) => { const f = findAffirmed(text, pattern); return !!f && !f.negated; };
+      const amountFix = saidAmounts.some((a) => !isPrice(a))
+        ? corrections.find((c) => amountsIn(c.text).length > 0 && amountsIn(c.text).every(isPrice) && affirmedIn(c.text, /\$ ?\d|\b\d+ dollars\b|\brefund (?:of|for) \d/))
+        : undefined;
+      const cardFix = last4 && saidCards.some((c) => c !== last4)
+        ? corrections.find((c) => cardsIn(c.text).length > 0 && cardsIn(c.text).every((d) => d === last4) && affirmedIn(c.text, /\bending\b/))
+        : undefined;
+      const amounts = amountFix ? amountsIn(amountFix.text) : saidAmounts;
+      const cards = cardFix ? cardsIn(cardFix.text) : saidCards;
+      const rightAmount = amounts.length > 0 && amounts.every(isPrice);
+      const rightCard = last4 ? cards.length > 0 && cards.every((c) => c === last4) && says(/\bending\b/) : says(/\boriginal payment\b/);
+      // A number said that isn't the record's is named in the record, so "not heard" can't hide a wrong one.
+      const wrongAmounts = saidAmounts.filter((a) => !isPrice(a)).map((a) => (a.cents ? `${a.whole}.${String(a.cents).padStart(2, "0")}` : `${a.whole}`));
+      const wrongCards = last4 ? saidCards.filter((c) => c !== last4) : [];
       const spelled = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
       const [low, high] = (pack.policy.refundTiming.match(/\d+/g) ?? []).map((n) => `(${n}|${spelled[Number(n)] ?? n})`);
       const timing = new RegExp(`\\b${low} to ${high} (business )?days\\b`);
       const terms =
         recommendation.prepared.kind === "refund"
           ? [
-              { label: "Refund amount and card", key: /\brefund/, said: says(/\brefund/) && rightAmount && rightCard, text: `I've set up a full refund of ${money(o.price)} to your ${o.payment ?? "original payment method"}.` },
+              // Amount and card are separate terms (22 Oct call: "a full refund of $329" was heard, the card ending
+              // wasn't, and one combined "amount and card" item hid which part was missing).
+              {
+                label: "Refund amount",
+                key: /\brefund/,
+                said: says(/\brefund/) && rightAmount,
+                text: `That's a full refund of ${money(o.price)}.`,
+                ...(wrongAmounts.length ? { saidInstead: wrongAmounts.join(", ") } : {}),
+                ...(amountFix ? { from: amountFix.line } : {}),
+              },
+              {
+                label: "Card it goes to",
+                key: last4 ? /\bending\b/ : /\boriginal payment\b/,
+                said: rightCard,
+                text: `The refund goes to your ${o.payment ?? "original payment method"}.`,
+                ...(wrongCards.length ? { saidInstead: `ending ${wrongCards.join(", ")}` } : {}),
+                ...(cardFix ? { from: cardFix.line } : {}),
+              },
               {
                 label: "When it's issued and how long it takes",
                 key: /\bscan/,
@@ -1739,20 +1809,31 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       termRecord = terms.map((t) => {
         const affirmed = (text: string) => { const f = findAffirmed(text, t.key); return !!f && !f.negated; };
         // A term split across lines ("…ships" / "today.") is quoted by the line that completed it.
-        const line = t.said ? (agentSince.find((l) => affirmed(l.text)) ?? agentSince.find((_, i) => affirmed(agentSince.slice(0, i + 1).map((l) => l.text).join(" ")))) : undefined;
-        return { label: t.label, said: t.said, evidence: line ? evidenceOf(line) : undefined };
+        // A corrected number is quoted by the line that corrected it, and the record keeps what it replaced.
+        const fixed = "from" in t ? t.from : undefined;
+        const line = t.said ? (fixed ?? agentSince.find((l) => affirmed(l.text)) ?? agentSince.find((_, i) => affirmed(agentSince.slice(0, i + 1).map((l) => l.text).join(" ")))) : undefined;
+        const instead = "saidInstead" in t ? t.saidInstead : undefined;
+        return { label: t.label, said: t.said, evidence: line ? evidenceOf(line) : undefined, ...(instead ? (t.said ? { corrected: instead } : { saidInstead: instead }) : {}) };
       });
-      const unsaid = terms.filter((t) => !t.said).map((t) => t.text);
-      // While a term isn't heard, each agent line since the approval gets the second speech model's check, once:
-      // "It's issued when the carriers can't return" (for "…the carrier scans the return") was never re-heard on
-      // the 21 Oct stage call. What counts is still decided above, negations included.
+      const missing = terms.filter((t) => !t.said);
+      // Both the amount and the card missing: the one sentence that says both. After a wrong number (as heard), the
+      // suggestion opens with "To be clear", which the rules above take as the correction.
+      const both =
+        missing[0]?.label === "Refund amount" && missing[1]?.label === "Card it goes to"
+          ? [`I've set up a full refund of ${money(o.price)} to your ${o.payment ?? "original payment method"}.`, ...missing.slice(2).map((t) => t.text)]
+          : missing.map((t) => t.text);
+      const unsaid = missing.some((t) => "saidInstead" in t && t.saidInstead) && both.length ? [`To be clear: ${/^I\b/.test(both[0]) ? both[0] : both[0][0].toLowerCase() + both[0].slice(1)}`, ...both.slice(1)] : both;
+      // While a term isn't heard, each agent line since the customer's choice gets the second speech model's check,
+      // once: "It's issued when the carriers can't return" (for "…the carrier scans the return") was never re-heard
+      // on the 21 Oct stage call. Lines that ended before the Approve press count for the terms, so they are
+      // re-heard too: on the 22 Oct call the refund sentence ended about when Approve was pressed, and its card
+      // ending was never heard. What counts is still decided above, negations included.
       if (unsaid.length) {
-        const approvedAt = recommendation.approval.at ?? Infinity;
         for (const l of agentSince) {
-          if (l.endedAt <= approvedAt || keyAnswers.includes(l.key)) continue;
+          if (keyAnswers.includes(l.key)) continue;
           keyAnswers.push(l.key);
           const entry = agentChecks.find((c) => c.key === l.key);
-          if (entry) Object.assign(entry, { check: true, reason: "a term isn't heard yet since the approval" });
+          if (entry) Object.assign(entry, { check: true, reason: "a term isn't heard yet since the customer chose" });
         }
       }
       suggestedReply = unsaid.length
@@ -1822,7 +1903,11 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
     {
       // "Not heard": the copilot only knows what recognition gave it, not what the customer heard (Call 12 review).
       label: "Terms heard",
-      value: approved && termRecord.length ? termRecord.map((t) => `${t.label}: ${t.evidence ? `"${t.evidence.text}" (${clock(t.evidence.at)})` : "not heard yet"}`).join("; ") : null,
+      value: approved && termRecord.length
+        ? termRecord
+            .map((t) => `${t.label}: ${t.evidence ? `"${t.evidence.text}" (${clock(t.evidence.at)}${t.corrected ? `, correcting ${t.corrected} said before` : ""})` : t.saidInstead ? `not heard yet (said as ${t.saidInstead}, which isn't the order's)` : "not heard yet"}`)
+            .join("; ")
+        : null,
     },
   ];
 
@@ -1848,6 +1933,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       ...(match?.confirmedBy === "panel" ? (["order"] as const) : []),
     ],
     nameEntry,
+    addressEntry,
   };
   givenIn.set(view, given);
   return view;

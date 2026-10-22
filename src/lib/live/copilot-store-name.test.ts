@@ -90,6 +90,35 @@ test("after approval, a terms line goes to the check while a term is missing, an
   liveEvents.emit({ type: "cleared" });
 });
 
+test("pressing Approve sends a terms line that ended before the press for its check, once (22 Oct call)", () => {
+  const asked: string[] = [];
+  useLive.setState({ checkLine: (key) => (asked.push(key), key.startsWith("a") ? "started" : "no-audio") });
+  liveEvents.emit({ type: "call-started", callId: "CA-5", at: T0 });
+  const said: [string, "caller" | "agent", string][] = [
+    ["a1", "agent", "Thank you for calling Sunlake. How can I help you today?"],
+    ["c1", "caller", "Hello. I need help with order 427. The tablet came yesterday, and the screen is cracked."],
+    ["a2", "agent", "First, can I have your full name, please?"],
+    ["c2", "caller", "Sam Miller."],
+    ["a3", "agent", "Thank you. And the street and city for the delivery?"],
+    ["c3", "caller", "Hill Road, in Dallas."],
+    ["a4", "agent", "Thank you, Sam. I can see the tablet on order 427. Is the damage only on the screen?"],
+    ["c4", "caller", "Yes, only the screen."],
+    ["a5", "agent", "You can have either. A new tablet ships today at no cost, or a full refund. Which do you prefer?"],
+    ["c5", "caller", "The refund, please."],
+    // Said before the press, with no approval or outcome heard in it: not checked yet (the 21 Oct misheard line).
+    ["a6", "agent", "It's issued when the carriers can't return."],
+  ];
+  said.forEach(([key, side, text], i) => emit(line("CA-5", i + 1, key, side, text, i * 5000)));
+  assert.ok(!asked.includes("a6"));
+  useCopilot.getState().approve();
+  assert.equal(useCopilot.getState().view.recommendation?.approval.state, "approved");
+  assert.ok(asked.includes("a6"), "no term is heard yet: the press sends the earlier line for its check");
+  assert.equal(useCopilot.getState().lines.find((l) => l.key === "a6")?.checking, true);
+  useCopilot.getState().confirm("choice");
+  assert.equal(asked.filter((k) => k === "a6").length, 1, "checked once");
+  liveEvents.emit({ type: "cleared" });
+});
+
 test("the stage card's short row 15 lines count as first heard while their checks run; a checked text replaces them", () => {
   const run = (sentences: string[]) => {
     const asked: string[] = [];

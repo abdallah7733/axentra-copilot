@@ -75,6 +75,12 @@ type LiveState = {
   callStartedAt: number | null;
   callEndedAt: number | null;
   lines: LiveLine[];
+  /**
+   * Phrases this call that never became a line: too little voice to send, or the fast model returned no words.
+   * Counted per side so a lost phrase shows up in Call details (22 Oct call: the refund sentence's card ending
+   * never appeared, with nothing on screen to say whether audio was lost).
+   */
+  dropped: Record<Side, { short: number; empty: number }>;
   delays: number[];
   levels: { agent: number; caller: number; agentInput: string } | null;
   mics: Mic[];
@@ -103,6 +109,7 @@ type LiveState = {
 };
 
 const MIC_KEY = "axentra-mic-label";
+const noDrops = (): Record<Side, { short: number; empty: number }> => ({ agent: { short: 0, empty: 0 }, caller: { short: 0, empty: 0 } });
 
 /** Shown on a projected screen, so keep only the country code and last four digits. */
 const maskNumber = (from: string | undefined) => {
@@ -218,13 +225,21 @@ export const useLive = create<LiveState>((set, get) => {
   /** One queue per side so each speaker's phrases stay in order. */
   function sideSink(side: Side, callEpoch: number) {
     let queue = Promise.resolve();
+    const drop = (why: "short" | "empty") => {
+      const dropped = get().dropped;
+      set({ dropped: { ...dropped, [side]: { ...dropped[side], [why]: dropped[side][why] + 1 } } });
+    };
     return (phrase: Phrase) => {
-      if (!phrase.samples) return;
+      if (!phrase.samples) {
+        if (callEpoch === epoch) drop("short");
+        return;
+      }
       const samples = phrase.samples;
       queue = queue
         .then(async () => {
           const result = await recognize(side, samples);
-          if (callEpoch !== epoch || !result.text) return;
+          if (callEpoch !== epoch) return;
+          if (!result.text) return drop("empty");
           // Kept for the second model's check: caller answers, and agent lines the copilot may ask about.
           recentAudio.set(`${side}-${phrase.id}`, samples);
           for (const key of [...recentAudio.keys()].slice(0, -RECENT_AUDIO)) recentAudio.delete(key);
@@ -297,6 +312,7 @@ export const useLive = create<LiveState>((set, get) => {
     callStartedAt: null,
     callEndedAt: null,
     lines: [],
+    dropped: noDrops(),
     delays: [],
     levels: null,
     mics: [],
@@ -410,6 +426,7 @@ export const useLive = create<LiveState>((set, get) => {
             status: "Incoming call",
             callerFrom: maskNumber(call.parameters.From),
             lines: [],
+            dropped: noDrops(),
             delays: [],
             levels: null,
             error: null,
@@ -441,7 +458,7 @@ export const useLive = create<LiveState>((set, get) => {
     hangUp: () => currentCall?.disconnect(),
     clearTranscript: () => {
       cancelReplay();
-      set({ lines: [], delays: [], levels: null, callStartedAt: null, callEndedAt: null });
+      set({ lines: [], dropped: noDrops(), delays: [], levels: null, callStartedAt: null, callEndedAt: null });
       liveEvents.emit({ type: "cleared" });
     },
 
@@ -452,7 +469,7 @@ export const useLive = create<LiveState>((set, get) => {
       epoch++;
       startCall(`replay-${Date.now()}`);
       const began = performance.now();
-      set({ replaying: true, lines: [], delays: [], levels: null, error: null, callerFrom: "Replay, no call", callStartedAt: began, callEndedAt: null });
+      set({ replaying: true, lines: [], dropped: noDrops(), delays: [], levels: null, error: null, callerFrom: "Replay, no call", callStartedAt: began, callEndedAt: null });
       script.forEach((l, i) => {
         replayTimers.push(
           setTimeout(() => {

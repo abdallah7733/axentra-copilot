@@ -120,7 +120,7 @@ test("Call 12: while the refund line was checked, the wrong-outcome line is show
 
 test("Call 12: the refund amount and card are heard from 'refund of 329 … ending 2208'; the misheard label stays unheard", () => {
   const terms = doc(at(END), "Terms heard")!;
-  assert.match(terms, /^Refund amount and card: "of set a full refund of 329 to your visa ending 2208\." \(/);
+  assert.match(terms, /^Refund amount: "of set a full refund of 329 to your visa ending 2208\." \(.*\); Card it goes to: "of set a full refund of 329 to your visa ending 2208\." \(/);
   assert.match(terms, /When it's issued and how long it takes: "It's issued when/);
   assert.match(terms, /Return label: not heard yet$/, "'free refund level' is never turned into 'free return label'");
   assert.equal(at(END).suggestedReply?.text, "You'll get an email with a free return label.");
@@ -143,7 +143,8 @@ const refundWith = (...said: string[]) => {
   }));
   return analyze(sunlake, events, [{ type: "approve", at: NOW - 600_000 + 10 * 5000 + 4000 }], NOW);
 };
-const amountHeard = (v: CopilotView) => !/Refund amount and card: not heard yet/.test(doc(v, "Terms heard") ?? "");
+const amountHeard = (v: CopilotView) => !/Refund amount: not heard yet/.test(doc(v, "Terms heard") ?? "");
+const cardHeard = (v: CopilotView) => !/Card it goes to: not heard yet/.test(doc(v, "Terms heard") ?? "");
 
 test("RC12-01: the refund amount counts with '$', 'dollars' or straight after 'refund of', and only when it is the order's", () => {
   assert.equal(refundWith("I've set up a full refund of $329.00 to your Visa ending 2208.").recommendation?.approval.state, "approved");
@@ -153,11 +154,14 @@ test("RC12-01: the refund amount counts with '$', 'dollars' or straight after 'r
   assert.ok(amountHeard(refundWith("A full refund of 329.00 to your Visa ending 2208.")));
   assert.ok(!amountHeard(refundWith("A full refund of 299 to your Visa ending 2208.")), "a different amount");
   assert.ok(!amountHeard(refundWith("A full refund to your Visa ending 2208.")), "card digits without an amount");
+  assert.ok(cardHeard(refundWith("A full refund to your Visa ending 2208.")), "the card is its own term (22 Oct call)");
   assert.ok(!amountHeard(refundWith("That's order 427, refunded to your Visa ending 2208.")), "the order number is not money");
   // Negation is the shared three-word check ("no", "not", "don't"…); "haven't" isn't in it yet (Step 7-8 fixtures).
   assert.ok(!amountHeard(refundWith("There's no refund of 329 to your Visa ending 2208.")), "negated");
   assert.ok(!amountHeard(refundWith("A full refund of 299, sorry, 329 dollars to your Visa ending 2208.")), "a corrected wrong amount: both were said");
-  assert.ok(!amountHeard(refundWith("A full refund of 329 to your Visa ending 1234.")), "the wrong card");
+  const wrongCard = refundWith("A full refund of 329 to your Visa ending 1234.");
+  assert.ok(amountHeard(wrongCard) && !cardHeard(wrongCard), "the wrong card: the amount still counts, the card doesn't");
+  assert.match(doc(wrongCard, "Terms heard")!, /Card it goes to: not heard yet \(said as ending 1234, which isn't the order's\)/);
 });
 
 /* ---------- RC12-03: approved isn't documented while a term is unheard ---------- */

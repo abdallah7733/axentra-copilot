@@ -94,6 +94,7 @@ export function CallDetails({ className }: { className?: string }) {
   const mics = useLive((s) => s.mics);
   const micId = useLive((s) => s.micId);
   const replaying = useLive((s) => s.replaying);
+  const dropped = useLive((s) => s.dropped);
   const assistTimes = useCopilot((s) => s.assistTimes);
   const assistLog = useCopilot((s) => s.assistLog);
   const [now, setNow] = useState(0);
@@ -134,6 +135,18 @@ export function CallDetails({ className }: { className?: string }) {
             </Mono>
           </Row>
           <NameTiming />
+          {/* Speech that never became a line. Zero is the expected value; a count means words may be missing. */}
+          <Row label="Phrases with no text">
+            <Mono>
+              {(["agent", "caller"] as const)
+                .map((side) => {
+                  const { short, empty } = dropped[side];
+                  const parts = [short && `${short} too short`, empty && `${empty} no words`].filter(Boolean).join(", ");
+                  return `${side === "agent" ? "Agent" : "Caller"} ${short + empty}${parts ? ` (${parts})` : ""}`;
+                })
+                .join(" · ")}
+            </Mono>
+          </Row>
           {/* After a call, the input the call really used, which can differ from the selection. */}
           <Row label="Agent microphone">{levels?.agentInput ?? mics.find((m) => m.id === micId)?.label ?? "System default"}</Row>
           {levels && (
@@ -179,7 +192,10 @@ export function CallDetails({ className }: { className?: string }) {
           <Row label="Cloud AI">None</Row>
           {/* Ties a recording to the code it ran. */}
           <Row label="Console build">
-            <Mono>{process.env.NEXT_PUBLIC_BUILD_COMMIT || "development"}</Mono>
+            <Mono>
+              {process.env.NEXT_PUBLIC_BUILD_COMMIT || "development"}
+              {process.env.NEXT_PUBLIC_CONSOLE_CHANNEL === "development" ? ", development console" : ""}
+            </Mono>
           </Row>
         </dl>
         <p className="flex items-start gap-2 px-4 pb-4 pt-2 text-xs text-muted-foreground leading-relaxed">

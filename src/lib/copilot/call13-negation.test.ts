@@ -87,7 +87,7 @@ test("terms heard: a refusal or another timing doesn't tick a term, and a correc
   assert.match(terms(run("replacement", ["It ships within one business day."], true)), /Ships today: not heard yet/);
   assert.match(terms(run("replacement", ["I won't send a return label."], true)), /Return label: not heard yet/);
   assert.match(terms(run("replacement", ["I will not send you a free return label."], true)), /Return label: not heard yet/);
-  assert.match(terms(run("refund", ["I haven't set up a refund of 329 to your Visa ending 2208."], true)), /^Refund amount and card: not heard yet/);
+  assert.match(terms(run("refund", ["I haven't set up a refund of 329 to your Visa ending 2208."], true)), /^Refund amount: not heard yet; Card it goes to: not heard yet/);
 
   const recovered = run("replacement", ["There's no return label.", "You'll get an email with a free return label for the damaged one."], true);
   assert.match(terms(recovered), /Return label: "You'll get an email with a free return label for the damaged one\."/, "card A11's 'say it once more' now works");

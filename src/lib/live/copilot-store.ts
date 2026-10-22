@@ -102,6 +102,12 @@ export const useCopilot = create<CopilotState>((set, get) => {
     return useLive.getState().checkLine(line.key) === "started" ? { ...line, checking: true } : line;
   };
 
+  /** Lines the rules now name for a check (key answers, or agent lines while a term isn't heard) get it, once. */
+  const withChecks = (lines: TranscriptEvent[], actions: AgentAction[], hints: ModelHints) => {
+    const late = run(lines, actions, hints).view.keyAnswers.filter((key) => !requested.has(key));
+    return late.length ? lines.map((l) => (late.includes(l.key) ? requestCheck(l, true) : l)) : lines;
+  };
+
   const assistOn = () => useLive.getState().health?.assist === "local";
 
   async function assistReady(): Promise<boolean> {
@@ -206,7 +212,12 @@ export const useCopilot = create<CopilotState>((set, get) => {
     if (until !== undefined) expiryTimer = setTimeout(() => setView(run(get().lines, get().actions, get().hints)), Math.max(0, until - epochNow()) + 50);
     void assistReady().then((ready) => ready && askModel());
   };
-  const act = (action: AgentAction) => update(get().lines, [...get().actions, action], get().hints);
+  const act = (action: AgentAction) => {
+    const actions = [...get().actions, action];
+    // Approving can make the terms the agent already said count: a term still not heard sends those lines for
+    // their check now, not only when the next line arrives (22 Oct call: the refund sentence ended as Approve was pressed).
+    update(action.type === "approve" ? withChecks(get().lines, actions, get().hints) : get().lines, actions, get().hints);
+  };
 
   const reset = (callId: string | null) => {
     clearTimeout(settleTimer);
@@ -228,11 +239,9 @@ export const useCopilot = create<CopilotState>((set, get) => {
       // short answers heard on their own are where the fast model goes wrong.
       if (!known && get().view.awaiting) line = requestCheck(line);
       // A checked line replaces the one it re-checked.
-      let lines = [...get().lines.filter((l) => l.key !== line.key), line];
       // The two sides are transcribed separately, so an answer can arrive before the agent's question.
       // Once the conversation in speech order shows a line is a key answer, it gets its check too.
-      const late = run(lines, get().actions, get().hints).view.keyAnswers.filter((key) => !requested.has(key));
-      if (late.length) lines = lines.map((l) => (late.includes(l.key) ? requestCheck(l, true) : l));
+      const lines = withChecks([...get().lines.filter((l) => l.key !== line.key), line], get().actions, get().hints);
       update(lines, get().actions, get().hints);
       clearTimeout(settleTimer);
       settleTimer = setTimeout(() => setView(run(get().lines, get().actions, get().hints)), ANSWER_GAP_MS + 100);

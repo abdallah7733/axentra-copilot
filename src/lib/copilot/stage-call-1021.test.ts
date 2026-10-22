@@ -439,7 +439,7 @@ test("a misheard term after approval gets the second model's check, and the reco
   const v = view(refundCall([SET_UP, MISHEARD]), approveAfterChoice);
   assert.equal(v.recommendation?.approval.state, "approved");
   assert.ok(v.keyAnswers.includes("k13"), "the misheard terms line is checked");
-  assert.deepEqual(v.agentChecks.find((c) => c.key === "k13"), { key: "k13", check: true, reason: "a term isn't heard yet since the approval" });
+  assert.deepEqual(v.agentChecks.find((c) => c.key === "k13"), { key: "k13", check: true, reason: "a term isn't heard yet since the customer chose" });
 });
 
 test("once the check hears the term, the terms complete and later lines aren't held back", () => {
