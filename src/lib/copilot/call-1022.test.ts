@@ -74,13 +74,11 @@ test("22 Oct: the amount heard counts on its own; only the card is asked for, an
   assert.equal(docs(said).detail, "Terms heard on the call");
 });
 
-test("22 Oct: a terms line that ended before (or as) Approve was pressed still gets the second check while a term is missing", () => {
-  for (const pressed of [at(13, 3000), at(13, 3600), at(14, 100)]) {
-    const v = view(asHeard, [{ type: "approve", at: pressed }]);
-    assert.equal(v.recommendation?.approval.state, "approved");
-    assert.ok(v.keyAnswers.includes("k13"), "the refund sentence, whose card ending was dropped, is re-heard");
-    assert.deepEqual(v.agentChecks.find((c) => c.key === "k13"), { key: "k13", check: true, reason: "a term isn't heard yet since the customer chose" });
-  }
+test("22 Oct: the refund sentence said before Approve isn't re-checked, as an approval may rest on such lines; the terms said after it are", () => {
+  const v = view(asHeard, [{ type: "approve", at: at(13, 3000) }]);
+  assert.equal(v.recommendation?.approval.state, "approved");
+  assert.ok(!v.keyAnswers.includes("k13"), "ended as Approve was pressed: stays as heard");
+  assert.deepEqual(v.agentChecks.find((c) => c.key === "k14"), { key: "k14", check: true, reason: "a term isn't heard yet since the approval" });
   // With every term heard, nothing is held back or re-checked.
   const full = view(
     script({ 11: { side: "caller", text: "A refund, please." }, 12: null, 13: null, 14: null, 15: null }, [
@@ -90,7 +88,29 @@ test("22 Oct: a terms line that ended before (or as) Approve was pressed still g
     [{ type: "approve", at: at(11, 4000) }]
   );
   assert.equal(docs(full).detail, "Terms heard on the call");
-  assert.ok(!full.keyAnswers.includes("k13"));
+  assert.ok(!full.keyAnswers.includes("k12") && !full.keyAnswers.includes("k13"));
+});
+
+test("the lines an approval rests on are never sent for a check while a term is missing: the order read back after the choice, or the approving line", () => {
+  // Read back only after the choice, as the copilot suggests when the item isn't confirmed yet; then Approve.
+  const late = script({
+    8: { side: "agent", text: "Thank you, Sam. Is the damage only on the screen?" },
+    11: { side: "caller", text: "The refund, please." },
+    12: { side: "agent", text: "Just to confirm, that's order 427, the tablet?" },
+    13: { side: "caller", text: "Yes." },
+    14: null,
+    15: null,
+  });
+  assert.equal(view(late).recommendation?.approval.state, "awaiting");
+  const pressed = view(late, [{ type: "approve", at: at(13, 4000) }]);
+  assert.equal(pressed.recommendation?.approval.state, "approved");
+  assert.ok(!pressed.keyAnswers.includes("k12"), "the read-back stays as heard");
+  // Approved on the call with terms still missing: the approving line stays as heard, with its note.
+  const spoken = view(script({ 11: { side: "caller", text: "The refund, please." }, 12: { side: "agent", text: "Done. I've set up a full refund of $329." }, 13: null, 14: null, 15: null }));
+  assert.equal(spoken.recommendation?.approval.state, "approved");
+  assert.equal(spoken.recommendation?.approval.via, "call");
+  assert.ok(!spoken.keyAnswers.includes("k12"));
+  assert.deepEqual(spoken.agentChecks.find((c) => c.key === "k12"), { key: "k12", check: false, reason: "approval heard in this line" });
 });
 
 /* ---------- A wrong number is put right only explicitly (outside review, item 7) ---------- */
@@ -122,6 +142,25 @@ test("a wrong amount stays not heard after a plain repeat; the suggested restate
   // A correction with the wrong number, or a wrong number again after it, doesn't.
   assert.ok(!heard(refundWith("A full refund of $299 to your Visa ending 2208.", "To be clear: a full refund of $239."), "Refund amount"));
   assert.ok(!heard(refundWith("A full refund of $299 to your Visa ending 2208.", "To be clear: a full refund of $329.", "So $299 back to your card."), "Refund amount"));
+  // Spoken the usual ways: "I'm sorry, I misspoke", "Okay, to be clear", "$329, not $299", and a bare opening
+  // with the number in the next sentence, even on the next line (independent review of these fixes, 22 Oct).
+  assert.ok(heard(refundWith("A full refund of $299 to your Visa ending 2208.", "I'm sorry, I misspoke. That's a full refund of $329."), "Refund amount"));
+  assert.ok(heard(refundWith("A full refund of $299 to your Visa ending 2208.", "Okay, to be clear, that's a full refund of $329."), "Refund amount"));
+  const notThat = refundWith("A full refund of $299 to your Visa ending 2208.", "To be clear, that's $329, not $299.");
+  assert.ok(heard(notThat, "Refund amount"));
+  assert.match(doc(notThat, "Terms heard")!, /correcting 299 said before\)/, "the wrong number named once");
+  const split = refundWith("A full refund of $299 to your Visa ending 2208.", "To be clear,", "it's a full refund of $329.");
+  assert.ok(heard(split, "Refund amount"));
+  assert.match(doc(split, "Terms heard")!, /^Refund amount: "it's a full refund of \$329\." \(/, "quoted by the line that says the number");
+  // The correction must itself say the record's number: one about another term, a negated one, or a bare one
+  // followed by something else doesn't count, even with a plain repeat after it.
+  for (const later of [
+    ["To be clear, it goes to your Visa ending 2208.", "And it's $329."],
+    ["To confirm, you'll get an email with a free return label.", "So that's $329 back."],
+    ["To be clear: it's not $329.", "It's $329."],
+    ["I misspoke.", "You'll get an email with a free return label.", "It's $329."],
+  ])
+    assert.ok(!heard(refundWith("A full refund of $299 to your Visa ending 2208.", ...later), "Refund amount"), later.join(" / "));
   // An apology alone isn't a correction, nor is a negated one.
   assert.ok(!heard(refundWith("A full refund of $299 to your Visa ending 2208.", "Sorry about that, a full refund of $329."), "Refund amount"));
   assert.ok(!heard(refundWith("A full refund of $299 to your Visa ending 2208.", "To be clear: it's not $329."), "Refund amount"));
@@ -138,6 +177,9 @@ test("a wrong card ending is put right the same way, and the amount said with it
   assert.ok(heard(fixed, "Card it goes to"));
   assert.match(doc(fixed, "Terms heard")!, /Card it goes to: "To be clear: the refund goes to your Visa ending 2208\." \([^)]*, correcting ending 1111 said before\)/);
   assert.ok(heard(refundWith("A full refund of $329 to your Visa ending 1111.", "Sorry, I mean ending 2208."), "Card it goes to"));
+  // A correction about the amount, then a plain repeat of the card, doesn't put the card right.
+  assert.ok(!heard(refundWith("A full refund of $329 to your Visa ending 1111.", "To be clear: that's a full refund of $329.", "It goes to the Visa ending 2208."), "Card it goes to"));
+  assert.ok(heard(refundWith("A full refund of $329 to your Visa ending 1111.", "To be clear, it goes to the Visa ending 2208, not ending 1111."), "Card it goes to"));
   // Negated, it still isn't said.
   assert.ok(!heard(refundWith("A full refund of $329 to your Visa ending 1111.", "To be clear: it doesn't go to the Visa ending 2208."), "Card it goes to"));
 });
@@ -154,6 +196,21 @@ test("the address field binds to the caller's answer while it is still being che
   v = view(address({ side: "caller", text: "Hill Rote in Dalis.", firstHeard: "Helrout." }));
   assert.notEqual(v.verification.factors[1].state, "ok");
   assert.deepEqual(v.addressEntry, { key: "k7", checking: false });
+});
+
+test("the typing fields stay on the caller's answer while the agent says something else, until a later question (independent review)", () => {
+  // "Thank you, one moment." while the check runs used to remove the field, and whatever was typed in it.
+  const checking = address({ side: "caller", text: "Helrout.", checking: true });
+  let v = view([...checking, { side: "agent", text: "Thank you, one moment." }]);
+  assert.deepEqual(v.addressEntry, { key: "k7", checking: true });
+  // After the next question it stays on the address answer, never on the answer to that question.
+  v = view([...checking, { side: "agent", text: "And what's the order number?" }, { side: "caller", text: "4-2-7.", checking: true }]);
+  assert.deepEqual(v.addressEntry, { key: "k7", checking: true });
+  // The name field the same way.
+  const name = script({ 5: { side: "caller", text: "Sen nilir.", checking: true } }).slice(0, 5);
+  v = view([...name, { side: "agent", text: "Thank you, one moment." }]);
+  assert.equal(v.nameEntry?.key, "k5");
+  assert.equal(v.nameEntry?.checking, true);
 });
 
 test("no address field before the name is verified, and none when the address was heard right", () => {

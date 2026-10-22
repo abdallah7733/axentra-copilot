@@ -281,7 +281,7 @@ test("I-05: the call 10 refund line isn't re-checked after a panel approval, and
   v = view(lines, [{ type: "approve", at: at(lines.length - 1, 4000) }]);
   assert.equal(v.recommendation?.approval.state, "approved");
   assert.ok(v.keyAnswers.includes(refundLine));
-  assert.deepEqual(v.agentChecks.find((c) => c.key === refundLine), { key: refundLine, check: true, reason: "a term isn't heard yet since the customer chose" });
+  assert.deepEqual(v.agentChecks.find((c) => c.key === refundLine), { key: refundLine, check: true, reason: "a term isn't heard yet since the approval" });
   // Every agent line after the choice has a recorded decision.
   const choiceAt = 11; // the first choice, "A new one, please."
   const agentAfter = events(lines).filter((l) => l.side === "agent" && l.seq > choiceAt).map((l) => l.key);

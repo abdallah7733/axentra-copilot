@@ -232,6 +232,12 @@ export type CaptureHandle = { close: () => Promise<{ peak: number }> };
 export async function captureStream(stream: MediaStream, onPhrase: (p: Phrase) => void): Promise<CaptureHandle> {
   if (!stream.getAudioTracks().length) throw new Error("Audio stream is unavailable");
   const context = new AudioContext({ sampleRate: 16000 });
+  // Every phrase is sent labelled 16 kHz: a browser that ran the capture at another rate would send slowed or
+  // sped-up audio, so refuse to start rather than transcribe it (outside review of 22 Oct, §7.2).
+  if (context.sampleRate !== 16000) {
+    await context.close();
+    throw new Error(`Audio capture runs at ${context.sampleRate} Hz, not 16 kHz`);
+  }
   await context.audioWorklet.addModule("/capture-worklet.js");
   const source = context.createMediaStreamSource(stream);
   const node = new AudioWorkletNode(context, "axentra-capture");
