@@ -122,7 +122,13 @@ function NameField({ entry }: { entry: NonNullable<CopilotView["nameEntry"]> }) 
       <div className="flex items-center justify-between gap-2 text-xs">
         <span className="font-medium">Caller&rsquo;s name</span>
         <span className="text-muted-foreground">
-          {entry.checking ? "Checking what the caller said…" : entry.readBack === "waiting" ? "Waiting for the caller’s yes…" : null}
+          {entry.checking
+            ? "Checking what the caller said…"
+            : entry.readBack === "waiting"
+              ? "Waiting for the caller’s yes…"
+              : entry.readBack === "refused"
+                ? "Not confirmed by the caller: type the name"
+                : null}
         </span>
       </div>
       <TypeHeard
@@ -132,7 +138,7 @@ function NameField({ entry }: { entry: NonNullable<CopilotView["nameEntry"]> }) 
         note={
           <>
             Type the caller&rsquo;s words and press <kbd className="font-mono">Enter</kbd>. <kbd className="font-mono">N</kbd> comes back here.
-            {entry.readBack === "available" && <> Or say the full name back and wait for the caller&rsquo;s yes.</>}
+            {entry.readBack === "available" && <> Or say the full name you heard back as a question (&ldquo;That&rsquo;s &hellip;, is that right?&rdquo;) and wait for the caller&rsquo;s yes.</>}
           </>
         }
       />

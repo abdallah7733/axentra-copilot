@@ -174,6 +174,7 @@ export const useLive = create<LiveState>((set, get) => {
         checking: line.checking,
         firstHeard: line.firstHeard,
         checkFailed: line.checkFailed,
+        checked: line.checkSeconds !== undefined && !line.checkFailed && !line.checking ? true : undefined,
         availableAt: line.availableAtEpoch,
       },
     });

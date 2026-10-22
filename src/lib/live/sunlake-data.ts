@@ -145,6 +145,8 @@ export const sunlake: ClientPack = {
     photoDays: 7,
     repeatClaimWindowDays: 90,
     maxVerificationAttempts: 2,
+    // Abdallah allowed the name read-back in the development console on 22 Oct, with conditions (see Policy.nameReadBack).
+    nameReadBack: true,
     authority: [
       { upTo: 500, approver: "Agent (Tier 1)", agentCanApprove: true, row: 0 },
       { upTo: 1500, approver: "Team Lead", agentCanApprove: false, row: 1 },

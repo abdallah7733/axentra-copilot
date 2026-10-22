@@ -21,6 +21,22 @@ const duration = (ms: number) => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 };
 
+/* How long the name took: from the end of the caller's first answer to the tick, and how it was verified
+   (read back, typed, confirmed by the agent or recognised), to compare the read-back with typing (22 Oct). */
+function NameTiming() {
+  const name = useCopilot((s) => s.view.verification.factors[0]);
+  if (name.state !== "ok" || name.answeredAt === undefined || name.knownAt === undefined) return null;
+  const method = name.method ?? "";
+  const route = method.startsWith("name read back") ? "read back" : method.includes("typed") ? "typed" : method.startsWith("confirmed") ? "confirmed by you" : "recognised";
+  return (
+    <Row label="Name verified">
+      <Mono>
+        {Math.max(0, (name.knownAt - name.answeredAt) / 1000).toFixed(1)} s after the answer · {route}
+      </Mono>
+    </Row>
+  );
+}
+
 /* The customer record the caller ID points to. Caller ID matching is simulated in
    this demo (every call is the demo customer), and the record stays locked until
    the caller passes the SOP identity check by voice. */
@@ -116,6 +132,7 @@ export function CallDetails({ className }: { className?: string }) {
               {notChecked > 0 && ` · ${notChecked} not checked`}
             </Mono>
           </Row>
+          <NameTiming />
           {/* After a call, the input the call really used, which can differ from the selection. */}
           <Row label="Agent microphone">{levels?.agentInput ?? mics.find((m) => m.id === micId)?.label ?? "System default"}</Row>
           {levels && (

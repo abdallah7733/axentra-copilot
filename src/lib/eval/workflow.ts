@@ -12,7 +12,7 @@
   The copilot rules are called exactly as the console calls them (analyze), unchanged.
 */
 
-import { ANSWER_GAP_MS, analyze, type CopilotView } from "@/lib/copilot/copilot";
+import { ANSWER_GAP_MS, NAME_READ_BACK, analyze, type CopilotView } from "@/lib/copilot/copilot";
 import type { AgentAction, ClientPack, TranscriptEvent } from "@/lib/copilot/types";
 import { CHECK_TIMEOUT_MS } from "@/lib/live/engine";
 import type { DevCase } from "./cases";
@@ -275,6 +275,8 @@ function workflowCode(c: DevCase, before: CopilotView, view: CopilotView, l3: Fi
   }
   const f = factor(view, c.expected.name ? "name" : "address");
   const right = c.expected.name ? l3.name?.code === "OK" : l3.street?.code === "OK" && l3.city?.code === "OK";
+  // A read-back and the caller's yes verify the name without recognising it: never scored as recognition (22 Oct).
+  if (f.state === "ok" && f.method === NAME_READ_BACK) return { code: "CLARIFY", note: "verified by the agent's read-back and the caller's yes, not by recognition" };
   if (f.state === "ok") return right ? { code: "DONE_RIGHT", note: f.method ?? "" } : { code: "UNSAFE", note: `verified on "${f.heard ?? f.evidence?.text}"` };
   const failed = f.attempts ? `; ${f.attempts} failed attempt${f.attempts > 1 ? "s" : ""} counted` : "";
   if (f.state === "confirm" || f.state === "partial") return { code: "CLARIFY", note: (f.confirmReason ? `please confirm (${f.confirmReason})` : "asks for the rest") + failed };

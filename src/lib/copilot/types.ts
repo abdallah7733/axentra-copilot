@@ -30,6 +30,8 @@ export type TranscriptEvent = {
   firstHeard?: string;
   /** The check failed or timed out: the fast model's text stands, as a doubtful line. */
   checkFailed?: boolean;
+  /** The second model's check finished and its text stands, changed or not. Unset while checking, after a failed check, or when no check ran. */
+  checked?: boolean;
   /** The agent typed what the caller said; this is what speech recognition heard instead. */
   typedFrom?: string;
   /** Epoch milliseconds when the agent typed it. */
@@ -112,9 +114,9 @@ export type Policy = {
   repeatClaimWindowDays: number;
   maxVerificationAttempts: number;
   /**
-   * The agent saying the caller's full name back, word for word, and the caller's clear yes verify the name,
-   * labelled "read back by the agent, confirmed by the caller". Off unless the client's verification rules
-   * allow it (stage call review, 21 Oct: the caller's name arrives as phone audio, the agent's words don't).
+   * The agent saying the caller's full name back, word for word, and the caller's clear, checked yes verify the name,
+   * labelled "name read back by agent, confirmed by caller", never as recognition. Off unless the client's verification
+   * rules allow it (stage call review, 21 Oct: the caller's name arrives as phone audio, the agent's words don't).
    */
   nameReadBack?: boolean;
   authority: AuthorityBand[];
