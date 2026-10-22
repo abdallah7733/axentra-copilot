@@ -62,7 +62,7 @@ export type Factor = {
   confirmReason?: "low-confidence" | "garbled" | "sounds-like" | "disagree" | "ambiguous";
   /** The caller's yes to the agent's read-back of the name (see Policy.nameReadBack). */
   confirmedBy?: Evidence;
-  /** When the caller finished their first answer for this factor: with knownAt, how long verifying it took. */
+  /** When the caller finished their first answer for this factor (all its lines): with knownAt, how long accepting it took. */
   answeredAt?: number;
 };
 
@@ -197,10 +197,19 @@ export type CopilotView = {
    * Where the agent types the caller's name: the caller's answer to the name question, from the moment its
    * line arrives (stage call, 21 Oct: about 10 s went on reaching a field that appeared only once both speech
    * models had finished). `checking`: the second model is still checking the line. `readBack`: whether saying
-   * the name back counts ("waiting": said back, waiting for the caller's yes; "refused": the caller's reply wasn't a
-   * clear, checked yes, so read-back is over for this call). Null once the name is verified.
+   * the name back counts ("waiting": said back, waiting for the caller's yes; "expired": no reply within
+   * READ_BACK_REPLY_MS; "refused": the caller's reply wasn't a clear, checked yes, so read-back is over for this call).
+   * Null once the name is verified.
    */
-  nameEntry: { key: string; checking: boolean; readBack: "off" | "available" | "waiting" | "refused" } | null;
+  nameEntry: {
+    key: string;
+    checking: boolean;
+    readBack: "off" | "available" | "waiting" | "expired" | "refused";
+    /** While waiting: epoch ms after which the caller's yes no longer counts (the field shows the expiry itself). */
+    readBackUntil?: number;
+    /** After a refusal: ask for the full name again, or type the name (only for a yes the system couldn't confirm). */
+    readBackRecovery?: "ask" | "type";
+  } | null;
 };
 
 const DAY = 86_400_000;
@@ -211,7 +220,8 @@ const evidenceOf = (l: TranscriptEvent): Evidence => ({
   side: l.side,
   text: l.text,
   at: l.startedAt,
-  knownAt: Math.max(l.availableAt ?? l.endedAt, l.typedAt ?? 0),
+  // Typed words count from when they were typed: a check result that lands later can't move that (review, 22 Oct).
+  knownAt: l.typedAt !== undefined ? Math.max(l.typedAt, l.endedAt) : (l.availableAt ?? l.endedAt),
   lowConfidence: (l.confidence !== null && l.confidence < LOW_CONFIDENCE) || !!l.checkFailed,
   typedFrom: l.typedFrom,
   firstHeard: l.firstHeard,
@@ -363,24 +373,31 @@ const confirmsOnly = (text: string) => {
   return !/\?/.test(text) && w.length > 0 && CONFIRM_START.test(w.join(" ")) && w.every((x) => CONFIRM_WORDS.has(x));
 };
 
-/** A yes that starts this much before the read-back ends is speech overlapping the question, not an answer to it. */
-const READ_BACK_OVERLAP_MS = 250;
-/** A reply that starts this long after the read-back ended isn't taken as its answer. */
-const READ_BACK_REPLY_MS = 8000;
+/**
+ * Timestamps can put the start of a reply slightly before the end of the question; up to this much is tolerated. A yes
+ * that starts earlier is speech overlapping the question, not an answer to it.
+ */
+export const READ_BACK_OVERLAP_MS = 250;
+/** A reply that starts this long after the read-back ended isn't taken as its answer; the field shows the wait ending. */
+export const READ_BACK_REPLY_MS = 8000;
+
+/** Refusals where the caller did say a plain yes and only the system couldn't confirm it: typing the name is allowed. */
+const NOT_CHECKED = "the second speech model didn't finish checking it";
+const UNCLEAR = "it was unclear";
 
 /**
  * Why the caller's next line after a read-back doesn't confirm it, or null when it does: a plain yes and nothing else,
  * started after the question ended, checked by the second speech model with both models hearing a yes, and heard
  * clearly. "No", corrections, "yes, but…", unclear speech and a yes to anything else never verify the name.
  */
-function readBackReply(line: TranscriptEvent, ev: Evidence, askedEnd: number): string | null {
+function whyNotConfirmed(line: TranscriptEvent, ev: Evidence, askedEnd: number): string | null {
   if (line.typedFrom !== undefined) return "the agent typed over it";
   if (line.startedAt < askedEnd - READ_BACK_OVERLAP_MS) return "it started before the question ended";
   if (line.startedAt > askedEnd + READ_BACK_REPLY_MS) return "it came too long after the question";
   if (!confirmsOnly(line.text)) return "it isn't a plain yes";
-  if (line.checkFailed || !line.checked) return "the second speech model didn't finish checking it";
+  if (line.checkFailed || !line.checked) return NOT_CHECKED;
   if (line.firstHeard !== undefined && !confirmsOnly(line.firstHeard)) return `the fast model heard "${line.firstHeard}"`;
-  if (ev.lowConfidence) return "it was unclear";
+  if (ev.lowConfidence) return UNCLEAR;
   return null;
 }
 
@@ -454,7 +471,17 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
   let nameAsk: Evidence | null = null;
   // The agent's read-back waiting for the caller's reply, and the reply that ended read-back for this call.
   let readBack: { ev: Evidence; endedAt: number } | null = null;
-  let readBackRefused: { ev: Evidence; why: string } | null = null;
+  let readBackRefused: { ev: Evidence; why: string; recovery: "ask" | "type" } | null = null;
+  // Everything the caller says before the agent's next line is one reply to the read-back (review, 22 Oct: "Yes." then
+  // "But no, that's not right." as two lines). `held`: part of it is still being checked, so nothing is decided yet.
+  let replyOpen = false;
+  let readBackHeld = false;
+  /** The caller's later lines in the same reply as `line`: after it, before the agent's next line starts. */
+  const restOfReply = (line: TranscriptEvent) => {
+    const after = (l: TranscriptEvent) => l.startedAt > line.startedAt || (l.startedAt === line.startedAt && l.seq > line.seq);
+    const nextAgent = ordered.find((l) => l.side === "agent" && after(l));
+    return corrected.filter((l) => l.side === "caller" && l.key !== line.key && after(l) && (!nextAgent || l.startedAt < nextAgent.startedAt));
+  };
   /**
    * `differ`: the two speech models read different complete order numbers from this answer (or the
    * check lost one the fast model had). Both readings are kept as candidates and the order needs a
@@ -526,6 +553,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
   type Pending = { factor: Factor; evs: Evidence[]; texts: string[]; endedAt: number; result: "partial" | "sounds-like" | "ambiguous" | "mismatch" | "none" };
   // Cast so TypeScript doesn't narrow it to null: it changes inside hear() and closeAnswer().
   let pending = null as Pending | null;
+  const firstAnswer = new Map<Factor["id"], Pending>();
 
   const addressMethod = (text: string) => (/\b(at|@)\b/.test(text.toLowerCase()) && !/\broad\b/i.test(text) ? "email" : "street and city");
 
@@ -563,8 +591,10 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
   /** A caller line while the agent is waiting for this factor. */
   function hear(factor: Factor, line: TranscriptEvent, ev: Evidence) {
     if (factor.state === "ok" || locked) return;
-    factor.answeredAt ??= line.endedAt;
     if (pending?.factor !== factor) pending = { factor, evs: [], texts: [], endedAt: 0, result: "none" };
+    // The end of the first answer, all of its lines: the start point for "Name accepted" in Call details.
+    if (factor.answeredAt === undefined) firstAnswer.set(factor.id, pending);
+    if (firstAnswer.get(factor.id) === pending) factor.answeredAt = line.endedAt;
     pending.evs.push(ev);
     pending.texts.push(line.text);
     pending.endedAt = line.endedAt;
@@ -755,12 +785,25 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       callerMentions.push(...heard);
       lastCaller = { line, ev, expecting };
 
-      // The caller's next line after the agent said the name back verifies it only as a clear, checked yes (see
-      // readBackReply), labelled as read back. Any other reply ends read-back for this call: the agent types the
-      // caller's words or asks again. A reply with no name in it ("No.") isn't heard as a name answer.
+      // The caller's reply to the agent saying the name back verifies it only as a clear, checked yes, all of it (see
+      // whyNotConfirmed and restOfReply), labelled as read back. Any other reply ends read-back for this call: the agent
+      // asks for the name again, or types it when only the system couldn't confirm the yes. A reply with no name in it
+      // ("No.") isn't heard as a name answer.
       const backed: { ev: Evidence; endedAt: number } | null = readBack;
       readBack = null;
-      const why: string | null | undefined = backed && !locked && name.state !== "ok" ? readBackReply(line, ev, backed.endedAt) : undefined;
+      const continues = !backed && replyOpen;
+      if (backed) replyOpen = true;
+      let why: string | null | undefined = backed && !locked && name.state !== "ok" ? whyNotConfirmed(line, ev, backed.endedAt) : undefined;
+      if (backed && why === null) {
+        // The yes counts only if the rest of the reply is also a plain yes; while part of it is being checked, wait.
+        const rest = restOfReply(line);
+        const went = rest.find((l) => !l.checking && !confirmsOnly(l.text));
+        if (went) why = `the caller went on: "${went.text}"`;
+        else if (rest.some((l) => l.checking)) {
+          readBackHeld = true;
+          why = undefined;
+        }
+      }
       if (backed && why === null) {
         if (pending?.factor === name) pending = null;
         name.state = "ok";
@@ -770,12 +813,12 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
         name.confirmReason = undefined;
         name.method = NAME_READ_BACK;
         markVerified(ev);
-      } else if (why) readBackRefused = { ev, why };
+      } else if (why) readBackRefused = { ev, why, recovery: why === NOT_CHECKED || why === UNCLEAR ? "type" : "ask" };
 
       if (!locked) {
         // The factor the agent asked for; the other only counts if volunteered as a clear match.
-        if (why === null || (why && !saysNamePart(line.text))) {
-          // A confirmed read-back, or a reply to one with no name in it: never a failed attempt.
+        if (why === null || readBackHeld || ((why || continues) && !saysNamePart(line.text))) {
+          // A confirmed read-back, a reply still being decided, or a reply to one with no name in it: never a failed attempt.
         } else if (expecting === "name") hear(name, line, ev);
         else if (name.state !== "ok" && matchName(line.text, customer) === "match") matched(name, ev, doubt([ev], line.text));
         if (expecting === "address") hear(address, line, ev);
@@ -810,6 +853,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
 
       closeAnswer();
       lastCaller = null;
+      replyOpen = false;
       const asks = agentAsksFor(line.text, !verified() && !locked);
       // Saying the name back is allowed only when the client allows it, once the caller has given a full answer the
       // speech models couldn't confirm (never a partial, ambiguous or missing one), before any failed attempt (a
@@ -818,6 +862,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
         !!pack.policy.nameReadBack &&
         !locked &&
         !readBackRefused &&
+        !readBackHeld &&
         name.state === "confirm" &&
         name.confirmReason !== "ambiguous" &&
         name.attempts === 0 &&
@@ -1313,15 +1358,35 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
 
   /* ---------- Please-confirm prompts (low confidence never ticks a step) ---------- */
   // Whether saying the name back counts now (see Policy.nameReadBack and the agent branch above).
-  const readBackState: "off" | "available" | "waiting" | "refused" =
-    !pack.policy.nameReadBack || locked || name.attempts > 0 ? "off" : readBackRefused ? "refused" : readBack ? "waiting" : name.state === "confirm" && name.confirmReason !== "ambiguous" ? "available" : "off";
+  // Waiting ends READ_BACK_REPLY_MS after the question: silence isn't a refusal, but a yes after that never counts.
+  const readBackUntil = readBack ? (readBack as { endedAt: number }).endedAt + READ_BACK_REPLY_MS : undefined;
+  // A reply that started in time and is still being checked: the wait lasts as long as the check, never "expired".
+  if (
+    readBackUntil !== undefined &&
+    corrected.some((l) => l.checking && l.side === "caller" && l.startedAt >= readBackUntil - READ_BACK_REPLY_MS - READ_BACK_OVERLAP_MS && l.startedAt <= readBackUntil)
+  )
+    readBackHeld = true;
+  const readBackState: NonNullable<CopilotView["nameEntry"]>["readBack"] =
+    !pack.policy.nameReadBack || locked || name.attempts > 0
+      ? "off"
+      : readBackRefused
+        ? "refused"
+        : readBackHeld || (readBackUntil !== undefined && now <= readBackUntil)
+          ? "waiting"
+          : readBackUntil !== undefined
+            ? "expired"
+            : name.state === "confirm" && name.confirmReason !== "ambiguous"
+              ? "available"
+              : "off";
   // The name card leads with what to do: reading a diagnosis first cost about 3 s on the 21 Oct stage call.
   const nameAction =
     readBackState === "available"
       ? "Say it back as you heard it and wait for the caller's yes, or type it (N)."
       : readBackState === "waiting"
         ? "Wait for the caller's yes to your read-back, or type what the caller said (N)."
-        : "Type what the caller said (N), or ask again.";
+        : readBackState === "expired"
+          ? `No reply to your read-back within ${READ_BACK_REPLY_MS / 1000} s, so a yes now won't count. Ask for the full name again, or type it (N).`
+          : "Type what the caller said (N), or ask again.";
   for (const f of [name, address]) {
     if (f.state === "confirm" && f.evidence && f.id === "name" && readBackRefused) {
       // After a refused read-back, typing is the way on: neither another read-back nor the Confirm button counts.
@@ -1331,8 +1396,18 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
         askAgain: true,
         text: newer
           ? `Name not recognised. Type what the caller said (N), or ask again. Heard "${f.heard ?? f.evidence.text}". The read-back wasn't confirmed earlier, so reading it back or pressing Confirm won't count on this call.`
-          : `Read-back not confirmed: the caller's reply "${readBackRefused.ev.text}" doesn't count, because ${readBackRefused.why}. Type what the caller said (N), or ask again. Reading the name back again won't count on this call.`,
+          : readBackRefused.recovery === "ask"
+            ? `Read-back not confirmed: the caller's reply "${readBackRefused.ev.text}" doesn't count, because ${readBackRefused.why}. Ask for the full name again, and type the new answer (N) only if it still isn't recognised. Reading the name back again won't count on this call.`
+            : `Read-back not confirmed: the caller's reply "${readBackRefused.ev.text}" doesn't count, because ${readBackRefused.why}. If you clearly heard the caller give their name and say yes, type the name (N); otherwise ask for the full name again. Reading the name back again won't count on this call.`,
         evidence: newer ? f.evidence : readBackRefused.ev,
+      });
+    } else if (f.state === "confirm" && f.evidence && f.id === "name" && (readBackState === "waiting" || readBackState === "expired")) {
+      // Said back: the card says what the read-back is waiting for, or that the wait is over.
+      prompts.push({
+        target: "name",
+        askAgain: !confirmable(f) || undefined,
+        text: `Name not recognised. ${nameAction} Heard "${f.heard ?? f.evidence.text}".`,
+        evidence: f.evidence,
       });
     } else if (f.state === "confirm" && f.evidence && f.id === "name") {
       const heard = f.heard ?? f.evidence.text;
@@ -1441,8 +1516,12 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       asked && expecting === "name" && !readBack
         ? [...corrected].reverse().find((l) => l.checking && l.side === "caller" && l.startedAt > asked.at && matchName(l.text, customer) !== "match")
         : undefined;
-    if (checkingAnswer) nameEntry = { key: checkingAnswer.key, checking: true, readBack: readBackState };
-    else if (name.evidence?.side === "caller") nameEntry = { key: name.evidence.key, checking: false, readBack: readBackState };
+    const extra = {
+      ...(readBackState === "waiting" && !readBackHeld && readBackUntil !== undefined ? { readBackUntil } : {}),
+      ...(readBackState === "refused" && readBackRefused ? { readBackRecovery: (readBackRefused as { recovery: "ask" | "type" }).recovery } : {}),
+    };
+    if (checkingAnswer) nameEntry = { key: checkingAnswer.key, checking: true, readBack: readBackState, ...extra };
+    else if (name.evidence?.side === "caller") nameEntry = { key: name.evidence.key, checking: false, readBack: readBackState, ...extra };
   }
 
   /* ---------- SOP steps ---------- */

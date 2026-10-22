@@ -146,7 +146,8 @@ export const sunlake: ClientPack = {
     repeatClaimWindowDays: 90,
     maxVerificationAttempts: 2,
     // Abdallah allowed the name read-back in the development console on 22 Oct, with conditions (see Policy.nameReadBack).
-    nameReadBack: true,
+    // A build setting, off unless the build sets NEXT_PUBLIC_NAME_READ_BACK=1, so merging doesn't turn it on publicly.
+    nameReadBack: process.env.NEXT_PUBLIC_NAME_READ_BACK === "1",
     authority: [
       { upTo: 500, approver: "Agent (Tier 1)", agentCanApprove: true, row: 0 },
       { upTo: 1500, approver: "Team Lead", agentCanApprove: false, row: 1 },

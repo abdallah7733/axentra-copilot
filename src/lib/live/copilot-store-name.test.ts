@@ -134,29 +134,3 @@ test("the stage card's short row 15 lines count as first heard while their check
   assert.match(docs() ?? "", /^Not heard yet: when it's issued and how long it takes$/);
   liveEvents.emit({ type: "cleared" });
 });
-
-test("read-back as the console runs it: the caller's yes gets its check, and only the checked yes verifies", () => {
-  const asked: string[] = [];
-  useLive.setState({ checkLine: (key) => (asked.push(key), key.startsWith("c") ? "started" : "no-audio") });
-  liveEvents.emit({ type: "call-started", callId: "CA-RB", at: T0 });
-  emit(line("CA-RB", 1, "a1", "agent", "Thank you for calling Sunlake. How can I help you today?", 0));
-  emit(line("CA-RB", 2, "c1", "caller", "Hello. I need help with order 427. The tablet came yesterday, and the screen is cracked.", 4000));
-  emit(line("CA-RB", 3, "a2", "agent", "First, can I have your full name, please?", 11_000));
-  const answer = line("CA-RB", 4, "c2", "caller", "Sen nilir.", 14_000);
-  emit(answer);
-  emit({ ...answer, text: "Sammílis.", firstHeard: "Sen nilir.", checked: true });
-  assert.equal(useCopilot.getState().view.nameEntry?.readBack, "available");
-
-  // Transcribed separately: here the caller's yes arrives before the agent's read-back line.
-  const yes = line("CA-RB", 6, "c3", "caller", "Yes, that's right.", 21_000);
-  emit(yes);
-  emit(line("CA-RB", 5, "a3", "agent", "That's Sam Miller, is that right?", 17_500));
-  assert.ok(asked.includes("c3"), "once the read-back is heard, the yes goes to the second check");
-  assert.notEqual(name().state, "ok", "nothing verifies while the yes is being checked");
-
-  emit({ ...yes, checked: true });
-  assert.equal(name().state, "ok");
-  assert.equal(name().method, "name read back by agent, confirmed by caller");
-  assert.equal(name().answeredAt, T0 + 16_000, "timed from the end of the caller's answer");
-  liveEvents.emit({ type: "cleared" });
-});

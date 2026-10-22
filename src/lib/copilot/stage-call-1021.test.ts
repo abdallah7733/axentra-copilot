@@ -13,7 +13,7 @@ import { scriptV2, sunlake } from "@/lib/live/sunlake-data";
 */
 
 const NOW = Date.UTC(2026, 9, 21, 15);
-type Line = { side: "caller" | "agent"; text: string; confidence?: number | null; checking?: boolean; firstHeard?: string; checkFailed?: boolean; checked?: boolean; shift?: number };
+type Line = { side: "caller" | "agent"; text: string; confidence?: number | null; checking?: boolean; firstHeard?: string; checkFailed?: boolean; checked?: boolean; shift?: number; availableAt?: number };
 
 /** Script lines as transcript events, 5 s apart (moved by `shift` ms). */
 const events = (lines: Line[]): TranscriptEvent[] =>
@@ -31,6 +31,7 @@ const events = (lines: Line[]): TranscriptEvent[] =>
     ...(l.firstHeard !== undefined ? { firstHeard: l.firstHeard } : {}),
     ...(l.checkFailed ? { checkFailed: true } : {}),
     ...(l.checked ? { checked: true } : {}),
+    ...(l.availableAt !== undefined ? { availableAt: l.availableAt } : {}),
   }));
 const script = (replace: Record<number, Line | null> = {}, extra: Line[] = []): Line[] => [
   ...scriptV2.flatMap((l) => (l.n in replace ? (replace[l.n] ? [replace[l.n]!] : []) : [{ side: l.side, text: l.text }])),
@@ -40,7 +41,8 @@ const script = (replace: Record<number, Line | null> = {}, extra: Line[] = []): 
 const at = (n: number, plus = 100) => NOW - 600_000 + (n - 1) * 5000 + plus;
 const withReadBack: ClientPack = { ...sunlake, policy: { ...sunlake.policy, nameReadBack: true } };
 const noReadBack: ClientPack = { ...sunlake, policy: { ...sunlake.policy, nameReadBack: false } };
-const view = (lines: Line[], actions: AgentAction[] = [], pack: ClientPack = sunlake) => analyze(pack, events(lines), actions, NOW);
+/** `now` defaults to 10 minutes after the call's first line: long after any read-back's 8 s wait. */
+const view = (lines: Line[], actions: AgentAction[] = [], pack: ClientPack = sunlake, now = NOW) => analyze(pack, events(lines), actions, now);
 const nameOf = (v: CopilotView) => v.verification.factors[0];
 const nameCard = (v: CopilotView) => v.prompts.find((p) => p.target === "name");
 
@@ -127,8 +129,9 @@ test("a wrong typed name never verifies, and a failed or locked name keeps the f
 // silence, unclear speech or a yes to another question never verifies. The address check and typing stay. Labelled
 // "Name read back by agent, confirmed by caller", never scored as recognition.
 
-test("the development console allows read-back; a client that doesn't leaves the name unverified", () => {
-  assert.equal(sunlake.policy.nameReadBack, true, "allowed in the development console on 22 Oct");
+test("read-back is a build setting, off by default; a client without it leaves the name unverified", () => {
+  // Review, 22 Oct: merging must not turn it on publicly. Only a build with NEXT_PUBLIC_NAME_READ_BACK=1 has it.
+  assert.equal(sunlake.policy.nameReadBack, process.env.NEXT_PUBLIC_NAME_READ_BACK === "1");
   const v = view(upToName(NAME, [READ_BACK, YES, ADDRESS_Q]), [], noReadBack);
   assert.notEqual(nameOf(v).state, "ok");
   assert.equal(nameOf(v).confirmedBy, undefined);
@@ -140,8 +143,10 @@ test("the agent's exact words plus the caller's checked plain yes verify the nam
   assert.equal(v.nameEntry?.readBack, "available");
   assert.doesNotMatch(nameCard(v)!.text, /Sam Miller/, "the card never shows the name on the record");
 
-  v = view(upToName(NAME, [READ_BACK]), [], withReadBack);
+  // 1 s after the read-back ends.
+  v = view(upToName(NAME, [READ_BACK]), [], withReadBack, at(6, 4000));
   assert.equal(v.nameEntry?.readBack, "waiting");
+  assert.equal(v.nameEntry?.readBackUntil, at(6, 3000) + 8000, "the console looks again when the wait runs out");
   assert.match(nameCard(v)!.text, /^Name not recognised\. Wait for the caller's yes to your read-back, or type what the caller said \(N\)\./);
   assert.equal(v.awaiting, "name", "the caller's next line is the key answer");
 
@@ -179,10 +184,12 @@ test("Call details can time it: from the end of the caller's answer to the yes b
 });
 
 test("while the caller's yes is being checked, nothing is verified and the field stays on the name answer", () => {
+  // Long after the 8 s: a yes that started in time keeps the wait open for as long as its check takes.
   const v = view(upToName(NAME, [READ_BACK, { side: "caller", text: "Yes.", checking: true }]), [], withReadBack);
   assert.notEqual(nameOf(v).state, "ok");
   assert.equal(v.nameEntry?.key, "k5");
   assert.equal(v.nameEntry?.readBack, "waiting");
+  assert.equal(v.nameEntry?.readBackUntil, undefined, "no expiry while the yes is being checked");
 });
 
 test("a read-back counts only as the full name word for word, asked as one question, and not negated", () => {
@@ -228,29 +235,34 @@ test("no read-back after a failed attempt: typing the caller's words is the corr
 });
 
 test("each reply that isn't a finished, checked, plain yes leaves the name unverified, says why, and isn't a failed attempt", () => {
-  const cases: [Line, RegExp][] = [
-    [{ side: "caller", text: "No.", checked: true }, /isn't a plain yes/],
-    [{ side: "caller", text: "No, that's not right.", checked: true }, /isn't a plain yes/],
-    [{ side: "caller", text: "Yes, but it's spelled differently.", checked: true }, /isn't a plain yes/],
-    [{ side: "caller", text: "Yes?", checked: true }, /isn't a plain yes/],
-    [{ side: "caller", text: "Yes, that's right." }, /didn't finish checking/],
-    [{ side: "caller", text: "Yes.", checkFailed: true }, /didn't finish checking/],
-    [{ side: "caller", text: "Yes.", checked: true, firstHeard: "No." }, /fast model heard "No\."/],
-    [{ side: "caller", text: "Yes.", checked: true, confidence: 0.3 }, /unclear/],
-    [{ side: "caller", text: "Yes.", checked: true, shift: -2500 }, /started before the question ended/],
+  // What to do next (review, 22 Oct): after the caller's no, or any reply the caller made that isn't a plain yes, ask for
+  // the full name again; type only when the system couldn't confirm a yes the agent clearly heard.
+  const ASK = /Ask for the full name again, and type the new answer \(N\) only if it still isn't recognised\. Reading the name back again won't count on this call\./;
+  const TYPE = /If you clearly heard the caller give their name and say yes, type the name \(N\); otherwise ask for the full name again\. Reading the name back again won't count on this call\./;
+  const cases: [Line, RegExp, "ask" | "type"][] = [
+    [{ side: "caller", text: "No.", checked: true }, /isn't a plain yes/, "ask"],
+    [{ side: "caller", text: "No, that's not right.", checked: true }, /isn't a plain yes/, "ask"],
+    [{ side: "caller", text: "Yes, but it's spelled differently.", checked: true }, /isn't a plain yes/, "ask"],
+    [{ side: "caller", text: "Yes?", checked: true }, /isn't a plain yes/, "ask"],
+    [{ side: "caller", text: "Yes, that's right." }, /didn't finish checking/, "type"],
+    [{ side: "caller", text: "Yes.", checkFailed: true }, /didn't finish checking/, "type"],
+    [{ side: "caller", text: "Yes.", checked: true, firstHeard: "No." }, /fast model heard "No\."/, "ask"],
+    [{ side: "caller", text: "Yes.", checked: true, confidence: 0.3 }, /unclear/, "type"],
+    [{ side: "caller", text: "Yes.", checked: true, shift: -2500 }, /started before the question ended/, "ask"],
   ];
-  for (const [reply, why] of cases) {
+  for (const [reply, why, recovery] of cases) {
     const v = view(upToName(NAME, [READ_BACK, reply, ADDRESS_Q]), [], withReadBack);
     const label = JSON.stringify(reply);
     assert.notEqual(nameOf(v).state, "ok", label);
     assert.equal(nameOf(v).attempts, 0, `${label}: never a failed attempt`);
     assert.equal(nameOf(v).heard, "Sammílis.", `${label}: a yes or no is never the name`);
     assert.equal(v.nameEntry?.readBack, "refused", label);
+    assert.equal(v.nameEntry?.readBackRecovery, recovery, label);
     assert.equal(v.nameEntry?.key, "k5", `${label}: typing corrects the caller's name answer`);
     const card = nameCard(v)!;
     assert.match(card.text, /^Read-back not confirmed: the caller's reply/, label);
     assert.match(card.text, why, label);
-    assert.match(card.text, /Type what the caller said \(N\), or ask again\. Reading the name back again won't count on this call\./, label);
+    assert.match(card.text, recovery === "ask" ? ASK : TYPE, label);
     assert.equal(card.askAgain, true, `${label}: no Confirm button`);
   }
 
@@ -258,11 +270,33 @@ test("each reply that isn't a finished, checked, plain yes leaves the name unver
   const late = view(upToName(NAME, [READ_BACK, { side: "caller", text: "Yes.", checked: true, shift: 8500 }]), [], withReadBack);
   assert.notEqual(nameOf(late).state, "ok");
   assert.match(nameCard(late)!.text, /came too long after the question/);
+  assert.equal(late.nameEntry?.readBackRecovery, "ask");
 
-  // Silence: no reply, then the agent moves on. Nothing verifies; the read-back is offered again only as before.
+  // Silence: no reply, then the agent moves on. Nothing verifies and it isn't a refusal: the read-back is offered again.
   const silent = view(upToName(NAME, [READ_BACK, ADDRESS_Q]), [], withReadBack);
   assert.notEqual(nameOf(silent).state, "ok");
   assert.equal(nameOf(silent).attempts, 0);
+  assert.equal(silent.nameEntry?.readBack, "available");
+});
+
+test("silence after the read-back: the wait ends 8 s after the question, and a yes after that doesn't count", () => {
+  // The read-back (line 6) ends at at(6, 3000); the wait runs to 8 s after that, inclusive.
+  const until = at(6, 3000) + 8000;
+  let v = view(upToName(NAME, [READ_BACK]), [], withReadBack, until);
+  assert.equal(v.nameEntry?.readBack, "waiting");
+  v = view(upToName(NAME, [READ_BACK]), [], withReadBack, until + 1);
+  assert.equal(v.nameEntry?.readBack, "expired");
+  assert.equal(v.nameEntry?.readBackUntil, undefined);
+  assert.equal(nameOf(v).attempts, 0, "silence isn't a failed attempt");
+  assert.match(nameCard(v)!.text, /^Name not recognised\. No reply to your read-back within 8 s, so a yes now won't count\. Ask for the full name again, or type it \(N\)\. Heard "Sammílis\."/);
+  assert.equal(nameCard(v)!.askAgain, true);
+
+  // The caller's yes starting exactly at the end of the wait still counts; 1 ms later it doesn't.
+  // Line 7 starts 2 s after line 6 ends, so a shift of 6000 puts its start at `until`.
+  assert.equal(nameOf(view(upToName(NAME, [READ_BACK, { ...YES, shift: 6000 }]), [], withReadBack)).state, "ok");
+  v = view(upToName(NAME, [READ_BACK, { ...YES, shift: 6001 }]), [], withReadBack);
+  assert.notEqual(nameOf(v).state, "ok");
+  assert.match(nameCard(v)!.text, /came too long after the question\. Ask for the full name again/);
 });
 
 test("a yes to another question never verifies the name", () => {
@@ -312,6 +346,83 @@ test("the caller's own correction is heard as usual, never as the read-back", ()
 test("an unclear read-back line doesn't count", () => {
   const v = view(upToName(NAME, [{ ...READ_BACK, confidence: 0.3 }, YES, ADDRESS_Q]), [], withReadBack);
   assert.notEqual(nameOf(v).state, "ok");
+});
+
+/* ---------- Outside review of C2, 22 Oct (sections 2 and 3) ---------- */
+
+test("review 2A: a checked yes followed by a separate correction doesn't verify the name", () => {
+  const yes: Line = { side: "caller", text: "Yes.", checked: true };
+  const butNo: Line = { side: "caller", text: "But no, that's not right.", checked: true };
+  let v = view(upToName(NAME, [READ_BACK, yes, butNo, ADDRESS_Q]), [], withReadBack);
+  assert.notEqual(nameOf(v).state, "ok", "the correction in the same reply ends the read-back");
+  v = view(upToName(NAME, [READ_BACK, yes, butNo, ADDRESS_Q, { side: "caller", text: "Hill Road, in Dallas." }]), [], withReadBack);
+  assert.equal(v.verification.verified, false, "the address can't complete identity on the earlier yes");
+  // The correction still being checked when the yes's check finishes: nothing verifies until it is heard.
+  v = view(upToName(NAME, [READ_BACK, yes, { ...butNo, checked: undefined, checking: true }]), [], withReadBack);
+  assert.notEqual(nameOf(v).state, "ok", "held while the rest of the reply is being checked");
+});
+
+test("review 2B: a late check result can't move the time a typed name was accepted", () => {
+  const typedAt = at(5, 3500);
+  const typed: AgentAction[] = [{ type: "correct", key: "k5", text: "Sam Miller", at: typedAt }];
+  const lateCheck = { ...NAME, checked: true, availableAt: at(6, 2500) };
+  const v = view(upToName(lateCheck, [ADDRESS_Q]), typed, withReadBack);
+  assert.equal(nameOf(v).method, "typed by the agent");
+  assert.equal(nameOf(v).knownAt, typedAt);
+});
+
+test("review 3: the overlap tolerance is 250 ms, at the boundary", () => {
+  // The read-back ends 2 s before the next line starts in this script.
+  const ok = view(upToName(NAME, [READ_BACK, { ...YES, shift: -2250 }, ADDRESS_Q]), [], withReadBack);
+  assert.equal(nameOf(ok).state, "ok", "starting 250 ms before the question ends is tolerated");
+  const early = view(upToName(NAME, [READ_BACK, { ...YES, shift: -2251 }, ADDRESS_Q]), [], withReadBack);
+  assert.notEqual(nameOf(early).state, "ok", "251 ms is overlap");
+});
+
+test("review 2A: the rest of the reply decides; more yes is fine, a new name ends the read-back and is heard as usual", () => {
+  const yes: Line = { side: "caller", text: "Yes.", checked: true };
+  let v = view(upToName(NAME, [READ_BACK, yes, { side: "caller", text: "Yes, that's right.", checked: true }, ADDRESS_Q]), [], withReadBack);
+  assert.equal(nameOf(v).state, "ok", "a second plain yes is still a plain yes");
+  assert.equal(nameOf(v).method, NAME_READ_BACK);
+
+  v = view(upToName(NAME, [READ_BACK, yes, { side: "caller", text: "Actually it's Sam Millar.", checked: true }, ADDRESS_Q]), [], withReadBack);
+  assert.notEqual(nameOf(v).state, "ok");
+  assert.equal(nameOf(v).method, undefined);
+  assert.equal(nameOf(v).attempts, 0, "a sound-alike is never a failed attempt");
+  assert.equal(nameOf(v).heard, "Actually it's Sam Millar.", "the caller's new words are the name answer now");
+  assert.match(nameCard(v)!.text, /^Name not recognised\. Type what the caller said \(N\), or ask again\./);
+  assert.equal(nameCard(v)!.askAgain, true, "no Confirm button after a read-back that wasn't confirmed");
+});
+
+test("review, dev call 5: after the caller's no, the agent asks again and the caller's new answer is what counts", () => {
+  const no: Line = { side: "caller", text: "No, that's not right.", checked: true };
+  const ASK_AGAIN: Line = { side: "agent", text: "Sorry about that. Could I have your full name again, please?" };
+  let v = view(upToName(NAME, [READ_BACK, no]), [], withReadBack);
+  assert.match(nameCard(v)!.text, /Ask for the full name again/);
+  assert.equal(v.nameEntry?.readBackRecovery, "ask");
+
+  // Recognised this time: no typing needed.
+  v = view(upToName(NAME, [READ_BACK, no, ASK_AGAIN, { side: "caller", text: "Sam Miller.", checked: true }, ADDRESS_Q]), [], withReadBack);
+  assert.equal(nameOf(v).state, "ok");
+  assert.equal(nameOf(v).method, undefined, "recognised from the caller's own words");
+  assert.equal(nameOf(v).answeredAt, at(5, 3000), "still timed from the end of the first name answer");
+
+  // Still not recognised: the agent types the new answer, and the field is on it.
+  const again: Line = { side: "caller", text: "Sammílis.", checked: true, firstHeard: "Sam Ellis." };
+  v = view(upToName(NAME, [READ_BACK, no, ASK_AGAIN, again]), [], withReadBack);
+  assert.equal(v.nameEntry?.key, "k9");
+  v = view(upToName(NAME, [READ_BACK, no, ASK_AGAIN, again, ADDRESS_Q]), [{ type: "correct", key: "k9", text: "Sam Miller", at: at(10) }], withReadBack);
+  assert.equal(nameOf(v).state, "ok");
+  assert.equal(nameOf(v).method, "typed by the agent");
+  assert.equal(nameOf(v).answeredAt, at(5, 3000));
+  assert.equal(nameOf(v).knownAt, at(10));
+});
+
+test("review: the timer starts at the end of the caller's whole first name answer, the same for every route", () => {
+  // A first answer in two lines, before the agent speaks again.
+  const v = view(upToName({ side: "caller", text: "Sam." }, [{ side: "caller", text: "Miller.", shift: -1500 }, ADDRESS_Q]), [], withReadBack);
+  assert.equal(nameOf(v).state, "ok");
+  assert.equal(nameOf(v).answeredAt, at(6, 3000 - 1500), "the end of the second line of the same answer");
 });
 
 /* ---------- Rank 3: terms checked again after approval ---------- */

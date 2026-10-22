@@ -88,6 +88,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
   let healthCheckedAt = 0;
   // Re-check once the caller has been quiet long enough for an identity answer to be complete.
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
+  let expiryTimer: ReturnType<typeof setTimeout> | undefined;
   // Lines already sent for the second model's check (or found uncheckable) this call: each at most once.
   let requested = new Set<string>();
 
@@ -199,12 +200,17 @@ export const useCopilot = create<CopilotState>((set, get) => {
 
   const update = (lines: TranscriptEvent[], actions: AgentAction[], hints: ModelHints) => {
     setView({ lines, actions, hints, ...run(lines, actions, hints) });
+    // A read-back waits a fixed time for the caller's yes: look again when it runs out, even if nobody speaks.
+    clearTimeout(expiryTimer);
+    const until = get().view.nameEntry?.readBackUntil;
+    if (until !== undefined) expiryTimer = setTimeout(() => setView(run(get().lines, get().actions, get().hints)), Math.max(0, until - epochNow()) + 50);
     void assistReady().then((ready) => ready && askModel());
   };
   const act = (action: AgentAction) => update(get().lines, [...get().actions, action], get().hints);
 
   const reset = (callId: string | null) => {
     clearTimeout(settleTimer);
+    clearTimeout(expiryTimer);
     queued = null;
     classified = new Set();
     requested = new Set();
