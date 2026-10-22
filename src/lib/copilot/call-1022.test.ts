@@ -213,6 +213,22 @@ test("the typing fields stay on the caller's answer while the agent says somethi
   assert.equal(v.nameEntry?.checking, true);
 });
 
+test("after a failed answer and the agent's re-ask, the fields wait for the new answer, so typing can't rewrite the failed attempt (independent review)", () => {
+  const failed = script({ [ADDRESS_ANSWER]: { side: "caller", text: "Hill Street in Boston." } }).slice(0, ADDRESS_ANSWER);
+  let v = view(failed);
+  assert.equal(v.verification.factors[1].state, "failed");
+  assert.deepEqual(v.addressEntry, { key: "k7", checking: false }, "type what the caller said, if it was misheard");
+  const reask = [...failed, { side: "agent" as const, text: "Sorry, could you give me the street and city again?" }];
+  v = view(reask);
+  assert.equal(v.addressEntry, null);
+  v = view([...reask, { side: "caller", text: "Hill Rote in Dalis.", checking: true }]);
+  assert.deepEqual(v.addressEntry, { key: "k9", checking: true });
+  // The name the same way.
+  const nameFailed = script({ 5: { side: "caller", text: "Ben Carter." } }).slice(0, 5);
+  assert.equal(view(nameFailed).nameEntry?.key, "k5");
+  assert.equal(view([...nameFailed, { side: "agent", text: "Sorry, could I have your full name again?" }]).nameEntry, null);
+});
+
 test("no address field before the name is verified, and none when the address was heard right", () => {
   assert.equal(view(address({ side: "caller", text: "Helrout.", checking: true }, { side: "caller", text: "Sen nilir." })).addressEntry, null);
   assert.equal(view(address({ side: "caller", text: "Hill Road, in Dallas.", checking: true })).addressEntry, null);

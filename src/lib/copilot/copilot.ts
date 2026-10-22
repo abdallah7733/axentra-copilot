@@ -1541,7 +1541,8 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       ...(readBackState === "refused" && readBackRefused ? { readBackRecovery: (readBackRefused as { recovery: "ask" | "type" }).recovery } : {}),
     };
     if (checkingAnswer) nameEntry = { key: checkingAnswer.key, checking: true, readBack: readBackState, ...extra };
-    else if (name.evidence?.side === "caller") nameEntry = { key: name.evidence.key, checking: false, readBack: readBackState, ...extra };
+    // Not on an answer from before the agent asked again: typing there would rewrite a failed attempt (independent review).
+    else if (name.evidence?.side === "caller" && (!asked || name.evidence.at > asked.at)) nameEntry = { key: name.evidence.key, checking: false, readBack: readBackState, ...extra };
   }
 
   /* ---------- Where the agent types the street and city ---------- */
@@ -1555,7 +1556,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
         ? [...corrected].reverse().find((l) => l.checking && l.side === "caller" && l.startedAt > asked.at && l.startedAt < addressAskEnds && matchAddress(l.text, customer) !== "match")
         : undefined;
     if (checkingAnswer) addressEntry = { key: checkingAnswer.key, checking: true };
-    else if (address.evidence?.side === "caller") addressEntry = { key: address.evidence.key, checking: false };
+    else if (address.evidence?.side === "caller" && (!asked || address.evidence.at > asked.at)) addressEntry = { key: address.evidence.key, checking: false };
   }
 
   /* ---------- SOP steps ---------- */
