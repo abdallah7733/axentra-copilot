@@ -39,7 +39,7 @@ const BRIDGE = /^(was|be|said|its|i'd|i'll|i've|that's|thats|um|uh|like|so|oh)$/
  * Everyday words that are not a name, a street or a city, so they are never a second candidate after a correction word
  * even when written with a capital ("Sam Miller. Sorry, the Tablet is cracked.").
  */
-const COMMON = new Set(
+export const COMMON = new Set(
   (
     "about after again ago all also an any anything are around as ask asked back be because been before being but by card change check code come " +
     "could day days deliver delivering did do does doing done dont don't double each else every for get give go going good got had has have he " +

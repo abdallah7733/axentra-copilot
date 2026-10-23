@@ -2,7 +2,7 @@ import { findOrderMentions, findSplitOrder, matchOrder, type MentionMethod, type
 import { agentAsksChoice, agentAsksFor, agentCommits, agentDisclosesFactor, agentOffers, escalationWords, readChoice, readIntent, safetyWords, type Choice } from "./signals";
 import { findAffirmed, normalize, repeatsItself, soundsLike, words as textWords } from "./text";
 import type { AgentAction, AuthorityBand, ClientPack, Customer, Order, Side, TranscriptEvent } from "./types";
-import { deniesIdentity, isFiller, matchAddress, matchName, namesAnother, readBackFits, soundsLikeRecord } from "./verification";
+import { COMMON, deniesIdentity, isFiller, matchAddress, matchName, namesAnother, readBackFits, soundsLikeRecord } from "./verification";
 
 /*
   The copilot's rules layer. `analyze` rebuilds the whole copilot view from the
@@ -134,6 +134,11 @@ export type Recommendation = {
    * settles, whether or not an approval was given (Call 11 review, I-22).
    */
   checkingChoice?: Evidence;
+  /**
+   * The caller's reply to the agent's read-back of a detail already verified is still being checked: it may reject the
+   * read-back (his decision, 23 Oct 12:35), so nothing can be approved until it settles.
+   */
+  checkingIdentity?: Evidence;
   /** Every approval given for this call, in order: whether it counted, and why not. */
   history?: { at: number; via: "call" | "panel"; evidence?: Evidence; counted: boolean; reason?: string }[];
 };
@@ -510,6 +515,40 @@ const confirmsOnly = (text: string) => {
   const w = textWords(text);
   return !/\?/.test(text) && w.length > 0 && CONFIRM_START.test(w.join(" ")) && w.every((x) => CONFIRM_WORDS.has(x));
 };
+/**
+ * The record's full name word for word, once, with nothing else but confirming words ("It's Sam Miller.", "Sam Miller,
+ * that's right."): his decision of 23 Oct 12:35 ("Count it") lets the caller's yes to the name read-back say the name too.
+ */
+const NAME_YES_WORDS = new Set([...CONFIRM_WORDS, ..."my name is i'm im this speaking".split(" ")]);
+const saysExactName = (text: string, name: string[]) => {
+  const w = textWords(text);
+  const at = w.findIndex((_, i) => name.every((n, j) => w[i + j] === n));
+  return !/\?/.test(text) && at >= 0 && [...w.slice(0, at), ...w.slice(at + name.length)].every((x) => NAME_YES_WORDS.has(x));
+};
+/** A yes that also says the record's full name, exactly the name the read-back said: "Yes, Sam Miller.", "Yes, that's Sam Miller, thank you." */
+const yesWithName = (text: string, name: string[]) => CONFIRM_START.test(textWords(text).join(" ")) && saysExactName(text, name);
+
+/**
+ * The caller rejects or corrects the agent's read-back of a detail (his decision, 23 Oct 12:35), judged on the whole
+ * reply. One that starts with a rejection is one ("No.", "Not quite, it's Millar.", "Close, but it's Millar.", "You've
+ * got the wrong name.", "No, we moved."), unless it is said for yes ("No, that's right."). One that starts with a yes is
+ * one only when a "but", "actually" or "sorry" leads to a no, another name or another place ("Yes, but it's Millar.").
+ * Anything else is one only when it says the detail is wrong, someone else's or old ("It's Millar, not Miller.", "That's
+ * my husband.", "That's my old address."). Everyday phrases ("No problem."), backchannels ("Mm-hmm.") and a "No" about
+ * something else followed by a yes ("No." then "And yes, that's me.") aren't (independent review, 23 Oct).
+ */
+const REJECT_HEAD =
+  /^(no|nope|nah|not|wrong|incorrect|close|almost|nearly|that's (not|wrong|incorrect|my old)|that is (not|wrong|incorrect|my old)|that isn't|it's not|it is not|it isn't|(you've|you have|you) got (the |my )?wrong|you have (the |my )?wrong)\b/;
+const SAID_FOR_YES = /^no (no )?(that's|that is|it's|it is) (right|correct|fine|me|it)$/;
+const EVERYDAY_NO = /\b(no (problem|problems|worries|bother|rush|hurry|need)|not (at all|a problem))\b/g;
+const CONTRAST = /\b(but|actually|wait|though|although|except|however|sorry)\b/;
+const NEGATION = /\b(no|not|nope|wrong|incorrect|isn't|wasn't|never)\b/;
+const SOMEONE_ELSE =
+  /\b(my|his|her|our|their) (husband|wife|partner|dad|father|mum|mom|mother|son|daughter|brother|sister|boss|friend|colleague|flatmate|roommate)('s)?\b|\bi'm (his|her|their)\b|\b(isn't|is not|not) me\b|\bnot (my|our) name\b/;
+const PLACE_GONE = /\b(moved|old address|not anymore|no longer|used to live|not there anymore)\b/;
+const NOT_ANOTHER = new Set([...CONFIRM_WORDS, ...COMMON, ..."no nah not wrong incorrect close almost actually wait i i'm i'll i'd name address street road avenue drive lane city".split(" ")]);
+/** Words that introduce another name or place: "it's Millar", "no, Tom Baker", "but it's Elm Road". */
+const INTRODUCES = /(?:^|[^\p{L}'])(?:my name is|my name's|name is|name's|it's|its|it is|this is|i'm|i am|sorry|actually|no|not|nope|wait|but|meant|mean|close|almost)[\s,]*$/u;
 
 /**
  * Timestamps can put the start of a reply slightly before the end of the question; up to this much is tolerated. A yes
@@ -533,13 +572,15 @@ const UNCLEAR = "it was unclear";
  * started after the question ended, checked by the second speech model with both models hearing a yes, and heard
  * clearly. "No", corrections, "yes, but…", unclear speech and a yes to anything else never verify the name.
  */
-function whyNotConfirmed(line: TranscriptEvent, ev: Evidence, askedEnd: number): string | null {
+function whyNotConfirmed(line: TranscriptEvent, ev: Evidence, askedEnd: number, nameYes?: { exact: (t: string) => boolean; heard: (t: string) => boolean }): string | null {
   if (line.typedFrom !== undefined) return "the agent typed over it";
   if (line.startedAt < askedEnd - READ_BACK_OVERLAP_MS) return "it started before the question ended";
   if (line.startedAt > askedEnd + READ_BACK_REPLY_MS) return "it came too long after the question";
-  if (!confirmsOnly(line.text)) return "it isn't a plain yes";
+  // For the name, a yes with the exact full name in it counts too (his decision, 23 Oct 12:35); the fast model must have
+  // heard a yes as well, with nothing in it but that yes and the name, however it heard the name.
+  if (!confirmsOnly(line.text) && !nameYes?.exact(line.text)) return "it isn't a plain yes";
   if (line.checkFailed || !line.checked) return NOT_CHECKED;
-  if (line.firstHeard !== undefined && !confirmsOnly(line.firstHeard)) return `the fast model heard "${line.firstHeard}"`;
+  if (line.firstHeard !== undefined && !confirmsOnly(line.firstHeard) && !nameYes?.heard(line.firstHeard)) return `the fast model heard "${line.firstHeard}"`;
   if (ev.lowConfidence) return UNCLEAR;
   return null;
 }
@@ -622,6 +663,24 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     textWords(text)
       .map((w) => w.replace(/'s$/, ""))
       .some((w) => !isFiller(w) && nameParts.some((p) => soundsLike(w, p)));
+  // His decision of 23 Oct 12:35 ("Count it"): the caller's yes to the name read-back may say the name too, the record's
+  // full name word for word as the second model heard it (yesWithName). The fast model only has to hear a yes, and words
+  // that sound like the name, and nothing else.
+  /** As the fast model heard it: words that sound like every part of the name, and nothing else but yes words. */
+  const fastHeardName = (t: string) => {
+    const rest = textWords(t).filter((x) => !NAME_YES_WORDS.has(x));
+    return (
+      !/\?/.test(t) &&
+      rest.length === nameParts.length &&
+      rest.every((x) => !isFiller(x) && nameParts.some((p) => soundsLike(x, p))) &&
+      nameParts.every((p) => rest.some((x) => soundsLike(x, p))) &&
+      !namesAnother(t, customer)
+    );
+  };
+  const nameYes = {
+    exact: (t: string) => yesWithName(t, nameParts),
+    heard: (t: string) => CONFIRM_START.test(textWords(t).join(" ")) && fastHeardName(t),
+  };
 
   // Speech order, not arrival order: the two sides are recognised separately. A line still
   // being checked by the second speech model is left out until its checked text arrives.
@@ -778,6 +837,57 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   };
   const addressParts = [...textWords(customer.address.street).filter((w) => !STREET_TYPE_WORDS.has(w)), ...textWords(customer.address.city)];
   const saysAddressPart = (text: string) => textWords(text).some((w) => !isFiller(w) && addressParts.some((p) => soundsLike(w, p)));
+  // Every agent line that read back the record's name (as either model heard it), or its street and city, whatever it
+  // could verify: the caller's reply to it can reject it (his decision, 23 Oct 12:35).
+  // A read-back line still held for its own check (an agent line after an approval) counts as said meanwhile, as its fast
+  // text, so a rejection in the reply applies at once (independent review, 23 Oct).
+  const heldBacks = (id: "name" | "address") =>
+    corrected.filter((l) => l.side === "agent" && l.checking && (id === "name" ? [l.text, l.reheard?.text].some((t) => !!t && readsBackName(t, customer)) : readsBackAddress(l.text, customer)));
+  const backsSaid: Record<"name" | "address", TranscriptEvent[]> = { name: heldBacks("name"), address: heldBacks("address") };
+  /** The caller's reply to such a read-back: from the first line, if it started within READ_BACK_REPLY_MS, up to the agent's next line. */
+  const backReply = (b: TranscriptEvent) => {
+    const r = replyTo(b).sort((x, y) => x.startedAt - y.startedAt || x.seq - y.seq);
+    return r.length && r[0].startedAt <= b.endedAt + READ_BACK_REPLY_MS ? r : [];
+  };
+  /** The detail was verified, and showed as verified, before this caller line reached the console. */
+  const verifiedBefore = (f: Factor, l: TranscriptEvent) => f.state === "ok" && (f.knownAt ?? 0) <= arrived(l);
+  const recordWordsOf = { name: nameParts, address: [...textWords(customer.address.street), ...textWords(customer.address.city), ...textWords(customer.address.state)] };
+  /** Another name or place said in place of the record's: a capitalised word not in the record, after words that introduce one. */
+  const statesOther = (id: "name" | "address", text: string) => {
+    for (const m of text.matchAll(/\p{Lu}[\p{L}'’-]*(?:\s+\p{Lu}[\p{L}'’-]*)*/gu)) {
+      const other = m[0].split(/\s+/).some((x) => {
+        const t = normalize(x).replace(/'s$/, "");
+        return t.length > 1 && !recordWordsOf[id].includes(t) && !NOT_ANOTHER.has(t) && !isFiller(t);
+      });
+      if (other && INTRODUCES.test(normalize(text.slice(0, m.index)) + " ")) return true;
+    }
+    return false;
+  };
+  /** The caller's whole reply to a read-back of this detail rejects or corrects it (see REJECT_HEAD): an unrelated "No" doesn't. */
+  const rejectsBack = (id: "name" | "address", text: string) => {
+    const lower = textWords(text).join(" ").replace(EVERYDAY_NO, " ").replace(/\s+/g, " ").trim();
+    if (!lower) return false;
+    const elsewhere = (t: string) => (id === "name" ? SOMEONE_ELSE : PLACE_GONE).test(t);
+    // "No." then "And yes, that's me.": the no answered something else.
+    const sentences = text.split(/[.!?]+/).map((x) => textWords(x).join(" ")).filter(Boolean);
+    if (/^(no|nope|nah)( no)*$/.test(sentences[0] ?? "") && sentences.slice(1).some((x) => /^((and|but|oh|um|uh) )?(yes|yeah|yep|that's (right|me|correct)|that is (right|me|correct))\b/.test(x) && !NEGATION.test(x) && !elsewhere(x)) && !statesOther(id, text)) return false;
+    if (REJECT_HEAD.test(lower)) return !SAID_FOR_YES.test(lower);
+    if (CONFIRM_START.test(lower)) {
+      // "Yes." then "No.": a later sentence that starts with a rejection takes the yes back.
+      if (sentences.slice(1).some((x) => {
+        const y = x.replace(EVERYDAY_NO, " ").replace(/\s+/g, " ").trim();
+        return !!y && REJECT_HEAD.test(y) && !SAID_FOR_YES.test(y);
+      })) return true;
+      const c = CONTRAST.exec(lower);
+      if (!c) return false;
+      const rest = lower.slice(c.index + c[0].length);
+      const restText = text.slice(Math.max(0, text.toLowerCase().search(new RegExp(`\\b${c[0]}\\b`))));
+      return NEGATION.test(rest) || elsewhere(rest) || statesOther(id, restText);
+    }
+    if (elsewhere(lower) || statesOther(id, text)) return true;
+    const about = id === "name" ? saysNamePart(text) || /\b(name|surname|spell|spelled|spelling)\b/.test(lower) : saysAddressPart(text) || /\b(address|street|road|city)\b/.test(lower);
+    return NEGATION.test(lower) && about;
+  };
   /** The caller's later lines in the same reply as `line`: after it, before the agent's next line starts. */
   const restOfReply = (line: TranscriptEvent) => {
     const after = (l: TranscriptEvent) => l.startedAt > line.startedAt || (l.startedAt === line.startedAt && l.seq > line.seq);
@@ -883,7 +993,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   // that never comes back, even once identity is verified again (independent review of C7, 23 Oct).
   // A fall doesn't count against an approval given once the detail was verified again on a line the caller spoke after
   // the one that undid it (the answer to a re-ask): that approval relied on the new answer (third check of C7, 23 Oct).
-  const identityFalls: { at: number; id: "name" | "address"; said: number }[] = [];
+  const identityFalls: { at: number; id: "name" | "address"; said: number; reason?: string }[] = [];
 
   // An email is "at" with "dot", "com" or "mail", or an "@": "Yes, we're at Hill Rd in Dallas." is a street and city, and
   // an echo of one (second review of C7, 23 Oct: any "at" without the word "road" counted as an email).
@@ -1259,6 +1369,12 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       if (!locked && (!intent || expecting === "name" || expecting === "address" || lowConfidenceChoice || (!choice && (choiceAsked || unreadChoice)) || (choice && (choiceAsked || changesChoice)))) {
         keyAnswers.push(line.key);
       }
+      // A reply to the agent's read-back of a detail already verified when it reached the console: it may reject it, so it
+      // is checked too. Verified only later (typed after a refused read-back), it is no reply to a verified detail.
+      const repliesToOkBack = (["name", "address"] as const).filter(
+        (id) => verifiedBefore(id === "name" ? name : address, line) && backsSaid[id].some((b) => backReply(b).some((l) => l.key === line.key)),
+      );
+      if (!locked && repliesToOkBack.length && !keyAnswers.includes(line.key)) keyAnswers.push(line.key);
       const caused = CAUSED_AFTER.exec(line.text);
       if (caused && !ev.lowConfidence) causedAfter = { phrase: caused[0], ev };
 
@@ -1323,12 +1439,18 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       if (lateName) [lastReadBack, nameExpiredOpen] = [null, true];
       const continues = !backed && replyOpen;
       if (backed) replyOpen = true;
-      let why: string | null | undefined = backed && !locked && name.state !== "ok" ? whyNotConfirmed(line, ev, backed.endedAt) : undefined;
+      let why: string | null | undefined = backed && !locked && name.state !== "ok" ? whyNotConfirmed(line, ev, backed.endedAt, nameYes) : undefined;
       if (backed && why === null) {
-        // The yes counts only if the rest of the reply is also a plain yes; while part of it is being checked, wait.
+        // The yes counts only if the rest of the reply is also a plain yes (or the exact name, or thanks); while part of it
+        // is being checked, wait.
         const rest = restOfReply(line);
-        const went = rest.find((l) => !l.checking && !confirmsOnly(l.text) && !thanksOnly(l.text));
+        const went = rest.find((l) => !l.checking && !confirmsOnly(l.text) && !thanksOnly(l.text) && !saysExactName(l.text, nameParts));
+        // A later line with the name counts only as the yes does: checked, clear, and the fast model hearing the name too.
+        const nameLine = rest.find((l) => !l.checking && !confirmsOnly(l.text) && !thanksOnly(l.text) && saysExactName(l.text, nameParts));
         if (went) why = `the caller went on: "${went.text}"`;
+        else if (nameLine && (nameLine.checkFailed || !nameLine.checked || nameLine.typedFrom !== undefined)) why = NOT_CHECKED;
+        else if (nameLine && nameLine.firstHeard !== undefined && !confirmsOnly(nameLine.firstHeard) && !fastHeardName(nameLine.firstHeard)) why = `the fast model heard "${nameLine.firstHeard}"`;
+        else if (nameLine && nameLine.confidence !== null && nameLine.confidence < LOW_CONFIDENCE) why = UNCLEAR;
         else if (rest.some((l) => l.checking)) {
           readBackHeld = true;
           why = undefined;
@@ -1391,6 +1513,35 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         markVerified(ev);
       } else if (whyA) addrRefused = { ev, why: whyA, recovery: whyA === NOT_CHECKED || whyA === UNCLEAR ? "type" : "ask" };
       if (backedA && (whyA !== undefined || againA)) lastAddrBack = null;
+
+      // His decision of 23 Oct 12:35: the caller clearly rejecting or correcting the agent's read-back of a detail already
+      // verified (by a Confirm press, the caller's own answer or typing) reopens that check. Neither the read-back nor a
+      // Confirm press can count again for it on this call; an approval given before the rejection stops counting
+      // (identityFalls), and nothing that needs identity counts until the detail is verified again. Only a reply to a
+      // read-back of that detail can do this, and only a rejection or a correction of it: an unrelated "No" changes
+      // nothing. Either model hearing a rejection is enough, since reopening only means asking again.
+      const rejectedBack = new Set<"name" | "address">();
+      for (const id of repliesToOkBack) {
+        const f = id === "name" ? name : address;
+        if (locked || f.state !== "ok") continue;
+        // The whole reply, as each model heard it, and as recognised under anything the agent typed over it.
+        const back = backsSaid[id].find((b) => backReply(b).some((l) => l.key === line.key))!;
+        const backLines = backReply(back);
+        const heard = [backLines.map((l) => l.text), backLines.map((l) => l.firstHeard ?? l.typedFrom ?? l.text), backLines.map((l) => l.typedFrom ?? l.text)].map((t) => t.join(". "));
+        if (!heard.some((t) => rejectsBack(id, t))) continue;
+        // The agent said the record's words in that read-back: what the caller says for it from now on is an echo.
+        recordSaidAt[id] = Math.min(recordSaidAt[id] ?? back.startedAt, back.startedAt);
+        const refusal = { ev, why: "it rejects the read-back", recovery: "ask" as const };
+        if (id === "name") [readBackRefused, lastReadBack] = [refusal, null];
+        else [addrRefused, lastAddrBack] = [refusal, null];
+        Object.assign(f, { state: "confirm", confirmReason: f.confirmReason ?? "ambiguous", knownAt: undefined, method: undefined, confirmedBy: undefined });
+        confirmedByPress.delete(id);
+        verifiedAt = undefined;
+        identityFalls.push({ at: ev.knownAt, id, said: line.startedAt, reason: "the caller rejected the read-back after it" });
+        delete lastMatch[id];
+        if (pending?.factor === f) pending = null;
+        rejectedBack.add(id);
+      }
 
       // The caller correcting themselves straight after an answer that matched, before the agent spoke ("Sam Miller."
       // then "No wait, it's Tom Baker."): their own answer conflicts after all, so it's asked again, never verified and
@@ -1483,7 +1634,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           again ||
           ((why || continues) && !saysNamePart(line.text)) ||
           typedOverReply(!!backed || continues, saysNamePart) ||
-          selfCorrected.has("name")
+          selfCorrected.has("name") ||
+          rejectedBack.has("name")
         ) {
           // A confirmed read-back, a reply still being decided, a "Sorry?", or a reply to one with no name in it: never a failed attempt.
         } else if (expecting === "name" && confirmsOnly(line.text)) {
@@ -1508,7 +1660,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           againA ||
           ((whyA || continuesA) && !saysAddressPart(line.text)) ||
           typedOverReply(!!backedA || continuesA, saysAddressPart) ||
-          selfCorrected.has("address")
+          selfCorrected.has("address") ||
+          rejectedBack.has("address")
         ) {
           // The same for the address read-back.
         } else if (expecting === "address" && confirmsOnly(line.text)) {
@@ -1538,7 +1691,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           [name, heardName, !!backed || continues, aboutName, address, heardAddress],
           [address, heardAddress, !!backedA || continuesA, aboutAddress, name, heardName],
         ] as const) {
-          if (heardIt || reply || f.state !== "confirm" || f.confirmReason === "ambiguous" || !f.evidence || line.startedAt <= f.evidence.at) continue;
+          if (heardIt || reply || rejectedBack.has(f.id as "name" | "address") || f.state !== "confirm" || f.confirmReason === "ambiguous" || !f.evidence || line.startedAt <= f.evidence.at) continue;
           if (otherHeard || expecting === other.id || other.evidence?.key === line.key) continue;
           // Nor once the agent has asked about something else since the answer ("Is the damage only on the screen?"):
           // the caller is answering that. A question about this detail ("And the last name?") keeps it open.
@@ -1595,6 +1748,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         if (said) recordSaidAt[id] = line.startedAt;
       }
       if (address.state !== "ok" && emailSaidAt === null && [line.text, line.reheard?.text].some((t) => !!t && mentionsRecordEmail(t))) emailSaidAt = line.startedAt;
+      if (!locked && [line.text, line.reheard?.text].some((t) => !!t && readsBackName(t, customer))) backsSaid.name.push(line);
+      if (!locked && readsBackAddress(line.text, customer)) backsSaid.address.push(line);
       // No read-back of either detail while the caller's reply to an earlier one is still being checked.
       const replyChecking = [...readBacksSeen, ...addrBacksSeen].some((b) => replyTo(b).some((l) => l.checking));
       // Saying the name back is allowed only when the client allows it, once the caller has given an answer that covers
@@ -1964,6 +2119,15 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       })
     : undefined;
 
+  // A caller reply to the agent's read-back of a detail already verified, still being checked: it may reject the read-back
+  // (his decision, 23 Oct 12:35), so nothing is approved until it settles. The same while the read-back line itself is
+  // held for its check (an agent line after an approval), once the caller has replied to it.
+  const checkingIdentity = locked
+    ? undefined
+    : (["name", "address"] as const)
+        .flatMap((id) => [...backsSaid[id].flatMap((b) => backReply(b).filter((l) => l.checking)), ...heldBacks(id).flatMap(backReply)].filter((l) => verifiedBefore(id === "name" ? name : address, l)))
+        .sort((x, y) => x.startedAt - y.startedAt)[0];
+
   /* ---------- Recommendation ---------- */
   let recommendation: Recommendation | null = null;
   if (escalate) {
@@ -2075,11 +2239,12 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         const changedSince = choiceChanges.some((t) => t > a.at);
         // A Confirm press the approval relied on was taken back after it: confirming again doesn't revive it.
         const undoneSince = undone.some((u) => u.confirmedAt <= a.at && u.undoneAt > a.at);
-        const fellSince = identityFalls.some((f) => {
+        const fell = identityFalls.find((f) => {
           const factor = f.id === "name" ? name : address;
           const again = factor.state === "ok" && Math.max(factor.evidence?.at ?? 0, factor.confirmedBy?.at ?? 0) > f.said && (factor.knownAt ?? Infinity) <= a.at;
           return f.at > a.at && !again;
         });
+        const fellSince = !!fell;
         const holds = !changedSince && !undoneSince && !fellSince && !!r?.prepared && r.scenario === scenario && r.prepared.kind === prepared.kind && then.order.match?.order.id === o.id;
         const first = recommendation.approval;
         // Said before the approval that counted but available only after it: one that holds says why it
@@ -2099,7 +2264,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         const reason = undoneSince
           ? "a confirmation it relied on was undone"
           : fellSince && then.verification.verified
-            ? "the caller's answer it relied on was corrected after it"
+            ? fell?.reason ?? "the caller's answer it relied on was corrected after it"
             : changedSince && covered === "the outcome has changed since"
             ? "the customer changed their choice after it"
             : covered;
@@ -2130,6 +2295,21 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
             via: held.via!,
             evidence: evidenceOf(checkingChange),
             reason: "a possible change of choice is being checked",
+            ...(held.evidence ? { heard: held.evidence } : {}),
+          };
+      } else if (checkingIdentity) {
+        // The caller's reply to a read-back of a detail already verified is still with the second speech model: it may
+        // reject the read-back, so the approval is on hold until its checked text arrives, then stands or falls (his
+        // decision, 23 Oct 12:35: wait for the complete reply).
+        const held = recommendation.approval.state === "approved" ? recommendation.approval : null;
+        recommendation.approval = { state: "not-ready" };
+        recommendation.checkingIdentity = evidenceOf(checkingIdentity);
+        if (held)
+          recommendation.suspended = {
+            at: held.at!,
+            via: held.via!,
+            evidence: evidenceOf(checkingIdentity),
+            reason: "the caller's reply to your read-back is being checked",
             ...(held.evidence ? { heard: held.evidence } : {}),
           };
       }
@@ -2594,7 +2774,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           ? "Confirmed on the call"
           : "Approved in the panel"
         : recommendation?.suspended
-          ? "On hold: checking a possible change of choice"
+          ? recommendation.checkingIdentity
+            ? "On hold: checking the caller's reply to your read-back"
+            : "On hold: checking a possible change of choice"
           : undefined,
       evidence: recommendation?.approval.evidence,
       sopRef: ref("Resolution authority"),
@@ -2664,6 +2846,10 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       suggestedReply = reply(`Sorry, just to be sure: would you like the new ${o.noun}, or the refund?`, "Scenario A and B");
     } else if (o && match && choice && !match.confirmed && !lowConfidenceChoice) {
       suggestedReply = reply(`Just to confirm, that's order ${o.id}, the ${o.shortName}?`, "Claim rules");
+    } else if (o && recommendation?.checkingIdentity) {
+      // While the caller's reply to a read-back is checked, never an outcome as done: the reply may reject the identity
+      // the outcome relies on (independent review, 23 Oct).
+      suggestedReply = neutral("One moment, please, while I check your details.", "Verification");
     } else if (o && recommendation?.checkingChoice) {
       // While the caller's possible change of choice is being checked, never an outcome as done: reading
       // that aloud could approve whichever outcome the check settles on (Call 11 review, I-22 and I-23).
@@ -2934,7 +3120,9 @@ export function approvalReadiness(view: CopilotView): string | null {
       ? "Approved."
       : rec.approval.state === "awaiting"
         ? "Ready to approve."
-        : rec.checkingChoice || rec.suspended
+        : rec.checkingIdentity
+          ? "Not ready: checking the caller's reply to your read-back."
+          : rec.checkingChoice || rec.suspended
           ? "Not ready: checking a possible change of choice."
           : !view.choice
             ? "Not ready: the customer hasn't chosen yet."

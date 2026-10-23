@@ -122,7 +122,9 @@ test("after the agent says the name, even a sound-alike from the caller opens ne
   assert.equal(name(v).method, "typed by the agent, after the agent said it on the call");
 });
 
-test("a caller's 'Yes, Sam Miller.' to a read-back isn't a plain yes, and isn't counted as their own answer either", () => {
+// His decision of 23 Oct 12:35 ("Count it"): a checked yes with the exact full name now confirms the read-back, labelled as
+// read back, never as the caller's own answer (before, it didn't count at all).
+test("a caller's 'Yes, Sam Miller.' to a read-back confirms it, labelled as read back, never as their own answer", () => {
   const lines: Line[] = [
     ...opening,
     { side: "caller", text: "Sammílis.", firstHeard: "Sen nilir.", checked: true },
@@ -131,8 +133,8 @@ test("a caller's 'Yes, Sam Miller.' to a read-back isn't a plain yes, and isn't 
     { side: "agent", text: "Thank you. And the street and city for the delivery?" },
   ];
   const v = view(lines);
-  assert.notEqual(name(v).state, "ok");
-  assert.equal(name(v).confirmReason, "after-read-back");
+  assert.equal(name(v).state, "ok");
+  assert.equal(name(v).method, NAME_READ_BACK);
   assert.equal(name(v).attempts, 0);
 });
 

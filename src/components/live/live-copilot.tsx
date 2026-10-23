@@ -499,6 +499,11 @@ export function LiveCopilot({ className }: { className?: string }) {
                   Checking whether the customer changed their choice in &ldquo;{rec.checkingChoice.text}&rdquo;. Nothing can be approved until the check settles.
                 </p>
               )}
+              {rec.checkingIdentity && !rec.suspended && (
+                <p className="text-xs text-amber-700 dark:text-amber-500">
+                  Checking the caller&rsquo;s reply to your read-back, &ldquo;{rec.checkingIdentity.text}&rdquo;. Nothing can be approved until the check settles.
+                </p>
+              )}
               {/* Before anything is prepared, an approval that doesn't count still says why, at once (I-24). */}
               {!rec.prepared && rec.staleApproval && (
                 <p className="text-xs text-amber-700 dark:text-amber-500">
@@ -568,8 +573,12 @@ export function LiveCopilot({ className }: { className?: string }) {
                           </span>
                         )}
                         {rec.suspended
-                          ? "It stands again if the check hears the same choice."
-                          : rec.checkingChoice
+                          ? rec.checkingIdentity
+                            ? "It stands again if the caller didn't reject the read-back."
+                            : "It stands again if the check hears the same choice."
+                          : rec.checkingIdentity
+                            ? "It can be approved once the check settles, unless the caller rejected the read-back."
+                            : rec.checkingChoice
                             ? "It can be approved once the check settles."
                             : rec.approval.state === "not-ready"
                           ? "Confirm the customer's choice first."
