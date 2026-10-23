@@ -822,6 +822,17 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
    * said nothing close to the record, so the read-back gave them its words.
    */
   const readBackAfterWrong: Record<"name" | "address", number | null> = { name: null, address: null };
+  const recordName = textWords(customer.name);
+  const recordStreet = textWords(customer.address.street).filter((w) => !STREET_TYPE_WORDS.has(w));
+  const recordCity = textWords(customer.address.city);
+  const mentionsRecordName = (t: string) => {
+    const w = new Set(textWords(t));
+    return recordName.every((x) => w.has(x));
+  };
+  const mentionsRecordAddress = (t: string) => {
+    const w = new Set(textWords(t));
+    return [...recordStreet, ...recordCity].every((x) => w.has(x));
+  };
   /** Spoken (not typed) after the agent read this detail back following a wrong answer. */
   const spokenAfterReadBack = (f: Factor, evs: Evidence[]) => {
     const since = readBackAfterWrong[f.id as "name" | "address"];
@@ -1154,6 +1165,15 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       replyOpen = false;
       addrReplyOpen = false;
       const asksRaw = agentAsksFor(line.text, !verified() && !locked);
+      // The agent said the record's name, or its street and city, in any form ("Is your name Sam Miller?"), before the
+      // caller had said anything close to it: from here the caller's spoken words can't verify that detail by themselves
+      // (second review, 23 Oct). Not after a sound-alike: the caller said it first (the read-back he approved, 22 Oct).
+      for (const f of [name, address]) {
+        const id = f.id as "name" | "address";
+        if (f.state === "ok" || f.state === "confirm" || readBackAfterWrong[id] !== null) continue;
+        const said = [line.text, line.reheard?.text].some((t) => !!t && (id === "name" ? mentionsRecordName(t) : mentionsRecordAddress(t)));
+        if (said) readBackAfterWrong[id] = line.startedAt;
+      }
       // No read-back of either detail while the caller's reply to an earlier one is still being checked.
       const replyChecking = [...readBacksSeen, ...addrBacksSeen].some((b) => replyTo(b).some((l) => l.checking));
       // Saying the name back is allowed only when the client allows it, once the caller has given a full answer the
@@ -1758,7 +1778,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           title: `${f.label}: not matched (attempt ${f.attempts} of ${pack.policy.maxVerificationAttempts})`,
           detail: `${attemptsLeft === 1 ? "One attempt left" : `${attemptsLeft} attempts left`}. Don't say which detail didn't match.${
             (f.id === "name" ? pack.policy.nameReadBack && !readBackRefused : pack.policy.addressReadBack && !addrRefused) && f.attempts <= READ_BACK_AFTER_FAILED
-              ? ` You can still read back the ${f.id === "name" ? "full name" : "street and city"} you understood, as a question, without saying why.`
+              ? ` You can still read back the ${f.id === "name" ? "name" : "street and city"} on the order, word for word as a question, without saying why; only the caller's plain yes counts.`
               : ""
           }`,
           sopRef: ref("Verification"),

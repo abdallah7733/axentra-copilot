@@ -421,3 +421,22 @@ test("the same for the address: after a wrong answer and the read-back, the call
   assert.notEqual(c.address().state, "ok");
   assert.equal(c.address().confirmReason, "after-read-back");
 });
+
+for (const [said, confidence] of [
+  ["Is your name Sam Miller?", 0.9],
+  ["Could you repeat your full name? Is it Sam Miller?", 0.9],
+  ["That's Sam Miller, is that right?", 0.2],
+] as const)
+  test(`after a wrong name, the agent saying the name in a form that isn't a counted read-back still stops the caller's echo verifying it ("${said}", ${confidence})`, () => {
+    const c = call("AW-ANY");
+    c.agent("a1", "Thank you for calling Sunlake. How can I help you today?", 0, 2000);
+    c.say("c1", "Hello. I need help with order 427. The tablet came yesterday, and the screen is cracked.", 3000, 9000);
+    c.agent("a2", "First, can I have your full name, please?", 10_000, 12_000);
+    c.say("c2", "John Smith.", 12_500, 13_500);
+    c.agent("a2b", "Okay.", 15_000, 15_400);
+    c.at(18_500);
+    c.arrive("a3", "agent", said, 16_000, 18_000);
+    if (confidence < 0.5) liveEvents.emit({ type: "line", line: { ...c.s().lines.find((l) => l.key === "a3")!, confidence } as TranscriptEvent });
+    c.say("c3", "Yes, Sam Miller.", 18_600, 19_500);
+    assert.notEqual(c.name().state, "ok");
+  });
