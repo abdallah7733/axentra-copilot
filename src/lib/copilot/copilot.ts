@@ -409,6 +409,7 @@ export const ADDRESS_READ_BACK = "address read back by agent, confirmed by calle
 /** Lead-in words for the address read-back too ("So the delivery address is …"): none of them asks anything else. */
 const ADDRESS_LEAD = new Set([...READ_BACK_LEAD, ..."address delivery deliver delivering ship shipping street city and to for in at on we we're".split(" ")]);
 const ADDRESS_TAGS = new Set([...READ_BACK_TAGS, "is that your address", "is that the right address", "is that the address"]);
+const ADDRESS_TAGS_LONGEST = [...ADDRESS_TAGS].filter((t) => t).sort((a, b) => b.split(" ").length - a.split(" ").length);
 const STATE_SPOKEN: Record<string, string[]> = { tx: ["texas"], ca: ["california"], ny: ["new", "york"], fl: ["florida"] };
 
 /**
@@ -481,6 +482,23 @@ const shapedLikeReadBack = (text: string) => {
   if (tag) w = w.slice(0, -tag.split(" ").length);
   if (w.every((x) => NOT_A_NAME.has(x) || x.length === 1)) return false;
   return w.length >= 1 && w.length <= 4 && (!!tag || /\?/.test(text) || namesSomeone(text));
+};
+
+/** Everyday words a misheard street and city don't come out as only ("What's the delivery address?"). */
+const NOT_AN_ADDRESS = new Set([...NOT_A_NAME, ..."the your street city address delivery zip postcode post code email e mail".split(" ")]);
+/**
+ * An agent line that could be the street and city read-back misheard ("So the address is Hill rode, Dallas, right?"):
+ * lead-in words, two to seven other words, and a question, a confirming tag or a name-like word. It never looks at the
+ * order's address. It only keeps such a line from counting as a new address question.
+ */
+const shapedLikeAddressReadBack = (text: string) => {
+  if (/\b(not|no|never)\b|n't\b/i.test(text)) return false;
+  let w = textWords(text);
+  while (w.length && ADDRESS_LEAD.has(w[0])) w = w.slice(1);
+  const tag = ADDRESS_TAGS_LONGEST.find((t) => w.slice(-t.split(" ").length).join(" ") === t);
+  if (tag) w = w.slice(0, -tag.split(" ").length);
+  if (w.every((x) => NOT_AN_ADDRESS.has(x) || x.length === 1)) return false;
+  return w.length >= 2 && w.length <= 7 && (!!tag || /\?/.test(text) || namesSomeone(text));
 };
 
 /**
@@ -1342,7 +1360,13 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         address.evidence?.side === "caller";
       addrBack =
         canReadBackAddr && !ev.lowConfidence && (!asksRaw || asksRaw === "address") && readsBackAddress(line.text, customer) ? { ev, endedAt: line.endedAt } : null;
-      const asks = addrBack ? null : asksRaw;
+      // A read-back that says "name" or "address" ("So your name is Sam Miller, right?", "So the address is Hill rode,
+      // Dallas, right?") isn't a new question for that detail, even misheard: it would reset the question and the
+      // caller's "Yes." would become the answer, losing the sound-alike and the read-back (Amendment 5 check, 23 Oct).
+      // Only a line that reads the name back, or is shaped like a read-back with a name-like word in it.
+      const nameWordBack: boolean = asksRaw === "name" && canReadBack && (!!saidBack || (shapedLikeReadBack(line.text) && namesSomeone(line.text)));
+      const addrWordBack: boolean = asksRaw === "address" && canReadBackAddr && shapedLikeAddressReadBack(line.text) && namesSomeone(line.text);
+      const asks: typeof asksRaw = addrBack || nameWordBack || addrWordBack ? null : asksRaw;
       readBack = !asks && !addrBack && canReadBack && saidBack ? { ev: saidBack, endedAt: line.endedAt } : null;
       // The agent's mic is clean, but the fast model can still mishear a read-back: it wrote "So it's Samuel Wright."
       // for "So it's Sam Miller, right?" and the second model heard it right (23 Oct C3 call). While read-back is allowed
