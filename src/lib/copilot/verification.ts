@@ -31,8 +31,34 @@ const has = (tokens: string[], expected: string) => heardAs(tokens, expected) !=
 const answerWords = (text: string) => words(text).map((w) => w.replace(/'s$/, ""));
 
 const DENIAL = /^(not|never|isn't|isnt|wasn't|wasnt|don't|dont|doesn't|doesnt|didn't|didnt|ain't|aint)$/;
-/** Words a caller corrects themselves with: "Sam Miller. No wait, it's Tom Baker." */
-const CORRECTION = /^(no|wait|actually|mean|correction)$/;
+/** Words a caller corrects themselves with: "Sam Miller. No wait, it's Tom Baker.", "Sorry, I meant Tom Baker." */
+const CORRECTION = /^(no|wait|actually|mean|meant|correction|sorry|oops|scratch|mistake|rather)$/;
+/** Words passed over between a correction word and what it corrects to ("No wait, it was Tom Baker"). */
+const BRIDGE = /^(was|be|said|its|i'd|i'll|i've|that's|thats|um|uh|like|so|oh)$/;
+/**
+ * Everyday words that are not a name, a street or a city, so they are never a second candidate after a correction word:
+ * "Sam Miller. Wait, do you need my order number?" and "Hill Road in Dallas. Actually, I'm at work." still match
+ * (independent review of C7, 23 Oct). A word capitalised inside a sentence counts as a candidate anyway ("it's Will Rose").
+ */
+const COMMON = new Set(
+  (
+    "about after again ago all also an any anything are around as ask asked back be because been before being but by card change check code come " +
+    "could day days deliver delivering did do does doing done dont don't double each else every for get give go going good got had has have he " +
+    "help her here him his how if instead just know last let let's like look make many may me mine more much need needed new not now number numbers " +
+    "off office ok okay only order orders other our out over phone right same see send she should so some something spell spelled spelling " +
+    "sure tablet screen cracked broken damaged arrived came box package item refund replacement money then there these they thing think " +
+    "those through time today too two three four five six seven eight nine ten zip up us use want wanted was way we well were what when where " +
+    "which who why will with without work would yes yet yesterday your you're both two"
+  ).split(" "),
+);
+/** The words capitalised inside a sentence (proper names, as the speech models write them), lower case. */
+function capitalised(text: string): Set<string> {
+  const caps = new Set<string>();
+  for (const sentence of text.split(/[.!?]+\s*/))
+    for (const [i, w] of (sentence.match(/[A-Za-z][A-Za-z']*/g) ?? []).entries())
+      if (i > 0 && w.length > 1 && /^[A-Z]/.test(w) && !/^I('m|'d|'ll|'ve)?$/.test(w)) caps.add(w.toLowerCase().replace(/'s$/, ""));
+  return caps;
+}
 const denies = (tokens: string[]) => tokens.some((t) => DENIAL.test(t));
 
 export const deniesIdentity = (text: string) => denies(answerWords(text));
@@ -44,30 +70,40 @@ export const deniesIdentity = (text: string) => denies(answerWords(text));
  * - "My name is Sam Miller, not John Smith", "Not Boston, Hill Road in Dallas": something
  *   else denied. Rather than guess the scope, ask again.
  * - "Sam Miller or John Smith": two candidates. Ask again.
- * - "Sam Miller. No wait, it's Tom Baker." (or the other way round): the caller corrected themselves between the
- *   record's words and others, so their own answer conflicts. Ask again (his rule, 23 Oct).
+ * - "Sam Miller. No wait, it's Tom Baker." (or the other way round): the caller corrected themselves from the record's
+ *   words to another candidate, so their own answer conflicts. Ask again (his rule, 23 Oct). Only a candidate straight
+ *   after the correction word counts (filler between is passed over): "Sam Miller, no, M I L L E R." and "Sam Miller.
+ *   Wait, do you need my order number?" still match.
  */
-function frame(tokens: string[], expected: string[], recordWords: string[] = []): FactorResult | null {
+function frame(tokens: string[], expected: string[], recordWords: string[] = [], caps = new Set<string>()): FactorResult | null {
   const isExpected = (t: string | undefined) => !!t && expected.some((e) => soundsLike(t, e));
   const denials = tokens.flatMap((t, i) => (DENIAL.test(t) ? [i] : []));
   if (denials.some((i) => isExpected(tokens[i + 1]))) return "mismatch";
   const anyExpected = tokens.some((t) => isExpected(t));
   if (!anyExpected) return null;
   if (denials.length) return "ambiguous";
-  const other = (t: string) => t !== "or" && !CORRECTION.test(t) && !NOT_AN_ANSWER.test(t) && !isExpected(t) && !recordWords.includes(t);
-  const others = tokens.filter(other);
-  if (tokens.includes("or") && others.length) return "ambiguous";
-  const at = (test: (t: string) => boolean) => tokens.flatMap((t, i) => (test(t) ? [i] : []));
-  const [expectedAt, otherAt] = [at(isExpected), at(other)];
-  const between = (m: number, before: number[], after: number[]) => before.some((i) => i < m) && after.some((i) => i > m);
-  if (at((t) => CORRECTION.test(t)).some((m) => between(m, expectedAt, otherAt) || between(m, otherAt, expectedAt))) return "ambiguous";
+  const other = (t: string) => t !== "or" && !NOT_AN_ANSWER.test(t) && !isExpected(t) && !recordWords.includes(t);
+  if (tokens.includes("or") && tokens.some((t) => other(t) && !CORRECTION.test(t))) return "ambiguous";
+  // A second candidate: a word that could itself be a name, street or city. Not a number, a spelled letter ("M I L L E
+  // R", "two Ls") or an everyday word, unless it is written as a name.
+  const candidate = (t: string | undefined) =>
+    !!t && other(t) && !CORRECTION.test(t) && !BRIDGE.test(t) && t.length > 1 && !/^\d/.test(t) && !/^[a-z]s$/.test(t) && (caps.has(t) || !COMMON.has(t));
+  const skip = (t: string) => NOT_AN_ANSWER.test(t) || CORRECTION.test(t) || BRIDGE.test(t);
+  for (const [m, t] of tokens.entries()) {
+    if (!CORRECTION.test(t)) continue;
+    let [n, p] = [m + 1, m - 1];
+    while (n < tokens.length && skip(tokens[n])) n++;
+    while (p >= 0 && skip(tokens[p])) p--;
+    // The record's words, then a correction to another candidate; or another candidate corrected to the record's words.
+    if ((tokens.slice(0, m).some(isExpected) && candidate(tokens[n])) || (candidate(tokens[p]) && isExpected(tokens[n]))) return "ambiguous";
+  }
   return null;
 }
 
 export function matchName(text: string, customer: Customer): FactorResult {
   const tokens = answerWords(text);
   const parts = words(customer.name);
-  const framed = frame(tokens, parts);
+  const framed = frame(tokens, parts, [], capitalised(text));
   if (framed) return framed;
   const heard = parts.map((p) => heardAs(tokens, p));
   const all = allHeard(heard);
@@ -97,7 +133,7 @@ export function matchAddress(text: string, customer: Customer): FactorResult {
   // Street types ("road") and the state ("Texas") are said with every address, so they don't tell two candidates apart.
   const record = [...words(customer.address.street), ...words(customer.address.city), ...words(customer.emailFull.split("@")[0])];
   const shared = [...Object.values(STREET_TYPES).flat(), ...words(customer.address.state), ...Object.values(STATE_NAMES).flat()];
-  const framed = frame(tokens, record.filter((w) => !shared.includes(w)), shared);
+  const framed = frame(tokens, record.filter((w) => !shared.includes(w)), shared, capitalised(text));
   if (framed) return framed;
   // Email: "s dot miller at example mail dot com".
   if (tokens.includes("at") && (tokens.includes("com") || tokens.includes("mail") || tokens.some((t) => t.includes("@")))) {

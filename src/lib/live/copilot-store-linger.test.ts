@@ -156,7 +156,7 @@ test('(c3) address: wrong first (failed 1) -> "Okay." -> "Hill Rode in Dallas." 
 });
 
 /* Unrelated caller speech while the question merely lingers: never a failed attempt, never a downgrade. */
-for (const said of ["Yes.", "I'd like a refund instead.", "John Smith.", "Sam Smith.", "Sam Miller or John Smith."])
+for (const said of ["Yes.", "I'd like a refund instead."])
   test(`(h) name: sound-alike -> "One moment." -> "${said}" changes nothing`, () => {
     const c = call(`FH-${said}`);
     toName(c);
@@ -170,6 +170,26 @@ for (const said of ["Yes.", "I'd like a refund instead.", "John Smith.", "Sam Sm
     assert.equal(c.name().evidence?.key, "c2");
     assert.equal(c.name().attempts, 0);
     assert.equal(c.view().nameEntry?.readBack, "available", "the read-back stays available");
+  });
+
+/*
+  A different name while the question lingers is a genuinely conflicting answer: asked again, with no read-back and no
+  Confirm, and still never a failed attempt (independent review of C7, 23 Oct: it used to be dropped, so the read-back
+  of the earlier sound-alike still counted).
+*/
+for (const said of ["John Smith.", "Sam Smith.", "Sam Miller or John Smith.", "Actually it's Tom Baker."])
+  test(`(h) name: sound-alike -> "One moment." -> "${said}" is asked again, not a failed attempt`, () => {
+    const c = call(`FHC-${said}`);
+    toName(c);
+    c.say("c2", "Sam Miler.", 21_500, 22_500);
+    c.agent("a3", "One moment.", 25_500, 26_500);
+    c.say("c3", said, 27_500, 28_500);
+    c.at(32_000);
+    c.log(`after "${said}" + settle`);
+    assert.equal(c.name().state, "confirm");
+    assert.equal(c.name().confirmReason, "ambiguous");
+    assert.equal(c.name().attempts, 0);
+    assert.notEqual(c.view().nameEntry?.readBack, "available", "no read-back after a conflicting answer");
   });
 
 test('(h2) name asked, "One moment." before any answer, then a wrong answer: not a failed attempt', () => {
