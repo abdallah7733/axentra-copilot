@@ -37,6 +37,14 @@ export type TranscriptEvent = {
   /** Epoch milliseconds when the agent typed it. */
   typedAt?: number;
   /**
+   * An agent line that may be the name read-back misheard, heard again by the second model without being held back
+   * (23 Oct call: "So it's Samuel Wright." for "So it's Sam Miller, right?"). `text` stays the fast model's, and every
+   * other rule uses it; only the read-back rule reads this. `text: null`: the check failed. `at`: when it finished.
+   */
+  reheard?: { text: string | null; confidence: number | null; at: number };
+  /** That check is still running; the line counts as heard meanwhile. */
+  probing?: boolean;
+  /**
    * Epoch milliseconds when this text reached the copilot: when the line arrived, or when the
    * second model's check finished. Defaults to `endedAt`. Speech time places a line in the
    * conversation; this is when it could first be used for a decision.

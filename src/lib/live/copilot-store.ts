@@ -91,21 +91,30 @@ export const useCopilot = create<CopilotState>((set, get) => {
   let expiryTimer: ReturnType<typeof setTimeout> | undefined;
   // Lines already sent for the second model's check (or found uncheckable) this call: each at most once.
   let requested = new Set<string>();
+  // Agent lines being heard again as a possible read-back: their result goes beside the fast text, not over it.
+  let probed = new Set<string>();
 
   /**
-   * Asks for the check on a line, once; the line is held back while it runs. Caller lines while an answer is
-   * awaited; agent lines only when the rules name them (an approval or terms that may have been misheard).
+   * Asks for the check on a line, once. Held back while it runs (`hold`): caller lines while an answer is awaited, and
+   * agent lines the rules name (an approval or terms that may have been misheard). Not held: an agent line that may be
+   * the name read-back misheard (CopilotView.readBackChecks), which counts as heard meanwhile.
    */
-  const requestCheck = (line: TranscriptEvent, named = false): TranscriptEvent => {
+  const requestCheck = (line: TranscriptEvent, named = false, hold = true): TranscriptEvent => {
     if (requested.has(line.key) || (line.side !== "caller" && !named) || line.firstHeard !== undefined || line.checkFailed) return line;
     requested.add(line.key);
-    return useLive.getState().checkLine(line.key) === "started" ? { ...line, checking: true } : line;
+    if (useLive.getState().checkLine(line.key) !== "started") return line;
+    if (hold) return { ...line, checking: true };
+    probed.add(line.key);
+    return { ...line, probing: true };
   };
 
-  /** Lines the rules now name for a check (key answers, or agent lines while a term isn't heard) get it, once. */
+  /** Lines the rules now name for a check (key answers, agent lines while a term isn't heard, possible read-backs) get it, once. */
   const withChecks = (lines: TranscriptEvent[], actions: AgentAction[], hints: ModelHints) => {
-    const late = run(lines, actions, hints).view.keyAnswers.filter((key) => !requested.has(key));
-    return late.length ? lines.map((l) => (late.includes(l.key) ? requestCheck(l, true) : l)) : lines;
+    const { keyAnswers, readBackChecks } = run(lines, actions, hints).view;
+    const late = keyAnswers.filter((key) => !requested.has(key));
+    const probes = readBackChecks.filter((key) => !requested.has(key) && !late.includes(key));
+    if (!late.length && !probes.length) return lines;
+    return lines.map((l) => (late.includes(l.key) ? requestCheck(l, true) : probes.includes(l.key) ? requestCheck(l, true, false) : l));
   };
 
   const assistOn = () => useLive.getState().health?.assist === "local";
@@ -220,6 +229,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
     queued = null;
     classified = new Set();
     requested = new Set();
+    probed = new Set();
     set({ callId, highlightKey: null, worded: null, assistTimes: [], assistLog: [], assist: assistOn() ? "ready" : "off" });
     update([], [], {});
   };
@@ -229,7 +239,15 @@ export const useCopilot = create<CopilotState>((set, get) => {
     else if (event.type === "cleared") reset(null);
     else if (event.type === "line" && event.line.callId === get().callId) {
       let line = event.line;
-      const known = get().lines.some((l) => l.key === line.key);
+      const before = get().lines.find((l) => l.key === line.key);
+      const known = !!before;
+      // A possible read-back heard again: the line keeps the fast text every other rule already used, with what the
+      // second model heard beside it (or that its check failed), from when the result arrived.
+      if (before && probed.has(line.key)) {
+        probed.delete(line.key);
+        const heard = line.checkFailed ? null : line.text;
+        line = { ...before, probing: false, reheard: { text: heard, confidence: heard === null ? null : line.confidence, at: line.availableAt ?? epochNow() } };
+      }
       // A key answer (the problem, name, address or choice) waits for the second speech model's check:
       // short answers heard on their own are where the fast model goes wrong.
       if (!known && get().view.awaiting) line = requestCheck(line);

@@ -189,6 +189,11 @@ export type CopilotView = {
    */
   keyAnswers: string[];
   /**
+   * Agent lines that may be the name read-back misheard: each is heard again by the second model once, without
+   * being held back (see TranscriptEvent.reheard).
+   */
+  readBackChecks: string[];
+  /**
    * Each agent line after the customer chose: whether it goes to the second speech model's check, and why
    * or why not (outside review 14 Oct, 5.6). Lines before the choice are never checked.
    */
@@ -374,6 +379,25 @@ const readsBackName = (text: string, customer: Customer) => {
   return after !== "" || /\?/.test(text.slice(found)) || before[0] === "is";
 };
 
+const READ_BACK_TAGS_LONGEST = [...READ_BACK_TAGS].filter((t) => t).sort((a, b) => b.split(" ").length - a.split(" ").length);
+/** A capitalised word inside a sentence, as recognition writes a name ("So it's Samuel Wright."); "I" doesn't count. */
+const namesSomeone = (text: string) =>
+  [...text.matchAll(/\p{Lu}[\p{L}'’-]*/gu)].some((m) => m[0] !== "I" && !/^I['’]/.test(m[0]) && !/(^|[.!?]\s*)$/.test(text.slice(0, m.index)));
+/**
+ * An agent line that could be the name read-back misheard (23 Oct: "So it's Samuel Wright." for "So it's Sam Miller,
+ * right?"): read-back lead-in words, one to four other words, and a question, a confirming tag or a name-like word.
+ * "Great, thank you." or "One moment, please." isn't, and neither is a negated line. It only decides which lines are
+ * heard again; what counts as a read-back is still readsBackName, on what the second model heard.
+ */
+const shapedLikeReadBack = (text: string) => {
+  if (/\b(not|no|never)\b|n't\b/i.test(text)) return false;
+  let w = textWords(text);
+  while (w.length && READ_BACK_LEAD.has(w[0])) w = w.slice(1);
+  const tag = READ_BACK_TAGS_LONGEST.find((t) => w.slice(-t.split(" ").length).join(" ") === t);
+  if (tag) w = w.slice(0, -tag.split(" ").length);
+  return w.length >= 1 && w.length <= 4 && (!!tag || /\?/.test(text) || namesSomeone(text));
+};
+
 /** A reply that is a plain yes and nothing more ("Yes, that's right, thank you."): a correction, a "yes, but", a question back or anything else isn't. */
 const CONFIRM_START = /^(yes|yeah|yep|yup|correct|exactly|absolutely|right|that's (right|correct|it|me)|that is (right|correct|it|me))\b/;
 const CONFIRM_WORDS = new Set("yes yeah yep yup correct right exactly absolutely that's that is it it's me thank thanks you please sir madam ma'am indeed".split(" "));
@@ -443,7 +467,9 @@ const givenIn = new WeakMap<CopilotView, GivenApproval[]>();
  * `past`: this pass rebuilds what the copilot knew at an earlier moment, to check an approval given
  * then. It only needs the recommendation, so it doesn't look at approvals itself.
  */
-function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentAction[], now: number, hints: ModelHints, past: boolean): CopilotView {
+function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentAction[], now: number, hints: ModelHints, past: boolean): CopilotView {
+  // An agent line heard again as a possible read-back, as the copilot knew it at `now`: before that check finished, it was running.
+  const lines = input.map((l) => (l.reheard && l.reheard.at > now ? { ...l, reheard: undefined, probing: true } : l));
   const { kept: actions, undone } = applyUndos(allActions);
   const sopId = pack.sop.id;
   const ref = (section: string) => `${sopId} · ${section}`;
@@ -491,6 +517,9 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
   // "But no, that's not right." as two lines). `held`: part of it is still being checked, so nothing is decided yet.
   let replyOpen = false;
   let readBackHeld = false;
+  // An agent line being heard again as a possible read-back: until that check finishes, nothing that depends on whether
+  // it was one (a later read-back, the caller's yes, a Confirm press on the name) is decided.
+  let probeOpen = false;
   /** The caller's later lines in the same reply as `line`: after it, before the agent's next line starts. */
   const restOfReply = (line: TranscriptEvent) => {
     const after = (l: TranscriptEvent) => l.startedAt > line.startedAt || (l.startedAt === line.startedAt && l.seq > line.seq);
@@ -543,6 +572,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
   const refused: RefusedApproval[] = [];
   let unheardApproval: { ev: Evidence; value: "replacement" | "refund" } | null = null;
   const keyAnswers: string[] = [];
+  const readBackChecks: string[] = [];
   const agentChecks: CopilotView["agentChecks"] = [];
 
   /**
@@ -715,7 +745,8 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       if (a.type === "confirm" && (a.target === "name" || a.target === "address")) {
         const factor = a.target === "name" ? name : address;
         // Once the caller hasn't confirmed a read-back, the agent can't vouch for the name instead.
-        if (factor.state === "confirm" && confirmable(factor) && factor.evidence && !locked && !(factor.id === "name" && readBackRefused)) {
+        // While the agent's last line is being heard again as a possible read-back, a press waits for that check.
+        if (factor.state === "confirm" && confirmable(factor) && factor.evidence && !locked && !(factor.id === "name" && (readBackRefused || probeOpen))) {
           if (pending?.factor === factor) pending = null;
           factor.state = "ok";
           confirmedByPress.add(factor.id);
@@ -878,12 +909,31 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
         !locked &&
         !readBackRefused &&
         !readBackHeld &&
+        !probeOpen &&
         name.state === "confirm" &&
         name.confirmReason !== "ambiguous" &&
         name.attempts === 0 &&
         name.heard !== undefined &&
         name.evidence?.side === "caller";
-      readBack = !asks && canReadBack && !ev.lowConfidence && readsBackName(line.text, customer) ? { ev, endedAt: line.endedAt } : null;
+      const pendingReadBack = readBack;
+      // The read-back as the fast model heard it, or as the second model heard it again (below).
+      const reheard = line.reheard?.text && !(line.reheard.confidence !== null && line.reheard.confidence < LOW_CONFIDENCE) ? line.reheard : null;
+      const saidBack =
+        !ev.lowConfidence && readsBackName(line.text, customer)
+          ? ev
+          : reheard && readsBackName(reheard.text!, customer)
+            ? { ...ev, text: reheard.text!, firstHeard: line.text, knownAt: Math.max(ev.knownAt, reheard.at), lowConfidence: false }
+            : null;
+      readBack = !asks && canReadBack && saidBack ? { ev: saidBack, endedAt: line.endedAt } : null;
+      // The agent's mic is clean, but the fast model can still mishear a read-back: it wrote "So it's Samuel Wright."
+      // for "So it's Sam Miller, right?" and the second model heard it right (23 Oct C3 call). While read-back is allowed
+      // and the name question is the latest one, a line shaped like a read-back is heard again by the second model. It
+      // isn't held back: until that check finishes it counts as heard, and only what depends on whether it was a
+      // read-back waits (probeOpen). What counts as a read-back, and the caller's checked plain yes, stay as they are.
+      if (!readBack && !asks && !pendingReadBack && canReadBack && nameAsk && nameAskEnds === Infinity && !line.reheard && shapedLikeReadBack(line.text)) {
+        readBackChecks.push(line.key);
+        if (line.probing) probeOpen = true;
+      }
       if (readBack) expecting = "name";
       else if (!asks && (expecting === "name" || expecting === "address")) expecting = null;
       if (asks || readBack) {
@@ -1391,7 +1441,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
       ? "off"
       : readBackRefused
         ? "refused"
-        : readBackHeld || (readBackUntil !== undefined && now <= readBackUntil)
+        : readBackHeld || probeOpen || (readBackUntil !== undefined && now <= readBackUntil)
           ? "waiting"
           : readBackUntil !== undefined
             ? "expired"
@@ -1402,11 +1452,13 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
   const nameAction =
     readBackState === "available"
       ? "Say it back as you heard it and wait for the caller's yes, or type it (N)."
-      : readBackState === "waiting"
-        ? "Wait for the caller's yes to your read-back, or type what the caller said (N)."
-        : readBackState === "expired"
-          ? `No reply to your read-back within ${READ_BACK_REPLY_MS / 1000} s, so a yes now won't count. Ask for the full name again, or type it (N).`
-          : "Type what the caller said (N), or ask again.";
+      : readBackState === "waiting" && probeOpen
+        ? "Checking whether you read the name back. Wait for the caller's yes, or type what the caller said (N)."
+        : readBackState === "waiting"
+          ? "Wait for the caller's yes to your read-back, or type what the caller said (N)."
+          : readBackState === "expired"
+            ? `No reply to your read-back within ${READ_BACK_REPLY_MS / 1000} s, so a yes now won't count. Ask for the full name again, or type it (N).`
+            : "Type what the caller said (N), or ask again.";
   for (const f of [name, address]) {
     if (f.state === "confirm" && f.evidence && f.id === "name" && readBackRefused) {
       // After a refused read-back, typing is the way on: neither another read-back nor the Confirm button counts.
@@ -1943,6 +1995,7 @@ function rules(pack: ClientPack, lines: TranscriptEvent[], allActions: AgentActi
     documentation,
     awaiting,
     keyAnswers,
+    readBackChecks,
     agentChecks,
     undoable: [
       ...(["name", "address"] as const).filter((t) => confirmedByPress.has(t)),
