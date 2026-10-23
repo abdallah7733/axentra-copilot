@@ -1402,13 +1402,17 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         const id = f.id as "name" | "address";
         const m = lastMatch[id];
         if (!m || m.line.key === line.key) continue;
-        const joins =
+        // After a pause, while the agent is still silent, a line that corrects itself ("No wait, it's Tom Baker.") is still
+        // read with the answer; other lines after the pause are left out of it (third check of C7, 23 Oct: a correction
+        // 2 s after the answer was ignored, and an approval after it counted).
+        const near = line.startedAt - m.end < ANSWER_GAP_MS;
+        const stillOn =
           !locked &&
           f.state === "ok" &&
           f.evidence?.key === m.line.key &&
-          line.startedAt - m.end < ANSWER_GAP_MS &&
           !ordered.some((l) => l.side === "agent" && l.startedAt > m.line.startedAt && l.startedAt < line.startedAt);
-        if (!joins) {
+        if (stillOn && !near && !/\b(no|wait|actually|sorry|meant|mean|correction|oops)\b/i.test(line.text)) continue;
+        if (!stillOn) {
           delete lastMatch[id];
           continue;
         }

@@ -360,3 +360,46 @@ for (const [rest, counts] of [["Great, thank you so much.", true], ["Thanks.", t
     assert.equal(c.view().verification.verified, counts);
     assert.equal(approval(c) === "approved", counts);
   });
+
+for (const [first, press] of [["Sam Miler.", true], ["Sam Miller.", false]] as const)
+  for (const start of [24_600, 27_000])
+    test(`"No wait, it's Tom Baker." ${(start - 22_500) / 1000} s after "${first}"${press ? " and a Confirm press" : ""}, before the agent speaks, takes the name back (third check)`, () => {
+      const c = call(`gap${first}${start}`);
+      toName(c);
+      c.at(23_000);
+      c.arrive("c2", "caller", first, 21_500, 22_500);
+      c.at(24_000);
+      c.checked("c2");
+      if (press) {
+        c.at(24_100);
+        c.s().confirm("name");
+      }
+      c.at(24_200);
+      c.s().confirm("order");
+      c.at(24_300);
+      c.s().approve();
+      assert.equal(approval(c), "approved");
+      c.at(start + 1800);
+      c.arrive("c2b", "caller", "No wait, it's Tom Baker.", start, start + 1400);
+      c.at(start + 3000);
+      if (c.held("c2b")) c.checked("c2b");
+      assert.notEqual(c.name().state, "ok");
+      assert.notEqual(approval(c), "approved");
+      c.at(start + 4200);
+      c.arrive("a3", "agent", "Great. Done, the new tablet ships today.", start + 3100, start + 4000);
+      assert.notEqual(approval(c), "approved");
+    });
+
+test("an everyday line after a pause keeps the tick (third check control)", () => {
+  const c = call("gapx");
+  toName(c);
+  c.at(23_000);
+  c.arrive("c2", "caller", "Sam Miller.", 21_500, 22_500);
+  c.at(24_000);
+  c.checked("c2");
+  c.at(27_500);
+  c.arrive("c2b", "caller", "Sorry, I'm driving.", 25_000, 26_400);
+  c.at(28_000);
+  if (c.held("c2b")) c.checked("c2b");
+  assert.equal(c.name().state, "ok");
+});
