@@ -130,7 +130,7 @@ function NameField({ entry }: { entry: NonNullable<CopilotView["nameEntry"]> }) 
           {entry.checking
             ? "Checking what the caller said…"
             : entry.readBack === "waiting" && entry.readBackProbe
-              ? "Checking whether your last line was the read-back…"
+              ? `Checking whether your ${entry.readBackProbe} line was the read-back…`
               : entry.readBack === "waiting"
                 ? "Waiting for the caller’s yes (up to 8 s)…"
                 : entry.readBack === "expired"

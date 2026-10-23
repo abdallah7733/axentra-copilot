@@ -228,7 +228,7 @@ test("pressing Confirm on the problem doesn't stop a misheard read-back from bei
   c.at(28_000);
   c.arrive("a3", "agent", "So it's Samuel Wright.", 25_500, 27_200);
   assert.ok(c.probes.includes("a3"));
-  assert.equal(c.view().nameEntry?.readBackProbe, true, "the field says it is checking the agent's line");
+  assert.equal(c.view().nameEntry?.readBackProbe, "last", "the field says it is checking the agent's line");
   c.at(29_400);
   c.arrive("c3", "caller", "Yes.", 28_200, 28_700);
   c.at(30_500);
@@ -237,4 +237,131 @@ test("pressing Confirm on the problem doesn't stop a misheard read-back from bei
   c.at(31_500);
   c.checked("c3");
   assert.equal(c.name().method, "name read back by agent, confirmed by caller");
+});
+
+/** The agent reads the name back, the caller's "No." is held for its check, and the agent repeats the read-back. */
+function repeated(c: ReturnType<typeof call>, addressFirst = false) {
+  opening(c, addressFirst);
+  c.at(28_000);
+  c.arrive("a3", "agent", "That's Sam Miller, is that right?", 25_500, 27_500);
+  c.at(29_000);
+  c.arrive("c3", "caller", "No.", 28_000, 28_400);
+  assert.ok(c.held("c3"));
+}
+
+test("a repeated read-back doesn't take over while the reply to the first is checked: a name press waits for that reply", () => {
+  const c = call("CA-REPEAT");
+  repeated(c);
+  c.at(31_000);
+  c.arrive("a4", "agent", "That's Sam Miller, is that right?", 29_200, 30_500);
+  c.at(31_500);
+  c.s().confirm("name");
+  // Before (fourth review, 23 Oct), the repeat became the read-back with no reply yet, so the press counted here.
+  assert.notEqual(c.name().state, "ok", "the press waits for the first reply's check");
+  assert.equal(c.view().verification.verified, false);
+  c.at(33_500);
+  c.checked("c3");
+  assert.equal(c.view().nameEntry?.readBack, "refused");
+  assert.equal(c.view().verification.verified, false);
+});
+
+test("a spoken approval after a repeated read-back doesn't count once the first reply's \"No.\" lands", () => {
+  const c = call("CA-REPEAT-APPROVE");
+  repeated(c, true);
+  c.at(31_000);
+  c.arrive("a4", "agent", "That's Sam Miller, is that right?", 29_200, 30_500);
+  c.at(31_500);
+  c.s().confirm("name");
+  c.at(33_200);
+  c.arrive("a5", "agent", "And that's the tablet on order 427, is that right?", 31_600, 33_000);
+  c.at(35_400);
+  c.arrive("a6", "agent", "Perfect, the new tablet ships today.", 33_200, 35_000);
+  assert.equal(c.view().verification.verified, false, "not verified when the agent committed (the address is already given)");
+  assert.notEqual(c.view().recommendation?.approval.state, "approved");
+  c.at(36_000);
+  c.checked("c3");
+  assert.equal(c.view().verification.verified, false);
+  assert.notEqual(c.view().recommendation?.approval.state, "approved");
+});
+
+test("a yes to a repeated read-back doesn't confirm the name while the \"No.\" to the first is still checked", () => {
+  const c = call("CA-REPEAT-YES");
+  repeated(c);
+  c.at(31_000);
+  c.arrive("a4", "agent", "That's Sam Miller, is that right?", 29_200, 30_500);
+  c.at(31_800);
+  c.arrive("c4", "caller", "Yes.", 30_900, 31_200);
+  c.at(33_000);
+  if (c.held("c4")) c.checked("c4");
+  assert.notEqual(c.name().state, "ok", "the repeat was never a read-back, so its yes confirms nothing");
+  c.at(35_000);
+  c.checked("c3");
+  assert.equal(c.view().nameEntry?.readBack, "refused");
+  assert.notEqual(c.name().state, "ok");
+});
+
+test("a name press made while the agent repeats the read-back still waits for the first reply's check", () => {
+  const c = call("CA-REPEAT-DURING");
+  repeated(c);
+  c.at(30_000);
+  c.s().confirm("name");
+  assert.notEqual(c.name().state, "ok");
+  c.at(31_000);
+  c.arrive("a4", "agent", "That's Sam Miller, is that right?", 29_200, 30_500);
+  assert.notEqual(c.name().state, "ok", "the repeat arriving doesn't release the press");
+  c.at(33_500);
+  c.checked("c3");
+  assert.notEqual(c.name().state, "ok");
+});
+
+test("after a refused read-back, a line with the name while the new answer is checked doesn't hold the caller's next line", () => {
+  const c = call("CA-EARLY-REFUSED");
+  opening(c);
+  c.at(28_000);
+  c.arrive("a3", "agent", "That's Sam Miller, is that right?", 25_500, 27_500);
+  c.at(29_000);
+  c.arrive("c3", "caller", "Sorry?", 28_000, 28_400);
+  c.at(30_500);
+  if (c.held("c3")) c.checked("c3");
+  assert.equal(c.view().nameEntry?.readBack, "refused");
+  c.at(33_000);
+  c.arrive("a4", "agent", "Can I have your full name again, please?", 31_000, 32_500);
+  c.at(35_000);
+  c.arrive("c4", "caller", "Sam Miler.", 33_500, 34_500);
+  c.at(37_600);
+  c.arrive("a5", "agent", "Got it, Sam.", 35_500, 37_000);
+  c.at(41_000);
+  c.arrive("c5", "caller", "Also the battery is swollen and it smells like burning.", 37_500, 40_500);
+  // Read-back is over for this call, so nothing the caller says next can be its reply: the safety report shows at once.
+  assert.ok(c.view().alerts.some((a) => a.id === "safety"));
+});
+
+test("the caller's yes to the item isn't held as a name read-back reply while their yes to the name is checked", () => {
+  const c = call("CA-ITEM-YES");
+  opening(c);
+  c.at(28_000);
+  c.arrive("a3", "agent", "So it's Sam Miller, right?", 25_500, 27_500);
+  c.at(29_400);
+  c.arrive("c3", "caller", "Yes.", 28_200, 28_700);
+  assert.ok(c.held("c3"));
+  c.at(32_600);
+  c.arrive("a4", "agent", "And that's the tablet on order 427, is that right?", 29_800, 32_000);
+  c.at(33_200);
+  c.arrive("c4", "caller", "Yes.", 32_300, 32_700);
+  assert.ok(!c.held("c4"), "the item answer isn't waiting for a name check");
+  c.at(35_200);
+  c.checked("c3");
+  assert.equal(c.name().method, "name read back by agent, confirmed by caller");
+});
+
+test("the name field says \"earlier line\" when the agent has said something after the line being heard again", () => {
+  const c = call("CA-EARLIER");
+  opening(c, false);
+  c.at(28_000);
+  c.arrive("a3", "agent", "So it's Samuel Wright.", 25_500, 27_200);
+  assert.equal(c.view().nameEntry?.readBackProbe, "last");
+  c.at(30_000);
+  c.arrive("a4", "agent", "One moment, please, while I pull that up.", 27_500, 29_500);
+  assert.equal(c.view().nameEntry?.readBackProbe, "earlier");
+  assert.match(c.view().prompts.find((p) => p.target === "name")?.text ?? "", /Checking your earlier line/);
 });

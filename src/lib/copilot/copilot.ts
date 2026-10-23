@@ -216,8 +216,9 @@ export type CopilotView = {
     readBackUntil?: number;
     /** After a refusal: ask for the full name again, or type the name (only for a yes the system couldn't confirm). */
     readBackRecovery?: "ask" | "type";
-    /** While waiting: the second model is hearing the agent's last line again in case it was the read-back. */
-    readBackProbe?: true;
+    /** While waiting: the second model is hearing the agent's line again in case it was the read-back, either the
+     * agent's last line or an earlier one the agent has said something after. */
+    readBackProbe?: "last" | "earlier";
   } | null;
   /**
    * Where the agent types the caller's street and city, the same way as the name: from the moment the caller's
@@ -582,7 +583,11 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
    */
   const pressCountsFrom = (at: number) => {
     let from = at;
-    for (const p of probesSeen) if (p.reheard && p.reheard.at > at && replyTo(p).some((l) => l.startedAt < at)) from = Math.max(from, p.reheard.at);
+    for (const p of probesSeen) {
+      const done = p.reheard?.at;
+      // Held only if part of the reply had reached the console before the second hearing landed (fourth review).
+      if (done !== undefined && done > at && replyTo(p).some((l) => l.startedAt < at && (l.first?.at ?? l.availableAt ?? l.endedAt) < done)) from = Math.max(from, done);
+    }
     for (const b of readBacksSeen)
       for (const l of replyTo(b)) if (l.startedAt < at && l.heldAt !== undefined && (l.availableAt ?? l.endedAt) > at) from = Math.max(from, l.availableAt ?? l.endedAt);
     return from;
@@ -980,6 +985,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         !readBackRefused &&
         !readBackHeld &&
         !openProbe &&
+        // Nor while the caller's reply to an earlier read-back is still being checked: a repeated read-back would take
+        // over from it, and a press or an approval would count before that reply's "No." (fourth review, 23 Oct).
+        !readBacksSeen.some((b) => replyTo(b).some((l) => l.checking)) &&
         name.state === "confirm" &&
         name.confirmReason !== "ambiguous" &&
         name.attempts === 0 &&
@@ -1007,14 +1015,29 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       if (line.probedAt !== undefined) probesSeen.push(line);
       // Said before the name answer's check finished, it isn't a read-back yet; once it is, the caller's reply must not
       // have counted on its own first (third review, 23 Oct: "Yes, Sam Miller." verified, then went back for its check).
+      // Only where a read-back could still count (fourth review, 23 Oct: not after a refusal or a failed attempt), and
+      // only for the name answer itself, not a reply to an earlier read-back or line heard again (an item read-back
+      // like "And that's the tablet on order 427, is that right?" has the same shape).
       earlyReadBack =
         !!pack.policy.nameReadBack &&
         !readBack &&
         !asks &&
         !locked &&
+        !readBackRefused &&
+        !readBackHeld &&
+        !openProbe &&
+        name.attempts === 0 &&
         name.state !== "ok" &&
         expecting === "name" &&
-        corrected.some((l) => l.checking && l.side === "caller" && !!nameAsk && l.startedAt > nameAsk.at && l.startedAt < line.startedAt) &&
+        corrected.some(
+          (l) =>
+            l.checking &&
+            l.side === "caller" &&
+            !!nameAsk &&
+            l.startedAt > nameAsk.at &&
+            l.startedAt < line.startedAt &&
+            ![...readBacksSeen, ...probesSeen].some((b) => replyTo(b).includes(l)),
+        ) &&
         (readsBackName(line.text, customer) || shapedLikeReadBack(line.text))
           ? line
           : null;
@@ -1543,12 +1566,14 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
             : name.state === "confirm" && name.confirmReason !== "ambiguous"
               ? "available"
               : "off";
+  const probed = openProbe as TranscriptEvent | null;
+  const probeWhich = probed ? (ordered.some((l) => l.side === "agent" && l.startedAt > probed.startedAt) ? ("earlier" as const) : ("last" as const)) : undefined;
   // The name card leads with what to do: reading a diagnosis first cost about 3 s on the 21 Oct stage call.
   const nameAction =
     readBackState === "available"
       ? "Say it back as you heard it and wait for the caller's yes, or type it (N)."
       : readBackState === "waiting" && openProbe
-        ? "Checking your last line with the second model in case it was the name read-back. You can type what the caller said (N)."
+        ? `Checking your ${probeWhich ?? "last"} line with the second model in case it was the name read-back. You can type what the caller said (N).`
         : readBackState === "waiting"
           ? "Wait for the caller's yes to your read-back, or type what the caller said (N)."
           : readBackState === "expired"
@@ -1686,7 +1711,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     const extra = {
       ...(readBackState === "waiting" && !readBackHeld && readBackUntil !== undefined ? { readBackUntil } : {}),
       ...(readBackState === "refused" && readBackRefused ? { readBackRecovery: (readBackRefused as { recovery: "ask" | "type" }).recovery } : {}),
-      ...(readBackState === "waiting" && openProbe ? { readBackProbe: true as const } : {}),
+      ...(readBackState === "waiting" && probeWhich ? { readBackProbe: probeWhich } : {}),
     };
     if (checkingAnswer) nameEntry = { key: checkingAnswer.key, checking: true, readBack: readBackState, ...extra };
     // Not on an answer from before the agent asked again: typing there would rewrite a failed attempt (independent review).
