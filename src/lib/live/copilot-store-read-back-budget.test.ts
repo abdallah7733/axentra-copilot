@@ -76,14 +76,6 @@ function toAddress(c: C) {
   assert.equal(c.address().state, "confirm");
   assert.equal(c.view().addressEntry?.readBack, "available");
 }
-const nState = (c: C) => {
-  const e = c.view().nameEntry;
-  return `${e?.readBack}${e?.readBackRepeat ? "+repeat" : ""} name=${c.name().state}/${c.name().confirmReason ?? ""} att=${c.name().attempts}`;
-};
-const aState = (c: C) => {
-  const e = c.view().addressEntry;
-  return `${e?.readBack}${e?.readBackRepeat ? "+repeat" : ""} addr=${c.address().state}/${c.address().confirmReason ?? ""} att=${c.address().attempts}`;
-};
 const card = (c: C, t: "name" | "address") => c.view().prompts.find((p) => p.target === t)?.text ?? "";
 
 
