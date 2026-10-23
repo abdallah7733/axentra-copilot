@@ -530,25 +530,46 @@ const yesWithName = (text: string, name: string[]) => CONFIRM_START.test(textWor
 
 /**
  * The caller rejects or corrects the agent's read-back of a detail (his decision, 23 Oct 12:35), judged on the whole
- * reply. One that starts with a rejection is one ("No.", "Not quite, it's Millar.", "Close, but it's Millar.", "You've
- * got the wrong name.", "No, we moved."), unless it is said for yes ("No, that's right."). One that starts with a yes is
- * one only when a "but", "actually" or "sorry" leads to a no, another name or another place ("Yes, but it's Millar.").
- * Anything else is one only when it says the detail is wrong, someone else's or old ("It's Millar, not Miller.", "That's
- * my husband.", "That's my old address."). Everyday phrases ("No problem."), backchannels ("Mm-hmm.") and a "No" about
- * something else followed by a yes ("No." then "And yes, that's me.") aren't (independent review, 23 Oct).
+ * reply, sentence by sentence, after sounds and softeners ("Um,", "Oh, sorry,", "Hang on,", "I'm afraid") are set aside.
+ * One that starts with a rejection is one ("No.", "Sorry, no.", "Not quite, it's Millar.", "You've got it wrong.", "No, we
+ * moved."), unless the no is said for yes ("No, that's fine, thanks.", "Nope, that's right."). One that starts with a yes
+ * is one only when it also corrects this detail: another name or place ("Yes. Hang on, no, it's Millar."), someone else's
+ * ("That's my husband's name.") or an old one ("That's my old one."), a no next to the record's own words ("Not Sam,
+ * Pam."), a word about the read-back being wrong ("Yes. Not quite."), a spelling ("It's with an A."), or a bare no in a
+ * later sentence ("Yes. Hmm, no."). A no about something else after a yes isn't ("Yes, but the box isn't here.", "Mm-hmm,
+ * Dallas, not Fort Worth."), nor are everyday phrases ("No problem."), backchannels ("Mm-hmm.") or a "No" about something
+ * else followed by a yes ("No." then "And yes, that's me.") (independent reviews, 23 Oct).
  */
 const REJECT_HEAD =
-  /^(no|nope|nah|not|wrong|incorrect|close|almost|nearly|that's (not|wrong|incorrect|my old)|that is (not|wrong|incorrect|my old)|that isn't|it's not|it is not|it isn't|(you've|you have|you) got (the |my )?wrong|you have (the |my )?wrong)\b/;
-const SAID_FOR_YES = /^no (no )?(that's|that is|it's|it is) (right|correct|fine|me|it)$/;
-const EVERYDAY_NO = /\b(no (problem|problems|worries|bother|rush|hurry|need)|not (at all|a problem))\b/g;
-const CONTRAST = /\b(but|actually|wait|though|although|except|however|sorry)\b/;
+  /^(no|nope|nah|not|wrong|incorrect|close|almost|nearly|that's (not|wrong|incorrect|my old)|that is (not|wrong|incorrect|my old)|that isn't|that was (not|wrong|my old)|that wasn't|it's not|it is not|it isn't|(you've|you have|you) got (it |that |the |my )?wrong|you have (the |my )?wrong)\b/;
+const YES_HEAD =
+  /^(yes|yeah|yep|yup|yah|correct|exactly|absolutely|definitely|indeed|right|sure|okay|ok|alright|all right|mm hmm|uh huh|mhm|speaking|spot on|perfect|that's (right|correct|it|me|true|the one)|that is (right|correct|it|me|true|the one)|it is|it's me|you got it)\b/;
+/** A no said for yes: "No, that's fine, thanks.", "No, no, that's right.", "Nope, all good." */
+const NO_FOR_YES =
+  /^(no|nope|nah)( no)* ((that's|that is|it's|it is|you're|you are) )?(all )?(right|correct|fine|good|me|it|perfect|okay|ok|alright|spot on)(( thanks| thank you| very much| cheers| go ahead| please| carry on))*$/;
+const BARE_NO = /^(no|nope|nah)( (no|nope|wait|sorry|hang on|hold on|actually))*$/;
+const EVERYDAY_NO = /\b(no (problem|problems|worries|bother|rush|hurry|need|doubt)|not (at all|a problem))\b/g;
+/** Sounds and softeners before the answer itself. "Mm-hmm" and "Uh-huh" are answers, so they stay. */
+const LEAD = /^(um|uh|er|erm|oh|ah|well|hmm|hm|mm|so|sorry|actually|look|listen|hang on|hold on|wait|i'm afraid|i am afraid)( |$)/;
 const NEGATION = /\b(no|not|nope|wrong|incorrect|isn't|wasn't|never)\b/;
-const SOMEONE_ELSE =
-  /\b(my|his|her|our|their) (husband|wife|partner|dad|father|mum|mom|mother|son|daughter|brother|sister|boss|friend|colleague|flatmate|roommate)('s)?\b|\bi'm (his|her|their)\b|\b(isn't|is not|not) me\b|\bnot (my|our) name\b/;
-const PLACE_GONE = /\b(moved|old address|not anymore|no longer|used to live|not there anymore)\b/;
+/** The read-back itself called wrong: "not quite", "that's not right", "you got my name wrong", "the address is wrong". */
+const REFERS_BACK =
+  /\b((that's|that is|it's|it is|that was|it was) not|that isn't|it isn't|that wasn't|not) (right|correct|quite|exactly|it|me|mine|true|my (name|address)|the right (one|name|address))\b|\b(that's|that is|it's|it is|that was|it was) (wrong|incorrect)\b|\bgot (it|that|me|my name|the name|my address|the address) wrong\b|\bwrong (name|address|person|one|surname|street|city)\b|\b(name|surname|address|street|city|spelling|that|it|this|one) (is|was) (wrong|incorrect)\b/;
+const RELATIVE = "husband|wife|partner|dad|father|mum|mom|mother|parents|son|daughter|brother|sister|boss|friend|colleague|flatmate|roommate|grandma|gran|nan|grandmother|grandfather|granddad|aunt|uncle|in laws";
+/** The name read back belongs to someone else: "That's my husband.", "I'm Sam's mum.", "That was my maiden name.", "Not me." */
+const SOMEONE_ELSE = new RegExp(
+  `\\b(that's|that is|it's|it is|that was|it was|he's|she's|you mean|no) (my|his|her|our|their) (${RELATIVE}|ex)\\b|\\b(my|his|her|our|their) (${RELATIVE})'s name\\b|\\bi'm (his|her|their|[a-z]+'s) (${RELATIVE})\\b|\\b(isn't|is not|not|wasn't) me\\b|\\bnot (my|our) name\\b|\\b(maiden|old|previous) name\\b|\\bcalling (for|on behalf of) (him|her|them)\\b`,
+);
+/** The address read back is an old one or someone else's: "We moved.", "That's my old one.", "We don't live there anymore." */
+const PLACE_GONE = new RegExp(
+  `\\b(moved|old (address|one|house|place|flat|home|apartment)|previous (address|house|place|one)|not anymore|not any more|no longer|used to (live|be)|(don't|doesn't|do not|does not) live there|not there anymore)\\b|\\b(my|his|her|our|their) (${RELATIVE})('s)? (place|house|flat|home|address|apartment)\\b`,
+);
+/** Street types are too general to show the caller saying no to the record's own words ("there's no road sign"). */
+const STREET_TYPES = new Set("road rd street st avenue ave drive dr lane ln way boulevard blvd court ct place pl".split(" "));
 const NOT_ANOTHER = new Set([...CONFIRM_WORDS, ...COMMON, ..."no nah not wrong incorrect close almost actually wait i i'm i'll i'd name address street road avenue drive lane city".split(" ")]);
-/** Words that introduce another name or place: "it's Millar", "no, Tom Baker", "but it's Elm Road". */
-const INTRODUCES = /(?:^|[^\p{L}'])(?:my name is|my name's|name is|name's|it's|its|it is|this is|i'm|i am|sorry|actually|no|not|nope|wait|but|meant|mean|close|almost)[\s,]*$/u;
+/** Words that introduce another name or place: "it's Millar", "no, Tom Baker", "but it's Elm Road", "we're on Elm Road now". */
+const INTRODUCES =
+  /(?:^|[^\p{L}'])(?:my name is|my name's|name is|name's|it's|its|it is|this is|i'm|i am|sorry|actually|no|nope|wait|but|meant|mean|close|almost|(?:we're|we are|i'm|i am|live|living|we live|i live)(?: actually| now| still)? (?:at|on|in)|moved to|now at|now on|now in)[\s,]*$/u;
 
 /**
  * Timestamps can put the start of a reply slightly before the end of the question; up to this much is tolerated. A yes
@@ -851,6 +872,12 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   };
   /** The detail was verified, and showed as verified, before this caller line reached the console. */
   const verifiedBefore = (f: Factor, l: TranscriptEvent) => f.state === "ok" && (f.knownAt ?? 0) <= arrived(l);
+  /**
+   * The detail is ticked by the agent typing over a caller line said before this read-back: a reply that the second model
+   * heard as a clear rejection still takes it back, so typing over the old answer never gets past the caller's "No, it's
+   * Tom Baker." (his decision, 23 Oct 12:35: typing records what the caller supplied; type the new answer instead).
+   */
+  const typedOverBefore = (f: Factor, b: TranscriptEvent) => f.state === "ok" && f.evidence?.typedFrom !== undefined && f.evidence.at < b.startedAt;
   const recordWordsOf = { name: nameParts, address: [...textWords(customer.address.street), ...textWords(customer.address.city), ...textWords(customer.address.state)] };
   /** Another name or place said in place of the record's: a capitalised word not in the record, after words that introduce one. */
   const statesOther = (id: "name" | "address", text: string) => {
@@ -863,30 +890,43 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     }
     return false;
   };
+  /** The caller says no right next to the record's own words: "Not Sam, Pam.", "No, not Miller." */
+  const negatesRecord = (id: "name" | "address", s: string) => {
+    const w = s.split(" ");
+    return w.some((x, i) => NEGATION.test(x) && w.slice(i + 1, i + 3).some((y) => recordWordsOf[id].includes(y) && !STREET_TYPES.has(y)));
+  };
+  /** A spelling that isn't the record's: "with an A", "M-I-L-L-A-R" (one letter at a time, not spelling a record word). */
+  const spellsOther = (id: "name" | "address", s: string) => {
+    if (id !== "name") return false;
+    if (/\bwith (an?|two|double) [a-z](?= |$)/.test(s)) return true;
+    return [...s.matchAll(/\b(?:[a-z] ){2,}[a-z]\b/g)].some((m) => !recordWordsOf.name.includes(m[0].replace(/ /g, "")));
+  };
   /** The caller's whole reply to a read-back of this detail rejects or corrects it (see REJECT_HEAD): an unrelated "No" doesn't. */
   const rejectsBack = (id: "name" | "address", text: string) => {
-    const lower = textWords(text).join(" ").replace(EVERYDAY_NO, " ").replace(/\s+/g, " ").trim();
-    if (!lower) return false;
+    const lead = (t: string) => {
+      let x = t;
+      for (let m = LEAD.exec(x); m && !/^(mm hmm|uh huh)\b/.test(x); m = LEAD.exec(x)) x = x.slice(m[0].length);
+      return x.trim();
+    };
+    const sentences = text
+      .split(/[.!?;]+/)
+      .map((x) => lead(textWords(x).join(" ").replace(EVERYDAY_NO, " ").replace(/\s+/g, " ").trim()))
+      .filter(Boolean);
+    if (!sentences.length) return false;
     const elsewhere = (t: string) => (id === "name" ? SOMEONE_ELSE : PLACE_GONE).test(t);
-    // "No." then "And yes, that's me.": the no answered something else.
-    const sentences = text.split(/[.!?]+/).map((x) => textWords(x).join(" ")).filter(Boolean);
-    if (/^(no|nope|nah)( no)*$/.test(sentences[0] ?? "") && sentences.slice(1).some((x) => /^((and|but|oh|um|uh) )?(yes|yeah|yep|that's (right|me|correct)|that is (right|me|correct))\b/.test(x) && !NEGATION.test(x) && !elsewhere(x)) && !statesOther(id, text)) return false;
-    if (REJECT_HEAD.test(lower)) return !SAID_FOR_YES.test(lower);
-    if (CONFIRM_START.test(lower)) {
-      // "Yes." then "No.": a later sentence that starts with a rejection takes the yes back.
-      if (sentences.slice(1).some((x) => {
-        const y = x.replace(EVERYDAY_NO, " ").replace(/\s+/g, " ").trim();
-        return !!y && REJECT_HEAD.test(y) && !SAID_FOR_YES.test(y);
-      })) return true;
-      const c = CONTRAST.exec(lower);
-      if (!c) return false;
-      const rest = lower.slice(c.index + c[0].length);
-      const restText = text.slice(Math.max(0, text.toLowerCase().search(new RegExp(`\\b${c[0]}\\b`))));
-      return NEGATION.test(rest) || elsewhere(rest) || statesOther(id, restText);
+    const corrects = statesOther(id, text) || sentences.some((x) => elsewhere(x) || negatesRecord(id, x) || REFERS_BACK.test(x) || spellsOther(id, x));
+    const refuses = (x: string) => REJECT_HEAD.test(x) && !NO_FOR_YES.test(x);
+    const [head, ...later] = sentences;
+    if (refuses(head)) {
+      // "No." then "And yes, that's me.": the no answered something else.
+      const yesAfter = later.some((x) => YES_HEAD.test(x.replace(/^(and|but) /, "")) && !NEGATION.test(x));
+      return !(BARE_NO.test(head) && yesAfter && !corrects && !later.some(refuses));
     }
-    if (elsewhere(lower) || statesOther(id, text)) return true;
-    const about = id === "name" ? saysNamePart(text) || /\b(name|surname|spell|spelled|spelling)\b/.test(lower) : saysAddressPart(text) || /\b(address|street|road|city)\b/.test(lower);
-    return NEGATION.test(lower) && about;
+    // A yes, or a no said for yes: only a correction of this detail, or a bare no after it, takes it back.
+    if (YES_HEAD.test(head) || NO_FOR_YES.test(head)) return corrects || later.some((x) => BARE_NO.test(x));
+    if (corrects || later.some(refuses)) return true;
+    const about = id === "name" ? saysNamePart(text) || /\b(name|surname|spell|spelled|spelling)\b/.test(head) : saysAddressPart(text) || /\b(address|street|road|city)\b/.test(head);
+    return NEGATION.test(head) && about;
   };
   /** The caller's later lines in the same reply as `line`: after it, before the agent's next line starts. */
   const restOfReply = (line: TranscriptEvent) => {
@@ -1353,6 +1393,10 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       } else if (a.type === "approve" && readyToApprove()) {
         if (identityHeldAt(a.at)) given.push({ at: a.at, via: "panel" });
         else refused.push({ at: a.at, via: "panel", reason: IDENTITY_LATER });
+      } else if (a.type === "approve" && !verified() && !!choice && choice.value !== "both" && issueSupported() && !lowConfidenceChoice && identityFalls.some((f) => f.said <= a.at && f.at > a.at)) {
+        // Pressed while the console still showed identity verified: the caller's line that undid it was said before the
+        // press but reached the console after it. Kept in the history as not counted (independent review, 23 Oct).
+        refused.push({ at: a.at, via: "panel", reason: "a caller line said before it, which reached the console after it, undid identity" });
       }
       continue;
     }
@@ -1371,9 +1415,10 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       }
       // A reply to the agent's read-back of a detail already verified when it reached the console: it may reject it, so it
       // is checked too. Verified only later (typed after a refused read-back), it is no reply to a verified detail.
-      const repliesToOkBack = (["name", "address"] as const).filter(
-        (id) => verifiedBefore(id === "name" ? name : address, line) && backsSaid[id].some((b) => backReply(b).some((l) => l.key === line.key)),
-      );
+      const repliesToOkBack = (["name", "address"] as const).filter((id) => {
+        const f = id === "name" ? name : address;
+        return backsSaid[id].some((b) => backReply(b).some((l) => l.key === line.key) && (verifiedBefore(f, line) || typedOverBefore(f, b)));
+      });
       if (!locked && repliesToOkBack.length && !keyAnswers.includes(line.key)) keyAnswers.push(line.key);
       const caused = CAUSED_AFTER.exec(line.text);
       if (caused && !ev.lowConfidence) causedAfter = { phrase: caused[0], ev };
@@ -1525,10 +1570,15 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         const f = id === "name" ? name : address;
         if (locked || f.state !== "ok") continue;
         // The whole reply, as each model heard it, and as recognised under anything the agent typed over it.
-        const back = backsSaid[id].find((b) => backReply(b).some((l) => l.key === line.key))!;
+        const back = backsSaid[id].find((b) => backReply(b).some((l) => l.key === line.key) && (verifiedBefore(f, line) || typedOverBefore(f, b)))!;
         const backLines = backReply(back);
-        const heard = [backLines.map((l) => l.text), backLines.map((l) => l.firstHeard ?? l.typedFrom ?? l.text), backLines.map((l) => l.typedFrom ?? l.text)].map((t) => t.join(". "));
-        if (!heard.some((t) => rejectsBack(id, t))) continue;
+        // Only the second model's text can take back a tick typed later over the old answer; either model can otherwise.
+        const heard = (ls: TranscriptEvent[]) =>
+          [ls.map((l) => l.text), ...(verifiedBefore(f, line) ? [ls.map((l) => l.firstHeard ?? l.typedFrom ?? l.text)] : []), ls.map((l) => l.typedFrom ?? l.text)].map((t) => t.join(". "));
+        if (!heard(backLines).some((t) => rejectsBack(id, t))) continue;
+        // The fall is dated from the line whose words made the reply a rejection, and from when the reply up to it was known.
+        const upTo = backLines.findIndex((_, i) => heard(backLines.slice(0, i + 1)).some((t) => rejectsBack(id, t)));
+        const part = backLines.slice(0, upTo < 0 ? backLines.length : upTo + 1);
         // The agent said the record's words in that read-back: what the caller says for it from now on is an echo.
         recordSaidAt[id] = Math.min(recordSaidAt[id] ?? back.startedAt, back.startedAt);
         const refusal = { ev, why: "it rejects the read-back", recovery: "ask" as const };
@@ -1537,7 +1587,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         Object.assign(f, { state: "confirm", confirmReason: f.confirmReason ?? "ambiguous", knownAt: undefined, method: undefined, confirmedBy: undefined });
         confirmedByPress.delete(id);
         verifiedAt = undefined;
-        identityFalls.push({ at: ev.knownAt, id, said: line.startedAt, reason: "the caller rejected the read-back after it" });
+        identityFalls.push({ at: Math.max(...part.map((l) => evidenceOf(l).knownAt)), id, said: part[part.length - 1].startedAt, reason: "the caller rejected the read-back after it" });
         delete lastMatch[id];
         if (pending?.factor === f) pending = null;
         rejectedBack.add(id);
@@ -1899,6 +1949,21 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
 
       // "Done. The new tablet ships today." after the customer chose is the agent's approval on the call.
       const offeringOptions = /\?/.test(line.text) && /\bor\b/i.test(line.text);
+      // Said while the console still showed identity verified: the caller's rejection, said before it, reached the console
+      // after it. Never counted, but kept in the history (independent review, 23 Oct).
+      if (
+        choice &&
+        !offeringOptions &&
+        !verified() &&
+        !escalations.length &&
+        ev.at > choice.evidence.at &&
+        !ev.lowConfidence &&
+        agentCommits(line.text) &&
+        !(choice.value === "refund" ? /\b(replace(ment)?|ships?|shipped|shipping|new (one|\w+))\b/i : /\brefund\b/i).test(line.text) &&
+        (choice.value !== "refund" || /\b(refund|money|done|all set)\b/i.test(line.text)) &&
+        identityFalls.some((f) => f.said <= line.endedAt && f.at > arrived(line))
+      )
+        refused.push({ at: line.endedAt, via: "call", evidence: ev, reason: "a caller line said before it, which reached the console after it, undid identity" });
       if (choice && !offeringOptions && verified() && !escalations.length && ev.at > choice.evidence.at) {
         const commit = ev.lowConfidence ? null : agentCommits(line.text);
         // A line that names the other outcome is never this one's approval: "Done. The new tablet ships

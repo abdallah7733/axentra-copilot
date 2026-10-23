@@ -100,15 +100,29 @@ test("a spoken approval said before the caller's refusal reached the console doe
   c.checked("c4");
   assert.equal(c.view().verification.verified, false);
   assert.notEqual(c.approval(), "approved");
+  // Typing over the old answer doesn't get past the caller's "no" (his decision, 23 Oct 12:35); the new answer is typed.
   c.at(36_000);
-  c.s().correct(c.view().nameEntry!.key!, "Sam Miller");
+  c.s().correct("c2", "Sam Miller");
+  assert.notEqual(c.name().state, "ok");
+  c.at(39_000);
+  c.arrive("a5", "agent", "Sorry, could I have your full name again?", 36_500, 38_500);
+  c.at(41_000);
+  c.arrive("c5", "caller", "Sammílis.", 39_200, 40_200);
+  if (c.held("c5")) {
+    c.at(42_000);
+    c.checked("c5");
+  }
+  c.at(43_000);
+  c.s().correct("c5", "Sam Miller");
   assert.equal(c.name().state, "ok");
   assert.equal(c.name().method, "typed by the agent, after the agent said it on the call");
   assert.notEqual(c.approval(), "approved", "the agent approves again, on what is verified now");
+
   const spoken = c.history().find((h) => h.at === c.T0 + 32_000);
   assert.equal(spoken?.via, "call");
   assert.equal(spoken?.counted, false);
-  assert.match(spoken?.reason ?? "", IDENTITY_LATER);
+  // Kept in the history as not counted: the caller's rejection, said before it, reached the console after it.
+  assert.match(spoken?.reason ?? "", /said before it, which reached the console after it, undid identity/);
 });
 
 test("a spoken approval after a read-back with a checked plain yes still counts (review finding 1)", () => {

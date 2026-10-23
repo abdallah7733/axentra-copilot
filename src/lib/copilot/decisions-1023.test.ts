@@ -310,3 +310,56 @@ test("review: while the reply to the read-back is checked, the suggested reply d
   assert.equal(v.recommendation?.approval.state, "not-ready");
   assert.doesNotMatch(v.suggestedReply?.text ?? "", /Done|ships today/);
 });
+
+/* ---------- Second independent review: how callers actually phrase it ---------- */
+
+const pressed = (said: string, id: "name" | "address") => {
+  const v =
+    id === "name"
+      ? view([...opening, ALIKE, NAME_BACK, caller(said), ADDRESS_Q, ADDRESS], [PRESS_NAME])
+      : view([...opening, caller("Sam Miller."), ADDRESS_Q, caller("Hill Rode in Dallas."), ADDR_BACK, caller(said), { side: "agent", text: "Okay." }], [{ type: "confirm", target: "address", at: at(8) }]);
+  return (id === "name" ? name(v) : address(v)).state === "ok";
+};
+/** Whether the detail still stands after this reply: after an approval, and after a Confirm press. */
+const still = (said: string, id: "name" | "address") => [stands(afterBack(id === "name" ? NAME_BACK : ADDR_BACK, [caller(said)])), pressed(said, id)];
+
+test("review 2: a rejection led by a sound or a softener, a yes taken back later, someone else's name or an old address reopens it", () => {
+  for (const said of [
+    "Um, no.", "Oh, no.", "Er, no, sorry.", "Sorry, no.", "Sorry, that's not right.", "Oh no, that's not right.", "Well, no.",
+    "Hmm, not quite.", "I'm afraid not.", "Actually, no.", "No, sorry, that's not me.", "Erm, that's wrong.", "You've got it wrong.",
+    "It's with an A, not an E.", "Sorry, it's M-I-L-L-A-R.", "I'm Sam's mum.", "I'm his mum actually.", "That was my maiden name.",
+    "Yes. Oh, hang on, no, it's Millar.", "Yes. Well, no, it's Sam Millar.", "Yes. Hmm, no.", "Nope.", "Nah, it's Millar.",
+    "No, that's my brother.", "That's my son, I'm calling for him.", "Uh, it's Millar, with an A.", "No no, it's Sam Millar.",
+    "That's not it.", "Not Sam, Pam.", "Oh, sorry, that's my husband's name.",
+  ])
+    assert.deepEqual(still(said, "name"), [false, false], said);
+  for (const said of [
+    "Oh, that's my old one.", "That was my old one.", "We don't live there anymore.", "We don't live there any more.", "Um, no.", "Sorry, no.",
+    "Oh no, we moved.", "Er, not anymore.", "Hmm, no, it's Elm Road now.", "Yes. Oh, hang on, no, it's Elm Road.", "That's my mum's place.",
+    "That's my old house.", "That was where I used to be.", "We've moved since.", "I'm afraid not, it's Austin now.",
+  ])
+    assert.deepEqual(still(said, "address"), [false, false], said);
+});
+
+test("review 2: a no said for yes, a yes with a no about something else, or a relative mentioned in passing leaves it standing", () => {
+  for (const said of [
+    "Yes please.", "That's right, thanks.", "Yeah, go ahead.", "Okay.", "Sure.", "Right.", "Spot on.", "Correct, yes.", "Yes it is.",
+    "That's me.", "Speaking.", "No, no, that's fine.", "Not a problem.", "No rush.", "Yes, Sam Miller here.", "Yes. Oh, and the box is gone.",
+    "Yes. Actually, can you hurry?", "Yes, sorry, I'm driving.", "Yes, that's right.",
+    "No, no, that's fine, go ahead.", "No, that's fine, thanks.", "Nope, that's right.", "No, that's correct, thank you.", "Nah, that's right.",
+    "Yeah. No, all good.", "Yes. No, you're fine.", "Yes, but I never got the tablet.", "Yes, but the box isn't here.",
+    "Yes, sorry, I wasn't sure you were talking to me.", "Yes, sorry, I'm not at home right now.", "Yes, sorry, it's not a great line.",
+    "That's right, but it's not urgent.", "Yes, that's right. No, I haven't opened the box.", "Yep. Sorry, I'm not very good with phones.",
+    "Yeah, that's me, though I don't use the account much.", "Uh, yes.", "Mm, yes, that's right.", "Yes, that's me. My wife placed the order.",
+    "Speaking. My wife might call too.", "That's correct. Never had a problem before.", "Yes, it is. Not that it matters.", "Absolutely, no doubt.",
+  ])
+    assert.deepEqual(still(said, "name"), [true, true], said);
+  for (const said of [
+    "Yes please.", "That's right, thanks.", "Yeah, go ahead.", "Okay.", "Sure.", "Right.", "Spot on.", "Correct, yes.", "Yes it is.",
+    "No, no, that's fine.", "Not a problem.", "No rush.", "Yes, it's in Dallas.", "Yep, Hill Road.", "Yes. Oh, and the box is gone.",
+    "Okay. Just so you know, there's no parking on Hill Road.", "Mm-hmm, Dallas, not Fort Worth.", "Yes, but there's no buzzer.",
+    "Yes, but nobody's home until six.", "Yes, though the house number isn't on the door.", "Uh-huh, it's the one with no gate on Hill Road.",
+    "Yeah, but I'm not home till five.", "Sure, it's not far from the main road.",
+  ])
+    assert.deepEqual(still(said, "address"), [true, true], said);
+});

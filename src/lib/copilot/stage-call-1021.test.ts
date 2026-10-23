@@ -343,12 +343,17 @@ test("after a refused read-back: no second read-back, Confirm does nothing, typi
   v = view(upToName(NAME, [READ_BACK, no, ADDRESS_Q]), [{ type: "confirm", target: "name", at: at(8) }], withReadBack);
   assert.notEqual(nameOf(v).state, "ok", "the Confirm button doesn't override the caller's no");
 
-  const typed: AgentAction[] = [{ type: "correct", key: "k5", text: "Sam Miller", at: at(8) }];
-  v = view(upToName(NAME, [READ_BACK, no, ADDRESS_Q]), typed, withReadBack);
+  // Typing over the answer the caller then said no to doesn't count (his decision, 23 Oct 12:35: typing records what the
+  // caller supplied); asked again, the new answer is typed.
+  v = view(upToName(NAME, [READ_BACK, no, ADDRESS_Q]), [{ type: "correct", key: "k5", text: "Sam Miller", at: at(8) }], withReadBack);
+  assert.notEqual(nameOf(v).state, "ok", "typed over the old answer");
+  const asked = upToName(NAME, [READ_BACK, no, { side: "agent", text: "Sorry, could I have your full name again?" }, { side: "caller", text: "Sammílis.", firstHeard: "Sam Ellis." }, ADDRESS_Q]);
+  const typed: AgentAction[] = [{ type: "correct", key: "k9", text: "Sam Miller", at: at(10) }];
+  v = view(asked, typed, withReadBack);
   assert.equal(nameOf(v).state, "ok");
   assert.equal(nameOf(v).method, "typed by the agent, after the agent said it on the call", "typed after the agent read the name back");
   assert.equal(v.verification.verified, false, "the street and city are still required");
-  v = view(upToName(NAME, [READ_BACK, no, ADDRESS_Q, { side: "caller", text: "Hill Road, in Dallas." }]), typed, withReadBack);
+  v = view([...asked, { side: "caller", text: "Hill Road, in Dallas." }], typed, withReadBack);
   assert.equal(v.verification.verified, true);
 
   // Asked again, a new answer the models still can't confirm: the card says to type, with the new answer.
