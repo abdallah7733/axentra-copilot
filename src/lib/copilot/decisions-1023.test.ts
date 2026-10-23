@@ -386,3 +386,23 @@ test("review 3: more ways to say no reopen it; a complaint about the item after 
   for (const said of ["Yes, I've not moved.", "Yes, we moved in last year.", "Yes. Is the old one being collected?", "Yep, we've lived there since we moved from Austin."])
     assert.deepEqual(still(said, "address"), [true, true], said);
 });
+
+/* ---------- Quick check on 911adc8: a few no-shaped yeses, and a wrong part named after a yes ---------- */
+
+test("quick check: a wrong part named after a yes reopens it; 'Definitely, no question.' and an agreeing name or place stand", () => {
+  for (const said of [
+    "Right first name, wrong surname.", "Yes, but the surname is wrong.", "Yes. The name's wrong though.", "Yeah, the spelling's wrong.",
+    "Sure, but you've spelled it wrong.", "Yeah, actually no.", "This is his wife.", "I'm actually his daughter.", "Correct apart from the surname.",
+    "Sam Mills.", "Pam Miller.",
+  ])
+    assert.deepEqual(still(said, "name"), [false, false], said);
+  for (const said of ["Right city, wrong street.", "Right street, wrong city.", "Yeah, the address is wrong though.", "Yes, but the street is wrong.", "It's in Austin now."])
+    assert.deepEqual(still(said, "address"), [false, false], said);
+  for (const said of [
+    "Definitely, no question.", "Absolutely, no issues.", "Of course, no trouble.", "Sunlake Support?", "Dead Right.", "Mr Miller, yes.",
+    "Yes. Not right now, I'm at work.", "Yes. Not exactly cheap, that tablet.", "Yes. It's my son's tablet.",
+  ])
+    assert.deepEqual(still(said, "name"), [true, true], said);
+  for (const said of ["Downtown Dallas, yep.", "North Dallas, yes.", "Yes. We moved there last year.", "Certainly, no issues."])
+    assert.deepEqual(still(said, "address"), [true, true], said);
+});

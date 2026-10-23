@@ -541,7 +541,7 @@ const yesWithName = (text: string, name: string[]) => CONFIRM_START.test(textWor
  * else followed by a yes ("No." then "And yes, that's me.") (independent reviews, 23 Oct).
  */
 const REJECT_HEAD =
-  /^(no|nope|nah|not|wrong|incorrect|close|almost|nearly|that's (not|wrong|incorrect|my old)|that is (not|wrong|incorrect|my old)|that isn't|that was (not|wrong|my old)|that wasn't|it's not|it is not|it isn't|(you've|you have|you) got (it |that |the |my )?wrong|you have (the |my )?wrong|uh uh|mm mm|nuh uh|negative|that's a negative|afraid not|fraid not|(definitely|absolutely|certainly|of course|hell) (not|no)\b|god no|(i )?(don't|do not) think so|no way|(yeah|yes) no$)\b/;
+  /^(no|nope|nah|not|wrong|incorrect|close|almost|nearly|that's (not|wrong|incorrect|my old)|that is (not|wrong|incorrect|my old)|that isn't|that was (not|wrong|my old)|that wasn't|it's not|it is not|it isn't|(you've|you have|you) got (it |that |the |my )?wrong|you have (the |my )?wrong|uh uh|mm mm|nuh uh|negative|that's a negative|afraid not|fraid not|(definitely|absolutely|certainly|of course|hell) not\b|hell no|god no|(i )?(don't|do not) think so|no way|(yeah|yes) no$)\b/;
 const YES_HEAD =
   /^(yes|yeah|yep|yup|yah|correct|exactly|absolutely|definitely|indeed|right|sure|okay|ok|alright|all right|mm hmm|uh huh|mhm|speaking|spot on|perfect|that's (right|correct|it|me|true|the one)|that is (right|correct|it|me|true|the one)|it is|it's me|you got it)\b/;
 /** A no said for yes: "No, that's fine, thanks.", "No, no, that's right.", "Nope, all good." */
@@ -570,22 +570,24 @@ const REFERS_BACK =
  * else (third check, 23 Oct).
  */
 const REFERS_BACK_START =
-  /^((that's|that is|it's|it is|that was) not|that isn't|it isn't|that wasn't|not) (right|correct|quite|exactly|it|me|mine|true|my (name|address))\b(?! (sure|happy|certain|clear|what|how|when|why|who|the|about|that|with|to|for|in|on|at))|^(that's|that is|it's|it is) (wrong|incorrect)\b|^(that's|that is|it's|it is) not$|^(it|that) (isn't|wasn't|is not|was not)$|^(you've|you have|you) got (it|that|me|my name|the name|my address|the address) wrong\b|^wrong (name|address|person|surname|street|city)\b/;
+  /^((that's|that is|it's|it is|that was) not|that isn't|it isn't|that wasn't|not) (right|correct|quite|exactly|it|me|mine|true|my (name|address))\b(?! (sure|happy|certain|clear|what|how|when|why|who|the|about|that|with|to|for|in|on|at|now|cheap|my|his|her))|^(that's|that is|it's|it is) (wrong|incorrect)\b|^(that's|that is|it's|it is) not$|^(it|that) (isn't|wasn't|is not|was not)$|^(you've|you have|you) got (it|that|me|my name|the name|my address|the address) wrong\b|^wrong (name|address|person|surname|street|city)\b/;
+/** A part of the detail said to be wrong: "Right city, wrong street.", "Yes, but the surname is wrong." */
+const DETAIL_WRONG = /\bwrong (name|surname|first name|last name|spelling|address|street|road|city|town|house number)\b|\b(name|surname|first name|last name|spelling|address|street|road|city|town|house number)('s| is| was) (wrong|incorrect|not right)\b|\bspelled it wrong\b|\bapart from the (surname|name|first name|last name|street|road|city|town)\b/;
 const RELATIVE = "husband|wife|partner|dad|father|mum|mom|mother|parents|son|daughter|brother|sister|boss|friend|colleague|flatmate|roommate|grandma|gran|nan|grandmother|grandfather|granddad|aunt|uncle|in laws";
 /** The name read back belongs to someone else: "That's my husband.", "I'm Sam's mum.", "That was my maiden name.", "Not me." */
 const SOMEONE_ELSE = new RegExp(
-  `\\b(that's|that is|it's|it is|that was|it was|he's|she's|you mean|no) (my|his|her|our|their) (${RELATIVE}|ex)\\b|\\b(my|his|her|our|their) (${RELATIVE})'s name\\b|\\bi'm (his|her|their|[a-z]+'s) (${RELATIVE})\\b|\\b(isn't|is not|not|wasn't) me\\b(?! (who|that|personally|but|though))|\\bnot (my|our) name\\b|\\b(maiden|old|previous) name\\b|\\bcalling (for|on behalf of) (him|her|them)\\b|\\b(that'd be|that would be|you're thinking of|you are thinking of|you mean|you want) (my|his|her|our|their) (${RELATIVE})\\b|\\b(i'm|i am) not (him|her|them)\\b|\\bain't me\\b|\\bnever heard of (him|her|them|that name|that person)\\b`,
+  `\\b(that's|that is|it's|it is|that was|it was|he's|she's|you mean|no) (my|his|her|our|their) (${RELATIVE}|ex)\\b(?!')|\\b(my|his|her|our|their) (${RELATIVE})'s name\\b|\\b(i'm|i am|this is)( actually)? (his|her|their|[a-z]+'s) (${RELATIVE})\\b|\\b(isn't|is not|not|wasn't) me\\b(?! (who|that|personally|but|though))|\\bnot (my|our) name\\b|\\b(maiden|old|previous) name\\b|\\bcalling (for|on behalf of) (him|her|them)\\b|\\b(that'd be|that would be|you're thinking of|you are thinking of|you mean|you want) (my|his|her|our|their) (${RELATIVE})\\b|\\b(i'm|i am) not (him|her|them)\\b|\\bain't me\\b|\\bnever heard of (him|her|them|that name|that person)\\b`,
 );
 /** The address read back is an old one or someone else's: "We moved.", "That's my old one.", "We don't live there anymore." */
 const PLACE_GONE = new RegExp(
-  `(?<!(not|never|haven't|hasn't|havent|hasnt|didn't|didnt|we've not|i've not) )\\bmoved\\b(?! (in|here|from)\\b)|\\b(that's|that is|it's|it is|that was|it was|this is) (just )?(my |our |the |an |a |his |her |their )?(old|previous|work|office|business) (address|one|house|place|flat|home|apartment)\\b|\\b(my|our) (old|previous) (address|house|place|flat|home|apartment)\\b(?! is still)|\\bthat (was|is) (years|ages|a while|a long time) ago\\b|\\b(not anymore|not any more|no longer|used to (live|be)|(don't|doesn't|do not|does not) live there|not there anymore)\\b|\\b(my|his|her|our|their) (${RELATIVE})('s)? (place|house|flat|home|address|apartment)\\b`,
+  `(?<!(not|never|haven't|hasn't|havent|hasnt|didn't|didnt|we've not|i've not) )\\bmoved\\b(?! (in|here|from|there)\\b)|\\b(that's|that is|it's|it is|that was|it was|this is) (just )?(my |our |the |an |a |his |her |their )?(old|previous|work|office|business) (address|one|house|place|flat|home|apartment)\\b|\\b(my|our) (old|previous) (address|house|place|flat|home|apartment)\\b(?! is still)|\\bthat (was|is) (years|ages|a while|a long time) ago\\b|\\b(not anymore|not any more|no longer|used to (live|be)|(don't|doesn't|do not|does not) live there|not there anymore)\\b|\\b(my|his|her|our|their) (${RELATIVE})('s)? (place|house|flat|home|address|apartment)\\b`,
 );
 /** Street types are too general to show the caller saying no to the record's own words ("there's no road sign"). */
 const STREET_TYPES = new Set("road rd street st avenue ave drive dr lane ln way boulevard blvd court ct place pl".split(" "));
 const NOT_ANOTHER = new Set([...CONFIRM_WORDS, ...COMMON, ..."no nah not wrong incorrect close almost actually wait i i'm i'll i'd name address street road avenue drive lane city".split(" ")]);
 /** Words that introduce another name or place: "it's Millar", "no, Tom Baker", "but it's Elm Road", "we're on Elm Road now". */
 const INTRODUCES =
-  /(?:^|[^\p{L}'])(?:my name is|my name's|name is|name's|(?:sur|last |first )name is|(?:sur|last |first )name's|it's|its|it is|this is|i'm|i am|sorry|actually|no|nope|wait|but|meant|mean|close|almost|(?:we're|we are|i'm|i am|live|living|we live|i live)(?: actually| now| still)? (?:at|on|in)|moved to|now at|now on|now in)[\s,]*$/u;
+  /(?:^|[^\p{L}'])(?:my name is|my name's|name is|name's|(?:sur|last |first )name is|(?:sur|last |first )name's|it's|its|it is|this is|i'm|i am|sorry|actually|no|nope|wait|but|meant|mean|close|almost|(?:we're|we are|i'm|i am|live|living|we live|i live)(?: actually| now| still)? (?:at|on|in)|(?:it's|it is|its)(?: now| actually)? (?:in|on|at)|moved to|now at|now on|now in)[\s,]*$/u;
 
 /**
  * Timestamps can put the start of a reply slightly before the end of the question; up to this much is tolerated. A yes
@@ -907,7 +909,10 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       });
       const before = normalize(text.slice(0, m.index));
       // "Tom Baker." or "Elm Road, Austin." as the whole start of the reply is another name or place too (third check, 23 Oct).
-      const opens = m[0].split(/\s+/).length >= 2 && !before.replace(/\b(um|uh|er|erm|oh|ah|well|hmm|mm|so|sorry|actually|no|nope|nah|wait)\b/g, "").trim();
+      const run = m[0].split(/\s+/).map((x) => normalize(x).replace(/'s$/, ""));
+      const plain = normalize(text);
+      // Not when the run is only a title and record words ("Mr Miller."), asks back ("Sunlake Support?") or the reply agrees ("North Dallas, yes.").
+      const opens = run.length >= 2 && run.some((t) => !recordWordsOf[id].includes(t) && !/^(mr|mrs|ms|miss|mister|dr)$/.test(t)) && !/\?/.test(text) && !/\b(yes|yeah|yep|yup|correct|right|exactly|that's me|speaking)\b/.test(plain) && !before.replace(/\b(um|uh|er|erm|oh|ah|well|hmm|mm|so|sorry|actually|no|nope|nah|wait)\b/g, "").trim();
       if (other && (opens || INTRODUCES.test(before + " "))) return true;
     }
     return false;
@@ -936,7 +941,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       .filter(Boolean);
     if (!sentences.length) return false;
     const elsewhere = (t: string) => (id === "name" ? SOMEONE_ELSE.test(t) || namedSomeoneElse.test(t) : PLACE_GONE.test(t));
-    const detail = statesOther(id, text) || sentences.some((x) => elsewhere(x) || negatesRecord(id, x) || spellsOther(id, x));
+    const detail = statesOther(id, text) || sentences.some((x) => elsewhere(x) || negatesRecord(id, x) || spellsOther(id, x) || DETAIL_WRONG.test(x));
     const corrects = detail || sentences.some((x) => REFERS_BACK.test(x));
     const refuses = (x: string) => REJECT_HEAD.test(x) && !noForYes(x);
     const [head, ...later] = sentences;
@@ -949,7 +954,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     if (YES_HEAD.test(head) || noForYes(head)) {
       const startsWrong = (x: string) => REFERS_BACK_START.test(x.replace(/^((no|nope|sorry|wait|but|though) )+/, ""));
       const rest = noForYes(head) ? "" : head.replace(YES_HEAD, "").trim();
-      return detail || startsWrong(rest) || later.some((x) => BARE_NO.test(x) || startsWrong(x));
+      return detail || startsWrong(rest) || BARE_NO.test(lead(rest)) || later.some((x) => BARE_NO.test(x) || startsWrong(x));
     }
     if (corrects || later.some(refuses)) return true;
     const about = id === "name" ? saysNamePart(text) || /\b(name|surname|spell|spelled|spelling)\b/.test(head) : saysAddressPart(text) || /\b(address|street|road|city)\b/.test(head);
