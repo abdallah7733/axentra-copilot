@@ -318,7 +318,7 @@ test("silence after the read-back: the wait ends 8 s after the question, and a y
   assert.equal(v.nameEntry?.readBack, "expired");
   assert.equal(v.nameEntry?.readBackUntil, undefined);
   assert.equal(nameOf(v).attempts, 0, "silence isn't a failed attempt");
-  assert.match(nameCard(v)!.text, /^Name not recognised\. No reply to your read-back within 8 s, so a yes now won't count\. Ask for the full name again, or type it \(N\)\. Heard "Sammílis\."/);
+  assert.match(nameCard(v)!.text, /^Name not recognised\. No reply to your read-back within 8 s, so a yes now won't count\. Say it back once more \(the last time it counts\), ask for the full name again, or type it \(N\)\. Heard "Sammílis\."/);
   assert.equal(nameCard(v)!.askAgain, true);
 
   // The caller's yes starting exactly at the end of the wait still counts; 1 ms later it doesn't.
