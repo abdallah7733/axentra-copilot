@@ -363,3 +363,26 @@ test("review 2: a no said for yes, a yes with a no about something else, or a re
   ])
     assert.deepEqual(still(said, "address"), [true, true], said);
 });
+
+/* ---------- Third check (partial probe): more ways to say no, and complaints after a yes ---------- */
+
+test("review 3: more ways to say no reopen it; a complaint about the item after a yes, or a no said for yes, leaves it standing", () => {
+  for (const said of [
+    "Uh-uh.", "Mm-mm.", "Negative.", "Afraid not.", "I don't think so.", "Absolutely not.", "Of course not.", "Not at all.", "Hell no.",
+    "Oh God, no.", "Yeah, no.", "Yeah. Wait, no, it's not.", "Yes. No, sorry, it isn't.", "Yes. Oh no, it isn't.", "That'd be my husband.",
+    "You're thinking of my husband.", "Sam's my brother.", "Sam Miller is my husband.", "I'm calling for Sam.", "I'm not him.",
+    "Never heard of him.", "The first name's right but the surname is Millar.", "Tom Baker.", "Tom Baker, actually.",
+  ])
+    assert.deepEqual(still(said, "name"), [false, false], said);
+  for (const said of ["Uh-uh.", "Negative.", "Elm Road, Austin.", "That's the old one.", "That's my work address.", "That was years ago.", "Yes. Wait, no, it's not."])
+    assert.deepEqual(still(said, "address"), [false, false], said);
+  for (const said of [
+    "Yes, I'm not quite sure about the order number though.", "Yes, that's me. They sent the wrong one.", "Yes. The screen's not right.",
+    "Yes, that's me. It's not right, the screen's cracked.", "Yes. Not exactly sure when it arrived.", "Yes. Not me who ordered it, my wife did.",
+    "No, you've got it right.", "No, that's exactly right.", "No, yeah, that's right.", "No no, that's me, Sam Miller.", "No, that's the one.",
+    "That's right, but I've never had a tablet from you before.",
+  ])
+    assert.deepEqual(still(said, "name"), [true, true], said);
+  for (const said of ["Yes, I've not moved.", "Yes, we moved in last year.", "Yes. Is the old one being collected?", "Yep, we've lived there since we moved from Austin."])
+    assert.deepEqual(still(said, "address"), [true, true], said);
+});
