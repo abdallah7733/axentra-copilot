@@ -80,7 +80,7 @@ test("after the check, the card leads with what to do and the field stays on the
 
   // With read-back allowed, the card offers it first; typing stays.
   v = view(upToName(NAME, [ADDRESS_Q]), [], withReadBack);
-  assert.match(nameCard(v)!.text, /^Name not recognised\. Say the full name back and wait for the caller's yes \(it counts only if it is the name on the order\), or type it \(N\)\. Heard "Sammílis\."/);
+  assert.match(nameCard(v)!.text, /^Name not recognised\. Say back the full name you heard and wait for the caller's yes \(it counts only if it is the name on the order\), or type what the caller said \(N\)\. Heard "Sammílis\."/);
   assert.deepEqual(v.nameEntry, { key: "k5", checking: false, readBack: "available" });
 });
 
@@ -226,15 +226,28 @@ test("no read-back after a partial or two-name answer: the agent asks for the fu
   }
 });
 
-test("read-back is still allowed after one failed answer (his choice, 23 Oct), and the caller's checked yes verifies the name", () => {
+test("no read-back after a wrong answer (his choice, 23 Oct: Back to before): a yes to the name said back doesn't verify it", () => {
   const before = view(upToName({ side: "caller", text: "John Smith." }, [{ side: "agent", text: "Thank you." }]), [], withReadBack);
   assert.equal(nameOf(before).attempts, 1);
   assert.equal(nameOf(before).state, "failed");
-  assert.equal(before.nameEntry?.readBack, "available");
+  assert.equal(before.nameEntry?.readBack ?? "off", "off");
+  assert.match(before.alerts.find((a) => a.id === "verification-failed-name")!.detail, /Ask the caller to give their full name again; don't read the order's details to them\./);
   const v = view(upToName({ side: "caller", text: "John Smith." }, [{ side: "agent", text: "Thank you." }, READ_BACK, YES, ADDRESS_Q]), [], withReadBack);
   assert.equal(nameOf(v).attempts, 1);
-  assert.equal(nameOf(v).state, "ok");
-  assert.equal(nameOf(v).method, NAME_READ_BACK);
+  assert.notEqual(nameOf(v).state, "ok");
+  assert.equal(nameOf(v).method, undefined);
+});
+
+test("his read-back rule (23 Oct): a part heard right never opens the read-back for the rest; a whole-answer mishearing still does", () => {
+  for (const text of ["Sam Jones.", "Pam Miller.", "Sam Smith."]) {
+    const v = view(upToName({ side: "caller", text, confidence: 0.3 }, [{ side: "agent", text: "Thank you." }]), [], withReadBack);
+    assert.equal(nameOf(v).state, "confirm", text);
+    assert.equal(v.nameEntry?.readBack ?? "off", "off", text);
+    const after = view(upToName({ side: "caller", text, confidence: 0.3 }, [{ side: "agent", text: "Thank you." }, READ_BACK, YES, ADDRESS_Q]), [], withReadBack);
+    assert.notEqual(nameOf(after).state, "ok", text);
+  }
+  // The 21 Oct stage answer: none of the name's parts heard, the two models disagreeing. The read-back stays.
+  assert.equal(view(upToName(NAME, [ADDRESS_Q]), [], withReadBack).nameEntry?.readBack, "available");
 });
 
 test("no read-back once identity is locked after two failed answers", () => {
@@ -345,9 +358,13 @@ test("after a refused read-back: no second read-back, Confirm does nothing, typi
 });
 
 test("the caller's own correction is heard as usual, never as the read-back", () => {
+  // Said right after the agent said the name, it may be the agent's words repeated: never counted as recognition (his
+  // rule, 23 Oct), and typing what the caller said is the way on, recorded as typed.
   let v = view(upToName(NAME, [READ_BACK, { side: "caller", text: "No, it's Sam Miller.", checked: true }, ADDRESS_Q]), [], withReadBack);
-  assert.equal(nameOf(v).state, "ok");
-  assert.equal(nameOf(v).method, undefined, "recognised from the caller's words, not the read-back");
+  assert.notEqual(nameOf(v).state, "ok");
+  assert.equal(nameOf(v).confirmReason, "after-read-back");
+  assert.equal(nameOf(v).attempts, 0);
+  assert.match(nameCard(v)!.text, /only after you said the name on the order yourself, so it doesn't verify the name by itself\. Type the name \(N\) only if the caller said it before you did/);
 
   // A different name in the reply is a wrong answer, as anywhere else... once it says part of the name.
   v = view(upToName(NAME, [READ_BACK, { side: "caller", text: "No, it's Sam Smith.", checked: true }, ADDRESS_Q]), [], withReadBack);
@@ -407,7 +424,9 @@ test("review 2A: the rest of the reply decides; more yes is fine, a new name end
   assert.equal(nameOf(v).method, undefined);
   assert.equal(nameOf(v).attempts, 0, "a sound-alike is never a failed attempt");
   assert.equal(nameOf(v).heard, "Actually it's Sam Millar.", "the caller's new words are the name answer now");
-  assert.match(nameCard(v)!.text, /^Name not recognised\. Type what the caller said \(N\), or ask again\./);
+  // Said after the agent said the name: never counted as the caller's own answer (his rule, 23 Oct).
+  assert.equal(nameOf(v).confirmReason, "after-read-back");
+  assert.match(nameCard(v)!.text, /^Heard "Actually it's Sam Millar\." only after you said the name on the order yourself/);
   assert.equal(nameCard(v)!.askAgain, true, "no Confirm button after a read-back that wasn't confirmed");
 });
 
@@ -418,10 +437,10 @@ test("review, dev call 5: after the caller's no, the agent asks again and the ca
   assert.match(nameCard(v)!.text, /Ask for the full name again/);
   assert.equal(v.nameEntry?.readBackRecovery, "ask");
 
-  // Recognised this time: no typing needed.
+  // Heard right this time, but after the agent said the name: it isn't counted as recognition (his rule, 23 Oct).
   v = view(upToName(NAME, [READ_BACK, no, ASK_AGAIN, { side: "caller", text: "Sam Miller.", checked: true }, ADDRESS_Q]), [], withReadBack);
-  assert.equal(nameOf(v).state, "ok");
-  assert.equal(nameOf(v).method, undefined, "recognised from the caller's own words");
+  assert.notEqual(nameOf(v).state, "ok");
+  assert.equal(nameOf(v).confirmReason, "after-read-back");
   assert.equal(nameOf(v).answeredAt, at(5, 3000), "still timed from the end of the first name answer");
 
   // Still not recognised: the agent types the new answer, and the field is on it.
@@ -430,7 +449,7 @@ test("review, dev call 5: after the caller's no, the agent asks again and the ca
   assert.equal(v.nameEntry?.key, "k9");
   v = view(upToName(NAME, [READ_BACK, no, ASK_AGAIN, again, ADDRESS_Q]), [{ type: "correct", key: "k9", text: "Sam Miller", at: at(10) }], withReadBack);
   assert.equal(nameOf(v).state, "ok");
-  assert.equal(nameOf(v).method, "typed by the agent");
+  assert.equal(nameOf(v).method, "typed by the agent, after the agent said it on the call", "the record shows the name was said first");
   assert.equal(nameOf(v).answeredAt, at(5, 3000));
   assert.equal(nameOf(v).knownAt, at(10));
 });

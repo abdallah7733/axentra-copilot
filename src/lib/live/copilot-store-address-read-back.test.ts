@@ -73,7 +73,7 @@ test("the agent reads the street and city back and the caller's checked yes veri
   toAddress(c);
   // The card says what to do without ever showing the order's address.
   const card = c.view().prompts.find((p) => p.target === "address")?.text ?? "";
-  assert.match(card, /Say the street and city back as one question/);
+  assert.match(card, /Say back the street and city you heard as one question/);
   assert.doesNotMatch(card, /Hill Road|Dallas/);
   c.agent("a4", "So that's Hill Road, Dallas, is that right?", 22_000, 24_500);
   assert.equal(c.view().addressEntry?.readBack, "waiting");
@@ -344,10 +344,10 @@ test("while the caller's reply to the name read-back is being checked, the addre
   assert.ok(c.held("c4"));
   assert.notEqual(c.view().verification.factors[1].state, "ok");
   const offered = c.view().prompts.find((p) => p.target === "address")?.text ?? "";
-  assert.doesNotMatch(offered, /Say the street and city back/);
+  assert.doesNotMatch(offered, /Say back the street and city/);
 });
 
-test("after one address answer that didn't match, the read-back still works (his choice, 23 Oct), and the lock still ends it", () => {
+test("after one address answer that didn't match, there's no read-back (his choice, 23 Oct: Back to before)", () => {
   const c = call("AF-ONE");
   c.agent("a1", "Thank you for calling Sunlake. How can I help you today?", 0, 2000);
   c.say("c1", "Hello. I need help with order 427. The tablet came yesterday, and the screen is cracked.", 3000, 9000);
@@ -358,11 +358,12 @@ test("after one address answer that didn't match, the read-back still works (his
   c.agent("a3b", "Okay.", 21_000, 21_400);
   assert.equal(c.address().state, "failed");
   assert.equal(c.address().attempts, 1);
-  assert.equal(c.view().addressEntry?.readBack, "available");
+  assert.equal(c.view().addressEntry?.readBack ?? "off", "off");
+  assert.match(c.view().alerts.find((a) => a.id === "verification-failed-address")!.detail, /the street and city again, or the email address on the order instead/);
   c.agent("a4", "So that's Hill Road, Dallas, is that right?", 22_000, 24_500);
   c.say("c4", "Yes.", 25_000, 25_400);
-  assert.equal(c.address().state, "ok");
-  assert.equal(c.address().method, ADDRESS_READ_BACK);
+  assert.notEqual(c.address().state, "ok");
+  assert.equal(c.address().method, undefined);
 });
 
 test("a second wrong address answer locks identity, and a read-back after it doesn't count", () => {
@@ -391,14 +392,15 @@ test("after a wrong name and the agent's read-back, the caller saying the name d
   c.say("c2", "John Smith.", 12_500, 13_500);
   c.agent("a2b", "Okay.", 15_000, 15_400);
   assert.equal(c.name().state, "failed");
+  assert.equal(c.view().nameEntry?.readBack ?? "off", "off", "no read-back after a wrong answer (Back to before)");
   c.agent("a3", "That's Sam Miller, is that right?", 16_000, 18_000);
   c.say("c3", "Yes, Sam Miller.", 18_500, 19_500);
-  assert.notEqual(c.name().state, "ok", "a reply that isn't a plain yes never verifies, even when it says the name");
-  assert.equal(c.name().confirmReason, "after-read-back");
-  assert.match(c.view().prompts.find((p) => p.target === "name")?.text ?? "", /doesn't verify the name by itself/);
+  assert.notEqual(c.name().state, "ok", "the agent said the name: the caller's words after it never verify it");
   c.agent("a4", "Could you give me your full name once more?", 22_000, 24_000);
   c.say("c4", "Sam Miller.", 24_500, 25_500);
-  assert.notEqual(c.name().state, "ok", "a fresh answer after hearing the name read back doesn't verify it either");
+  assert.notEqual(c.name().state, "ok", "a fresh answer after hearing the name doesn't verify it either");
+  assert.equal(c.name().confirmReason, "after-read-back");
+  assert.match(c.view().prompts.find((p) => p.target === "name")?.text ?? "", /doesn't verify the name by itself/);
   assert.equal(c.name().attempts, 1, "and isn't a failed attempt");
   c.at(30_000);
   c.s().correct("c4", "Sam Miller");
@@ -419,7 +421,11 @@ test("the same for the address: after a wrong answer and the read-back, the call
   c.agent("a4", "So that's Hill Road, Dallas, is that right?", 22_000, 24_500);
   c.say("c4", "Yes, Hill Road in Dallas.", 25_000, 26_000);
   assert.notEqual(c.address().state, "ok");
+  c.agent("a5", "Could you give me the street and city once more?", 28_000, 30_000);
+  c.say("c5", "Hill Road in Dallas.", 30_500, 32_000);
+  assert.notEqual(c.address().state, "ok");
   assert.equal(c.address().confirmReason, "after-read-back");
+  assert.equal(c.address().attempts, 1);
 });
 
 for (const [said, confidence] of [

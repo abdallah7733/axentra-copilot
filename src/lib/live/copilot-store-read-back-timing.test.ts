@@ -188,7 +188,7 @@ test("a read-back said while the name answer is still being checked: the caller'
   c.at(18_600);
   c.arrive("a3", "agent", "So it's Samuel Wright.", 16_000, 18_000);
   c.at(20_000);
-  c.arrive("c3", "caller", "Yes, Sam Miller.", 18_200, 19_400);
+  c.arrive("c3", "caller", "Yes, that's right.", 18_200, 19_400);
   assert.ok(c.held("c3"), "held from arrival, so it never counts and then disappears");
   const seen: boolean[] = [c.view().verification.factors[0].state === "ok"];
   c.at(20_500);
@@ -201,6 +201,7 @@ test("a read-back said while the name answer is still being checked: the caller'
   c.checked("c3");
   seen.push(c.name().state === "ok");
   assert.deepEqual(seen, [false, false, false, true], "accepted once, after the reply's check, and never taken back");
+  assert.equal(c.name().method, "name read back by agent, confirmed by caller");
 });
 
 test("no second hearing once the name is accepted: a reply that already counted isn't reopened", () => {

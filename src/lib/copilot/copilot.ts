@@ -2,7 +2,7 @@ import { findOrderMentions, findSplitOrder, matchOrder, type MentionMethod, type
 import { agentAsksChoice, agentAsksFor, agentCommits, agentDisclosesFactor, agentOffers, escalationWords, readChoice, readIntent, safetyWords, type Choice } from "./signals";
 import { findAffirmed, normalize, repeatsItself, soundsLike, words as textWords } from "./text";
 import type { AgentAction, AuthorityBand, ClientPack, Customer, Order, Side, TranscriptEvent } from "./types";
-import { deniesIdentity, isFiller, matchAddress, matchName, soundsLikeRecord } from "./verification";
+import { deniesIdentity, isFiller, matchAddress, matchName, readBackFits, soundsLikeRecord } from "./verification";
 
 /*
   The copilot's rules layer. `analyze` rebuilds the whole copilot view from the
@@ -53,6 +53,8 @@ export type Factor = {
   evidence?: Evidence;
   /** The answer as heard so far, across lines. */
   heard?: string;
+  /** The same answer as the fast speech model heard it, where the second model's check replaced its words. */
+  heardFirst?: string;
   /** When the factor was verified, by when its evidence was usable (see Evidence.knownAt). */
   knownAt?: number;
   /**
@@ -494,11 +496,6 @@ const confirmsOnly = (text: string) => {
 export const READ_BACK_OVERLAP_MS = 250;
 /** A reply that starts this long after the read-back ended isn't taken as its answer; the field shows the wait ending. */
 export const READ_BACK_REPLY_MS = 8000;
-/**
- * Read-back is still allowed after this many failed answers for that detail (his choice, 23 Oct: "Allow after one").
- * It never outlasts the lock, and a refused read-back still ends it for the call.
- */
-export const READ_BACK_AFTER_FAILED = 1;
 
 /** Refusals where the caller did say a plain yes and only the system couldn't confirm it: typing the name is allowed. */
 const NOT_CHECKED = "the second speech model didn't finish checking it";
@@ -800,7 +797,11 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       return;
     }
     factor.state = "ok";
-    factor.method = ev.typedFrom === undefined ? method : [method, "typed by the agent"].filter(Boolean).join(", ");
+    // Typed after the agent said the detail on the call: allowed only for what the caller said first, so the record says
+    // so (his rule, 23 Oct: typing records what the caller supplied, never an unlogged way past the read-back rule).
+    const saidAt = recordSaidAt[factor.id];
+    const typed = saidAt !== null && saidAt < ev.knownAt ? "typed by the agent, after the agent said it on the call" : "typed by the agent";
+    factor.method = ev.typedFrom === undefined ? method : [method, typed].filter(Boolean).join(", ");
     markVerified(ev);
   }
 
@@ -818,10 +819,12 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     f.confirmReason === "sounds-like" || ((f.confirmReason === "low-confidence" || f.confirmReason === "garbled") && resemblesRecord(f));
 
   /**
-   * When the agent first read this detail back after a wrong answer (READ_BACK_AFTER_FAILED). Until then the caller had
-   * said nothing close to the record, so the read-back gave them its words.
+   * When the agent first said this detail's record words on the call: a read-back, or a leading question ("Is your name
+   * Sam Miller?"). From then on the caller's spoken words may be the agent's repeated, so they never verify that detail
+   * or count as recognition by themselves; the read-back's own checked plain yes (labelled as a read-back) or the
+   * agent's typing (labelled as typed) still can.
    */
-  const readBackAfterWrong: Record<"name" | "address", number | null> = { name: null, address: null };
+  const recordSaidAt: Record<"name" | "address", number | null> = { name: null, address: null };
   const recordName = textWords(customer.name);
   const recordStreet = textWords(customer.address.street).filter((w) => !STREET_TYPE_WORDS.has(w));
   const recordCity = textWords(customer.address.city);
@@ -833,11 +836,23 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     const w = new Set(textWords(t));
     return [...recordStreet, ...recordCity].every((x) => w.has(x));
   };
-  /** Spoken (not typed) after the agent read this detail back following a wrong answer. */
-  const spokenAfterReadBack = (f: Factor, evs: Evidence[]) => {
-    const since = readBackAfterWrong[f.id as "name" | "address"];
+  /** Spoken (not typed) after the agent said this detail's record words. */
+  const spokenAfterRecordSaid = (f: Factor, evs: Evidence[]) => {
+    const since = recordSaidAt[f.id as "name" | "address"];
     return since !== null && evs.every((e) => e.typedFrom === undefined) && evs.some((e) => e.at > since);
   };
+  /**
+   * The caller's own answer, as at least one speech model heard it, fits a read-back (readBackFits): only then may the
+   * agent say the detail back, repeating what was heard rather than filling in what wasn't (his rule, 23 Oct). A
+   * doubtful, garbled, disputed or sound-alike answer can qualify; an ambiguous one, a wrong one (he chose "Back to
+   * before"), or one heard only after the agent said the detail never does.
+   */
+  const providedWhole = (f: Factor) =>
+    f.state === "confirm" &&
+    (f.confirmReason === "low-confidence" || f.confirmReason === "garbled" || f.confirmReason === "sounds-like" || f.confirmReason === "disagree") &&
+    !!f.evidence &&
+    !spokenAfterRecordSaid(f, [f.evidence]) &&
+    [f.heard, f.heardFirst].some((t) => t !== undefined && readBackFits(f.id, t, customer));
   /** A caller line while the agent is waiting for this factor. */
   function hear(factor: Factor, line: TranscriptEvent, ev: Evidence) {
     if (factor.state === "ok" || locked) return;
@@ -852,11 +867,16 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     const reason = doubt(pending.evs, heard);
     const result = factor.id === "name" ? matchName(heard, customer) : matchAddress(heard, customer);
     factor.heard = heard;
+    factor.heardFirst = pending.evs.map((e) => (e.typedFrom === undefined ? e.firstHeard ?? e.text : e.text)).join(" ");
     factor.evidence = ev;
-    if (result === "match" && spokenAfterReadBack(factor, pending.evs)) {
-      // The caller said the detail only after the agent had read it back on this call: it may be the agent's words
-      // repeated, so it never verifies by itself, and it isn't a failed attempt either (review, 23 Oct). The only spoken
-      // route left is the read-back's own checked plain yes; otherwise the agent types it, recorded as typed.
+    const echoes =
+      spokenAfterRecordSaid(factor, pending.evs) &&
+      (result === "match" || ((result === "close" || result === "mismatch") && !deniesIdentity(heard) && (result === "close" || soundsLikeRecord(factor.id, heard, customer))));
+    if (echoes) {
+      // The caller said the detail, or something close to it, only after the agent had said it on this call: it may be
+      // the agent's words repeated, so it never verifies, never opens Confirm or a read-back, and isn't a failed attempt
+      // either (review and his rule, 23 Oct). The only spoken route left is a read-back's own checked plain yes;
+      // otherwise the agent types what the caller said, recorded as typed.
       factor.state = "confirm";
       factor.confirmReason = "after-read-back";
       pending.result = "sounds-like";
@@ -1127,11 +1147,11 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         if (why === null || readBackHeld || again || ((why || continues) && !saysNamePart(line.text))) {
           // A confirmed read-back, a reply still being decided, a "Sorry?", or a reply to one with no name in it: never a failed attempt.
         } else if (expecting === "name") hear(name, line, ev);
-        else if (name.state !== "ok" && matchName(line.text, customer) === "match" && !spokenAfterReadBack(name, [ev])) matched(name, ev, doubt([ev], line.text));
+        else if (name.state !== "ok" && matchName(line.text, customer) === "match" && !spokenAfterRecordSaid(name, [ev])) matched(name, ev, doubt([ev], line.text));
         if (whyA === null || addrHeld || againA || ((whyA || continuesA) && !saysAddressPart(line.text))) {
           // The same for the address read-back.
         } else if (expecting === "address") hear(address, line, ev);
-        else if (address.state !== "ok" && matchAddress(line.text, customer) === "match" && !spokenAfterReadBack(address, [ev])) matched(address, ev, doubt([ev], line.text), addressMethod(line.text));
+        else if (address.state !== "ok" && matchAddress(line.text, customer) === "match" && !spokenAfterRecordSaid(address, [ev])) matched(address, ev, doubt([ev], line.text), addressMethod(line.text));
       }
 
       const wants = readChoice(line.text);
@@ -1165,20 +1185,21 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       replyOpen = false;
       addrReplyOpen = false;
       const asksRaw = agentAsksFor(line.text, !verified() && !locked);
-      // The agent said the record's name, or its street and city, in any form ("Is your name Sam Miller?"), before the
-      // caller had said anything close to it: from here the caller's spoken words can't verify that detail by themselves
-      // (second review, 23 Oct). Not after a sound-alike: the caller said it first (the read-back he approved, 22 Oct).
+      // The agent said the record's name, or its street and city, in any form ("Is your name Sam Miller?", or a
+      // read-back): from here the caller's spoken words can't verify that detail by themselves (second review, 23 Oct),
+      // and a caller repeating it never counts as recognition (his rule, 23 Oct: assisted read-back stays separate).
       for (const f of [name, address]) {
         const id = f.id as "name" | "address";
-        if (f.state === "ok" || f.state === "confirm" || readBackAfterWrong[id] !== null) continue;
+        if (f.state === "ok" || recordSaidAt[id] !== null) continue;
         const said = [line.text, line.reheard?.text].some((t) => !!t && (id === "name" ? mentionsRecordName(t) : mentionsRecordAddress(t)));
-        if (said) readBackAfterWrong[id] = line.startedAt;
+        if (said) recordSaidAt[id] = line.startedAt;
       }
       // No read-back of either detail while the caller's reply to an earlier one is still being checked.
       const replyChecking = [...readBacksSeen, ...addrBacksSeen].some((b) => replyTo(b).some((l) => l.checking));
-      // Saying the name back is allowed only when the client allows it, once the caller has given a full answer the
-      // speech models couldn't confirm (never a partial, ambiguous or missing one), after at most one failed answer
-      // (READ_BACK_AFTER_FAILED) and before the lock, and once per call: a reply that isn't a clear yes ends it.
+      // Saying the name back is allowed only when the client allows it, once the caller has given an answer that covers
+      // the whole name but the speech models couldn't confirm (never a partial, ambiguous, missing or wrong one: he chose
+      // "Back to before", 23 Oct), before any failed attempt (a failure is asked again, or the caller's own words typed),
+      // and once per call: a reply that isn't a clear yes ends it.
       const canReadBack: boolean =
         !!pack.policy.nameReadBack &&
         !locked &&
@@ -1189,10 +1210,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         // over from it, and a press or an approval would count before that reply's "No." (fourth review, 23 Oct).
         !replyChecking &&
         !addrHeld &&
-        // A sound-alike, or (his choice, 23 Oct) an answer that didn't match, while the lock is still away.
-        (name.state === "confirm" ? name.confirmReason !== "ambiguous" : name.state === "failed") &&
-        name.attempts <= READ_BACK_AFTER_FAILED &&
-        name.heard !== undefined &&
+        providedWhole(name) &&
+        name.attempts === 0 &&
         name.evidence?.side === "caller";
       const pendingReadBack = readBack;
       // The read-back as the fast model heard it, or as the second model heard it again (below).
@@ -1213,10 +1232,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         !readBackHeld &&
         !openProbe &&
         !replyChecking &&
-        // A sound-alike, or (his choice, 23 Oct) an answer that didn't match, while the lock is still away.
-        (address.state === "confirm" ? address.confirmReason !== "ambiguous" : address.state === "failed") &&
-        address.attempts <= READ_BACK_AFTER_FAILED &&
-        address.heard !== undefined &&
+        providedWhole(address) &&
+        address.attempts === 0 &&
         address.evidence?.side === "caller";
       addrBack =
         canReadBackAddr && !ev.lowConfidence && (!asksRaw || asksRaw === "address") && readsBackAddress(line.text, customer) ? { ev, endedAt: line.endedAt } : null;
@@ -1246,7 +1263,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         !readBackRefused &&
         !readBackHeld &&
         !openProbe &&
-        name.attempts <= READ_BACK_AFTER_FAILED &&
+        name.attempts === 0 &&
         name.state !== "ok" &&
         expecting === "name" &&
         corrected.some(
@@ -1269,7 +1286,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         !locked &&
         !addrRefused &&
         !addrHeld &&
-        address.attempts <= READ_BACK_AFTER_FAILED &&
+        address.attempts === 0 &&
         address.state !== "ok" &&
         expecting === "address" &&
         corrected.some(
@@ -1285,12 +1302,10 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           ? line
           : null;
       if (readBack) {
-        if (name.state === "failed" && readBackAfterWrong.name === null) readBackAfterWrong.name = line.startedAt;
         expecting = "name";
         lastReadBack = { ...readBack, line };
         readBacksSeen.push(line);
       } else if (addrBack) {
-        if (address.state === "failed" && readBackAfterWrong.address === null) readBackAfterWrong.address = line.startedAt;
         expecting = "address";
         lastAddrBack = { ...addrBack, line };
         addrBacksSeen.push(line);
@@ -1776,11 +1791,11 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           id: `verification-failed-${f.id}`,
           level: "warning",
           title: `${f.label}: not matched (attempt ${f.attempts} of ${pack.policy.maxVerificationAttempts})`,
-          detail: `${attemptsLeft === 1 ? "One attempt left" : `${attemptsLeft} attempts left`}. Don't say which detail didn't match.${
-            (f.id === "name" ? pack.policy.nameReadBack && !readBackRefused : pack.policy.addressReadBack && !addrRefused) && f.attempts <= READ_BACK_AFTER_FAILED
-              ? ` You can still read back the ${f.id === "name" ? "name" : "street and city"} on the order, word for word as a question, without saying why; only the caller's plain yes counts.`
-              : ""
-          }`,
+          // After a wrong answer the caller gives the detail again, or (address) the email on the order instead; the
+          // order's own details are never read to them (his choice, 23 Oct: "Back to before").
+          detail: `${attemptsLeft === 1 ? "One attempt left" : `${attemptsLeft} attempts left`}. Don't say which detail didn't match. Ask the caller to give ${
+            f.id === "name" ? "their full name again" : "the street and city again, or the email address on the order instead"
+          }; don't read the order's details to them.`,
           sopRef: ref("Verification"),
           evidence: f.evidence ? [f.evidence] : [],
         });
@@ -1814,7 +1829,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   // offer waits until that check lands (review, 23 Oct).
   const replyCheckingNow = [...readBacksSeen, ...addrBacksSeen].some((b) => replyTo(b).some((l) => l.checking));
   const readBackState: ReadBackState =
-    !pack.policy.nameReadBack || locked || name.attempts > READ_BACK_AFTER_FAILED
+    !pack.policy.nameReadBack || locked || name.attempts > 0
       ? "off"
       : readBackRefused
         ? "refused"
@@ -1822,7 +1837,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           ? "waiting"
           : readBackUntil !== undefined
             ? "expired"
-            : (name.state === "confirm" ? name.confirmReason !== "ambiguous" : name.state === "failed") && !replyCheckingNow && !addrHeld
+            : providedWhole(name) && !replyCheckingNow && !addrHeld
               ? "available"
               : "off";
   const probed = openProbe as TranscriptEvent | null;
@@ -1832,7 +1847,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     readBackState === "available" && nameRepeatOpen
       ? "The caller asked to hear it again: say the same read-back once more and wait for a plain yes, or type it (N)."
       : readBackState === "available"
-      ? "Say the full name back and wait for the caller's yes (it counts only if it is the name on the order), or type it (N)."
+      ? "Say back the full name you heard and wait for the caller's yes (it counts only if it is the name on the order), or type what the caller said (N)."
       : readBackState === "waiting" && openProbe
         ? `Checking your ${probeWhich ?? "last"} line with the second model in case it was the name read-back. You can type what the caller said (N).`
         : readBackState === "waiting"
@@ -1849,7 +1864,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     addrHeld = true;
   if (!locked && address.state !== "ok" && addressReplyOpen(now)) addrHeld = true;
   const addrState: ReadBackState =
-    !pack.policy.addressReadBack || locked || address.attempts > READ_BACK_AFTER_FAILED
+    !pack.policy.addressReadBack || locked || address.attempts > 0
       ? "off"
       : addrRefused
         ? "refused"
@@ -1857,14 +1872,14 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           ? "waiting"
           : addrUntil !== undefined
             ? "expired"
-            : (address.state === "confirm" ? address.confirmReason !== "ambiguous" : address.state === "failed") && !replyCheckingNow && !readBackHeld && !openProbe
+            : providedWhole(address) && !replyCheckingNow && !readBackHeld && !openProbe
               ? "available"
               : "off";
   const addrAction =
     addrState === "available" && addrRepeatOpen
       ? "The caller asked to hear it again: say the same street and city once more and wait for a plain yes, or type what the caller said (A)."
       : addrState === "available"
-        ? "Say the street and city back as one question and wait for the caller's yes (it counts only if it is the order's street and city word for word), or type what the caller said (A)."
+        ? "Say back the street and city you heard as one question and wait for the caller's yes (it counts only if it is the order's street and city word for word), or type what the caller said (A)."
         : addrState === "waiting"
           ? "Wait for the caller's yes to your read-back, or type what the caller said (A)."
           : addrState === "expired"
@@ -1873,18 +1888,17 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   for (const f of [name, address]) {
     if (f.state === "confirm" && f.evidence && f.confirmReason === "after-read-back" && !locked) {
       const what = f.id === "name" ? "the name" : "the street and city";
-      const live = f.id === "name" ? readBackState === "available" || readBackState === "waiting" : addrState === "available" || addrState === "waiting";
       prompts.push({
         target: f.id,
         askAgain: true,
-        text: `Heard "${f.heard ?? f.evidence.text}" only after you read ${what} back following a wrong answer, so it doesn't verify ${what} by itself.${
-          live ? ` ${f.id === "name" ? nameAction : addrAction}` : ` Type ${f.id === "name" ? "the name (N)" : "the street and city (A)"} only if you're sure it's the caller's own answer; otherwise offer a call back to the number on the order.`
-        }`,
+        text: `Heard "${f.heard ?? f.evidence.text}" only after you said ${what} on the order yourself, so it doesn't verify ${what} by itself. Type ${
+          f.id === "name" ? "the name (N)" : "the street and city (A)"
+        } only if the caller said it before you did; otherwise offer a call back to the phone number on the order.`,
         evidence: f.evidence,
       });
       continue;
     }
-    if ((f.state === "confirm" || f.state === "failed") && f.evidence && f.id === "address" && addrRefused) {
+    if (f.state === "confirm" && f.evidence && f.id === "address" && addrRefused) {
       // After a refused read-back, as for the name: neither another read-back nor the Confirm button counts.
       const newer = f.evidence.at > addrRefused.ev.at;
       prompts.push({
@@ -1899,7 +1913,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       });
       continue;
     }
-    if ((f.state === "confirm" || f.state === "failed") && f.evidence && f.id === "address" && addrState !== "off") {
+    if (f.state === "confirm" && f.evidence && f.id === "address" && addrState !== "off") {
       // The card leads with the read-back, as for the name; the agent can still confirm a sound-alike they heard clearly.
       const heard = f.heard ?? f.evidence.text;
       prompts.push({
@@ -1910,7 +1924,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       });
       continue;
     }
-    if ((f.state === "confirm" || f.state === "failed") && f.evidence && f.id === "name" && readBackRefused) {
+    if (f.state === "confirm" && f.evidence && f.id === "name" && readBackRefused) {
       // After a refused read-back, typing is the way on: neither another read-back nor the Confirm button counts.
       const newer = f.evidence.at > readBackRefused.ev.at;
       prompts.push({
@@ -1923,12 +1937,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
             : `Read-back not confirmed: the caller's reply "${readBackRefused.ev.text}" doesn't count, because ${readBackRefused.why}. If you clearly heard the caller give their name and say yes, type the name (N); otherwise ask for the full name again. Reading the name back again won't count on this call.`,
         evidence: newer ? f.evidence : readBackRefused.ev,
       });
-    } else if (
-      (f.state === "confirm" || f.state === "failed") &&
-      f.evidence &&
-      f.id === "name" &&
-      (readBackState === "waiting" || readBackState === "expired" || repeatUsed.name || (f.state === "failed" && readBackState === "available"))
-    ) {
+    } else if (f.state === "confirm" && f.evidence && f.id === "name" && (readBackState === "waiting" || readBackState === "expired" || repeatUsed.name)) {
       // Said back: the card says what the read-back is waiting for, or that the wait is over. After a "Sorry?", the
       // Confirm button no longer counts, so the card doesn't offer it.
       prompts.push({

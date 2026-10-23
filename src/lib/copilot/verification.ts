@@ -141,3 +141,40 @@ export function soundsLikeRecord(which: "name" | "address", text: string, custom
     return 1 - editDistance(heard, expected) / Math.max(heard.length, expected.length) >= 0.7;
   });
 }
+
+/**
+ * For the read-back only (his rule, 23 Oct): whether saying the detail back can be repeating what the caller said, not
+ * filling in what they didn't. Every part heard, word for word or by sound, fits. So does an answer with none of the
+ * record's parts in it ("Sandler.", "Helrout Indalis."): a recognition error the agent may have heard right. But a part
+ * that was heard never carries the rest on its own: the rest of the answer, run together, must still sound like the
+ * rest of the record ("Helrout in Dallas" fits; "Sam Jones", "Pam Miller", "Elm Road in Dallas" and "Hill Road in
+ * Dalton" don't). A different street type ("Hill Street in Dallas") is a different answer, not a mishearing.
+ */
+export function readBackFits(which: "name" | "address", text: string, customer: Customer): boolean {
+  if (deniesIdentity(text)) return false;
+  // An email answer is never followed by the street and city: that would say words the caller never gave.
+  const said = answerWords(text);
+  if (which === "address" && said.includes("at") && (said.includes("com") || said.includes("mail") || said.some((t) => t.includes("@")))) return false;
+  const result = which === "name" ? matchName(text, customer) : matchAddress(text, customer);
+  if (result === "match" || result === "close") return true;
+  if (result !== "mismatch") return false;
+  const { street, city, state } = customer.address;
+  const [streetName, ...streetRest] = words(street);
+  const recordTypes = streetRest.flatMap((w) => STREET_TYPES[w] ?? [w]);
+  const stateWords = [...words(state), ...words(state).flatMap((w) => STATE_NAMES[w] ?? [])];
+  // Street types, "in" and the state are said with every address, so they carry nothing either way.
+  const generic = which === "address" ? [...recordTypes, "in", ...stateWords] : [];
+  const otherTypes = Object.values(STREET_TYPES).flat().filter((t) => !recordTypes.includes(t));
+  if (which === "address" && answerWords(text).some((t) => otherTypes.includes(t))) return false;
+  const tokens = answerWords(text).filter((w) => !FILLER.test(w) && !generic.includes(w));
+  const parts = which === "name" ? words(customer.name) : [streetName, ...words(city)];
+  const heard = parts.filter((p) => has(tokens, p));
+  if (!heard.length) return true;
+  const rest = parts.filter((p) => !heard.includes(p));
+  if (!rest.length) return true;
+  const restHeard = skeleton(tokens.filter((t) => !heard.some((p) => t === p || soundsLike(t, p))).join(""));
+  if (restHeard.length < 2) return false;
+  // The street name and its type can run together ("Helrout" for "Hill Road").
+  const expected = [rest, rest.flatMap((p) => (p === streetName && which === "address" ? [p, ...streetRest] : [p]))].map((r) => skeleton(r.join("")));
+  return expected.some((e) => 1 - editDistance(restHeard, e) / Math.max(restHeard.length, e.length) >= 0.7);
+}
