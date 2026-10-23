@@ -494,6 +494,11 @@ const confirmsOnly = (text: string) => {
 export const READ_BACK_OVERLAP_MS = 250;
 /** A reply that starts this long after the read-back ended isn't taken as its answer; the field shows the wait ending. */
 export const READ_BACK_REPLY_MS = 8000;
+/**
+ * Read-back is still allowed after this many failed answers for that detail (his choice, 23 Oct: "Allow after one").
+ * It never outlasts the lock, and a refused read-back still ends it for the call.
+ */
+export const READ_BACK_AFTER_FAILED = 1;
 
 /** Refusals where the caller did say a plain yes and only the system couldn't confirm it: typing the name is allowed. */
 const NOT_CHECKED = "the second speech model didn't finish checking it";
@@ -869,6 +874,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     }
     factor.attempts++;
     factor.state = "failed";
+    factor.confirmReason = undefined;
     if (factor.attempts >= pack.policy.maxVerificationAttempts) locked = true;
   }
 
@@ -1134,8 +1140,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       // No read-back of either detail while the caller's reply to an earlier one is still being checked.
       const replyChecking = [...readBacksSeen, ...addrBacksSeen].some((b) => replyTo(b).some((l) => l.checking));
       // Saying the name back is allowed only when the client allows it, once the caller has given a full answer the
-      // speech models couldn't confirm (never a partial, ambiguous or missing one), before any failed attempt (a
-      // failure is corrected by typing the caller's words), and once per call: a reply that isn't a clear yes ends it.
+      // speech models couldn't confirm (never a partial, ambiguous or missing one), after at most one failed answer
+      // (READ_BACK_AFTER_FAILED) and before the lock, and once per call: a reply that isn't a clear yes ends it.
       const canReadBack: boolean =
         !!pack.policy.nameReadBack &&
         !locked &&
@@ -1146,9 +1152,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         // over from it, and a press or an approval would count before that reply's "No." (fourth review, 23 Oct).
         !replyChecking &&
         !addrHeld &&
-        name.state === "confirm" &&
-        name.confirmReason !== "ambiguous" &&
-        name.attempts === 0 &&
+        // A sound-alike, or (his choice, 23 Oct) an answer that didn't match, while the lock is still away.
+        (name.state === "confirm" ? name.confirmReason !== "ambiguous" : name.state === "failed") &&
+        name.attempts <= READ_BACK_AFTER_FAILED &&
         name.heard !== undefined &&
         name.evidence?.side === "caller";
       const pendingReadBack = readBack;
@@ -1170,9 +1176,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         !readBackHeld &&
         !openProbe &&
         !replyChecking &&
-        address.state === "confirm" &&
-        address.confirmReason !== "ambiguous" &&
-        address.attempts === 0 &&
+        // A sound-alike, or (his choice, 23 Oct) an answer that didn't match, while the lock is still away.
+        (address.state === "confirm" ? address.confirmReason !== "ambiguous" : address.state === "failed") &&
+        address.attempts <= READ_BACK_AFTER_FAILED &&
         address.heard !== undefined &&
         address.evidence?.side === "caller";
       addrBack =
@@ -1203,7 +1209,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         !readBackRefused &&
         !readBackHeld &&
         !openProbe &&
-        name.attempts === 0 &&
+        name.attempts <= READ_BACK_AFTER_FAILED &&
         name.state !== "ok" &&
         expecting === "name" &&
         corrected.some(
@@ -1226,7 +1232,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         !locked &&
         !addrRefused &&
         !addrHeld &&
-        address.attempts === 0 &&
+        address.attempts <= READ_BACK_AFTER_FAILED &&
         address.state !== "ok" &&
         expecting === "address" &&
         corrected.some(
@@ -1765,7 +1771,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   // offer waits until that check lands (review, 23 Oct).
   const replyCheckingNow = [...readBacksSeen, ...addrBacksSeen].some((b) => replyTo(b).some((l) => l.checking));
   const readBackState: ReadBackState =
-    !pack.policy.nameReadBack || locked || name.attempts > 0
+    !pack.policy.nameReadBack || locked || name.attempts > READ_BACK_AFTER_FAILED
       ? "off"
       : readBackRefused
         ? "refused"
@@ -1773,7 +1779,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           ? "waiting"
           : readBackUntil !== undefined
             ? "expired"
-            : name.state === "confirm" && name.confirmReason !== "ambiguous" && !replyCheckingNow && !addrHeld
+            : (name.state === "confirm" ? name.confirmReason !== "ambiguous" : name.state === "failed") && !replyCheckingNow && !addrHeld
               ? "available"
               : "off";
   const probed = openProbe as TranscriptEvent | null;
@@ -1800,7 +1806,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     addrHeld = true;
   if (!locked && address.state !== "ok" && addressReplyOpen(now)) addrHeld = true;
   const addrState: ReadBackState =
-    !pack.policy.addressReadBack || locked || address.attempts > 0
+    !pack.policy.addressReadBack || locked || address.attempts > READ_BACK_AFTER_FAILED
       ? "off"
       : addrRefused
         ? "refused"
@@ -1808,7 +1814,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           ? "waiting"
           : addrUntil !== undefined
             ? "expired"
-            : address.state === "confirm" && address.confirmReason !== "ambiguous" && !replyCheckingNow && !readBackHeld && !openProbe
+            : (address.state === "confirm" ? address.confirmReason !== "ambiguous" : address.state === "failed") && !replyCheckingNow && !readBackHeld && !openProbe
               ? "available"
               : "off";
   const addrAction =
@@ -1822,7 +1828,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
             ? `No reply to your read-back within ${READ_BACK_REPLY_MS / 1000} s, so a yes now won't count. Ask for the street and city again, or type them (A).`
             : "Type what the caller said (A), or ask again.";
   for (const f of [name, address]) {
-    if (f.state === "confirm" && f.evidence && f.id === "address" && addrRefused) {
+    if ((f.state === "confirm" || f.state === "failed") && f.evidence && f.id === "address" && addrRefused) {
       // After a refused read-back, as for the name: neither another read-back nor the Confirm button counts.
       const newer = f.evidence.at > addrRefused.ev.at;
       prompts.push({
@@ -1837,7 +1843,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       });
       continue;
     }
-    if (f.state === "confirm" && f.evidence && f.id === "address" && addrState !== "off") {
+    if ((f.state === "confirm" || f.state === "failed") && f.evidence && f.id === "address" && addrState !== "off") {
       // The card leads with the read-back, as for the name; the agent can still confirm a sound-alike they heard clearly.
       const heard = f.heard ?? f.evidence.text;
       prompts.push({
@@ -1848,7 +1854,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       });
       continue;
     }
-    if (f.state === "confirm" && f.evidence && f.id === "name" && readBackRefused) {
+    if ((f.state === "confirm" || f.state === "failed") && f.evidence && f.id === "name" && readBackRefused) {
       // After a refused read-back, typing is the way on: neither another read-back nor the Confirm button counts.
       const newer = f.evidence.at > readBackRefused.ev.at;
       prompts.push({
@@ -1861,7 +1867,12 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
             : `Read-back not confirmed: the caller's reply "${readBackRefused.ev.text}" doesn't count, because ${readBackRefused.why}. If you clearly heard the caller give their name and say yes, type the name (N); otherwise ask for the full name again. Reading the name back again won't count on this call.`,
         evidence: newer ? f.evidence : readBackRefused.ev,
       });
-    } else if (f.state === "confirm" && f.evidence && f.id === "name" && (readBackState === "waiting" || readBackState === "expired" || repeatUsed.name)) {
+    } else if (
+      (f.state === "confirm" || f.state === "failed") &&
+      f.evidence &&
+      f.id === "name" &&
+      (readBackState === "waiting" || readBackState === "expired" || repeatUsed.name || (f.state === "failed" && readBackState === "available"))
+    ) {
       // Said back: the card says what the read-back is waiting for, or that the wait is over. After a "Sorry?", the
       // Confirm button no longer counts, so the card doesn't offer it.
       prompts.push({

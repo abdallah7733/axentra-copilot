@@ -226,12 +226,29 @@ test("no read-back after a partial or two-name answer: the agent asks for the fu
   }
 });
 
-test("no read-back after a failed attempt: typing the caller's words is the correction", () => {
-  const lines = upToName({ side: "caller", text: "John Smith." }, [{ side: "agent", text: "Thank you." }, READ_BACK, YES, ADDRESS_Q]);
-  const v = view(lines, [], withReadBack);
+test("read-back is still allowed after one failed answer (his choice, 23 Oct), and the caller's checked yes verifies the name", () => {
+  const before = view(upToName({ side: "caller", text: "John Smith." }, [{ side: "agent", text: "Thank you." }]), [], withReadBack);
+  assert.equal(nameOf(before).attempts, 1);
+  assert.equal(nameOf(before).state, "failed");
+  assert.equal(before.nameEntry?.readBack, "available");
+  const v = view(upToName({ side: "caller", text: "John Smith." }, [{ side: "agent", text: "Thank you." }, READ_BACK, YES, ADDRESS_Q]), [], withReadBack);
   assert.equal(nameOf(v).attempts, 1);
+  assert.equal(nameOf(v).state, "ok");
+  assert.equal(nameOf(v).method, NAME_READ_BACK);
+});
+
+test("no read-back once identity is locked after two failed answers", () => {
+  const lines = upToName({ side: "caller", text: "John Smith." }, [
+    { side: "agent", text: "Could you say your full name once more?" },
+    { side: "caller", text: "John Smith.", checked: true },
+    { side: "agent", text: "Thank you." },
+    READ_BACK,
+    YES,
+  ]);
+  const v = view(lines, [], withReadBack);
+  assert.equal(nameOf(v).attempts, 2);
   assert.notEqual(nameOf(v).state, "ok");
-  assert.equal(v.nameEntry?.readBack, "off");
+  assert.equal(v.verification.locked, true);
 });
 
 test("each reply that isn't a finished, checked, plain yes leaves the name unverified, says why, and isn't a failed attempt", () => {

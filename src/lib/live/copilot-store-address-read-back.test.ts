@@ -346,3 +346,38 @@ test("while the caller's reply to the name read-back is being checked, the addre
   const offered = c.view().prompts.find((p) => p.target === "address")?.text ?? "";
   assert.doesNotMatch(offered, /Say the street and city back/);
 });
+
+test("after one address answer that didn't match, the read-back still works (his choice, 23 Oct), and the lock still ends it", () => {
+  const c = call("AF-ONE");
+  c.agent("a1", "Thank you for calling Sunlake. How can I help you today?", 0, 2000);
+  c.say("c1", "Hello. I need help with order 427. The tablet came yesterday, and the screen is cracked.", 3000, 9000);
+  c.agent("a2", "First, can I have your full name, please?", 10_000, 12_000);
+  c.say("c2", "Sam Miller.", 12_500, 13_500);
+  c.agent("a3", "Thank you. And the street and city for the delivery?", 15_000, 17_000);
+  c.say("c3", "Main Street in Boston.", 17_500, 19_000);
+  c.agent("a3b", "Okay.", 21_000, 21_400);
+  assert.equal(c.address().state, "failed");
+  assert.equal(c.address().attempts, 1);
+  assert.equal(c.view().addressEntry?.readBack, "available");
+  c.agent("a4", "So that's Hill Road, Dallas, is that right?", 22_000, 24_500);
+  c.say("c4", "Yes.", 25_000, 25_400);
+  assert.equal(c.address().state, "ok");
+  assert.equal(c.address().method, ADDRESS_READ_BACK);
+});
+
+test("a second wrong address answer locks identity, and a read-back after it doesn't count", () => {
+  const c = call("AF-LOCK");
+  c.agent("a1", "Thank you for calling Sunlake. How can I help you today?", 0, 2000);
+  c.say("c1", "Hello. I need help with order 427. The tablet came yesterday, and the screen is cracked.", 3000, 9000);
+  c.agent("a2", "First, can I have your full name, please?", 10_000, 12_000);
+  c.say("c2", "Sam Miller.", 12_500, 13_500);
+  c.agent("a3", "Thank you. And the street and city for the delivery?", 15_000, 17_000);
+  c.say("c3", "Main Street in Boston.", 17_500, 19_000);
+  c.agent("a3b", "Could you give me the street and city once more?", 21_000, 23_000);
+  c.say("c3b", "Main Street in Boston.", 23_500, 25_000);
+  c.agent("a3c", "Okay.", 28_000, 28_400);
+  assert.equal(c.view().verification.locked, true);
+  c.agent("a4", "So that's Hill Road, Dallas, is that right?", 29_000, 31_500);
+  c.say("c4", "Yes.", 32_000, 32_400);
+  assert.notEqual(c.address().state, "ok");
+});
