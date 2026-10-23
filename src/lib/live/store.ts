@@ -57,6 +57,10 @@ export type LiveLine = {
   checkFailed?: boolean;
   /** A key answer the second model couldn't check: its audio was no longer held, or the engine has no check model. */
   checkSkipped?: "no-audio" | "no-model";
+  /** An agent line heard again in case it was the name read-back: nothing waits for it and its text stays as first heard. */
+  probe?: boolean;
+  /** What the second model heard on that line (text null: the check failed), and when (epoch ms). */
+  reheard?: { text: string | null; confidence: number | null; at: number };
 };
 
 export type EngineState = "checking" | "offline" | "online";
@@ -104,8 +108,10 @@ type LiveState = {
    * Re-checks a caller line with the engine's second speech model. Returns "started", or why it
    * couldn't: no audio held for it (only the last few caller phrases are kept), or no check model.
    * A key answer that can't be checked is marked on screen (not in a replay, which has no audio).
+   * `probe`: an agent line heard again in case it was the name read-back; its text stays as first heard
+   * and the second model's hearing is kept beside it (LiveLine.reheard).
    */
-  checkLine: (key: string) => "started" | "no-audio" | "no-model";
+  checkLine: (key: string, probe?: boolean) => "started" | "no-audio" | "no-model";
 };
 
 const MIC_KEY = "axentra-mic-label";
@@ -178,11 +184,12 @@ export const useLive = create<LiveState>((set, get) => {
         endedAt: line.endedAtEpoch,
         final: true,
         confidence: line.confidence,
-        checking: line.checking,
+        checking: line.probe ? undefined : line.checking,
         firstHeard: line.firstHeard,
         checkFailed: line.checkFailed,
-        checked: line.checkSeconds !== undefined && !line.checkFailed && !line.checking ? true : undefined,
+        checked: line.checkSeconds !== undefined && !line.checkFailed && !line.checking && !line.probe ? true : undefined,
         availableAt: line.availableAtEpoch,
+        ...(line.reheard ? { reheard: line.reheard } : {}),
       },
     });
   }
@@ -296,7 +303,8 @@ export const useLive = create<LiveState>((set, get) => {
     recentAudio.clear();
     // A check still running is dropped with the call (its result can't reach the next call), so settle
     // it now: the fast model's text stands, as a doubtful line, instead of "checking" for ever.
-    for (const l of get().lines) if (l.checking) updateLine(l.key, { checking: false, checkFailed: true, availableAtEpoch: epochNow() });
+    for (const l of get().lines)
+      if (l.checking) updateLine(l.key, l.probe ? { checking: false, reheard: { text: null, confidence: null, at: epochNow() } } : { checking: false, checkFailed: true, availableAtEpoch: epochNow() });
     set({ phase: "ready", status: message, callEndedAt: performance.now() });
     liveEvents.emit({ type: "call-ended", callId, at: epochNow() });
     void stopCaptures();
@@ -320,11 +328,11 @@ export const useLive = create<LiveState>((set, get) => {
     replaying: false,
     sopOpen: false,
 
-    checkLine: (key) => {
+    checkLine: (key, probe = false) => {
       const samples = recentAudio.get(key);
       const skipped = !get().health?.check ? "no-model" : !samples ? "no-audio" : null;
       if (skipped || !samples) {
-        if (skipped && !get().replaying) updateLine(key, { checkSkipped: skipped }, false);
+        if (skipped && !get().replaying && !probe) updateLine(key, { checkSkipped: skipped }, false);
         return skipped ?? "no-audio";
       }
       recentAudio.delete(key);
@@ -332,13 +340,17 @@ export const useLive = create<LiveState>((set, get) => {
       const began = performance.now();
       const heard = get().lines.find((l) => l.key === key);
       const fast = heard?.text ?? "";
-      // The copilot asked for this check and already holds the line back; only the screen needs to know.
-      updateLine(key, { checking: true }, false);
+      // The copilot asked for this check and already holds the line back (or, for a probe, counts it as heard); only
+      // the screen needs to know.
+      updateLine(key, probe ? { checking: true, probe: true } : { checking: true }, false);
+      const failed = (checkSeconds: number) =>
+        updateLine(key, probe ? { checking: false, checkSeconds, reheard: { text: null, confidence: null, at: epochNow() } } : { checking: false, checkFailed: true, checkSeconds, availableAtEpoch: epochNow() });
       recognize(heard?.side ?? "caller", samples, true).then(
         (result) => {
           if (callEpoch !== epoch) return;
           const checkSeconds = (performance.now() - began) / 1000;
-          if (!result.text) return updateLine(key, { checking: false, checkFailed: true, checkSeconds, availableAtEpoch: epochNow() });
+          if (!result.text) return failed(checkSeconds);
+          if (probe) return updateLine(key, { checking: false, checkSeconds, reheard: { text: result.text, confidence: result.confidence, at: epochNow() } });
           updateLine(key, {
             checking: false,
             text: result.text,
@@ -349,7 +361,7 @@ export const useLive = create<LiveState>((set, get) => {
           });
         },
         () => {
-          if (callEpoch === epoch) updateLine(key, { checking: false, checkFailed: true, checkSeconds: (performance.now() - began) / 1000, availableAtEpoch: epochNow() });
+          if (callEpoch === epoch) failed((performance.now() - began) / 1000);
         }
       );
       return "started";

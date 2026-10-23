@@ -107,8 +107,9 @@ export function CallDetails({ className }: { className?: string }) {
 
   const mid = median(delays);
   // Checked answers: from the end of speech to the checked text, which is when the copilot can use it.
-  const checked = lines.filter((l) => l.checkSeconds !== undefined && !l.checkFailed).map((l) => (l.availableAtEpoch - l.endedAtEpoch) / 1000);
-  const notChecked = lines.filter((l) => l.checkFailed || l.checkSkipped).length;
+  // Read-back hearings (probes) hold nothing back, so they don't count here.
+  const checked = lines.filter((l) => l.checkSeconds !== undefined && !l.checkFailed && !l.probe).map((l) => (l.availableAtEpoch - l.endedAtEpoch) / 1000);
+  const notChecked = lines.filter((l) => !l.probe && (l.checkFailed || l.checkSkipped)).length;
   const checkedMid = median(checked);
   const running = phase === "active" || replaying;
   const elapsed = startedAt === null ? null : (running ? Math.max(now, startedAt) : endedAt ?? startedAt) - startedAt;

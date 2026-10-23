@@ -88,7 +88,8 @@ test("the console shows the read-back's wait running out, even when nobody speak
   23 Oct C3 call (2:24 AM): the agent said "So it's Sam Miller, right?" and the fast model wrote "So it's Samuel Wright.",
   so the read-back was never seen. The second model heard it right from the same mic offline. While read-back is allowed,
   an agent line shaped like a read-back is now heard again by the second model, without being held back: it counts as
-  heard meanwhile, and only what depends on whether it was a read-back waits for that check.
+  heard meanwhile, and only what depends on whether it was a read-back waits for that check. The live store keeps the
+  line's fast text and reports the second hearing beside it (`reheard`).
 */
 const c3Start = (callId: string, asked: string[], answer = "Sandler.") => {
   useLive.setState({ checkLine: (key) => (asked.push(key), "started") });
@@ -105,7 +106,11 @@ const c3Start = (callId: string, asked: string[], answer = "Sandler.") => {
 };
 const copilotLine = (key: string) => useCopilot.getState().lines.find((l) => l.key === key);
 const misheard = (callId: string) => line(callId, 5, "a3", "agent", "So it's Samuel Wright.", 17_500);
-const heardAgain = (l: TranscriptEvent) => ({ ...l, text: "So it's Sam Miller, right?", firstHeard: l.text, checked: true });
+/** The live store's result for a line heard again: the fast text stays, the second model's hearing beside it. */
+const reheard = (l: TranscriptEvent, text: string | null) => ({ ...l, reheard: { text, confidence: text === null ? null : 0.9, at: epochNow() } });
+const heardAgain = (l: TranscriptEvent) => reheard(l, "So it's Sam Miller, right?");
+const card = () => useCopilot.getState().view.nameEntry?.readBack;
+const PROBE_CARD = /Checking your last line with the second model in case it was the name read-back/;
 
 test("a read-back the fast model misheard is heard again without being held back, and verifies only with the caller's checked yes", () => {
   const asked: string[] = [];
@@ -115,20 +120,21 @@ test("a read-back the fast model misheard is heard again without being held back
   assert.ok(asked.includes("a3"), "the agent's line goes to the second model");
   assert.equal(copilotLine("a3")?.checking, undefined, "not held back");
   assert.equal(copilotLine("a3")?.probing, true);
-  assert.equal(useCopilot.getState().view.nameEntry?.readBack, "waiting");
-  assert.match(useCopilot.getState().view.prompts.find((p) => p.target === "name")?.text ?? "", /Checking whether you read the name back/);
+  assert.equal(card(), "waiting");
+  assert.match(useCopilot.getState().view.prompts.find((p) => p.target === "name")?.text ?? "", PROBE_CARD);
 
+  // The caller's next line may be the reply: it waits for its own check from the start.
   const yes = line("CA-C3", 6, "c3", "caller", "Yes, that's right.", 21_000);
   emit(yes);
-  assert.ok(!asked.includes("c3"), "not yet a reply to a read-back");
+  assert.ok(asked.includes("c3"));
+  assert.equal(copilotLine("c3")?.checking, true);
   assert.notEqual(name().state, "ok");
 
   emit(heardAgain(readBack));
   assert.equal(copilotLine("a3")?.text, "So it's Samuel Wright.", "the fast text stays for every other rule");
   assert.equal(copilotLine("a3")?.reheard?.text, "So it's Sam Miller, right?");
-  assert.ok(asked.includes("c3"), "now the reply to a read-back: the caller's yes gets its own check");
   assert.notEqual(name().state, "ok", "nothing verifies while the yes is being checked");
-  assert.equal(useCopilot.getState().view.nameEntry?.readBack, "waiting");
+  assert.equal(card(), "waiting");
 
   emit({ ...yes, checked: true });
   assert.equal(name().state, "ok");
@@ -148,7 +154,7 @@ test("the C3 call as it went: the read-back heard again, then 'Sorry?', is refus
   emit(heardAgain(readBack));
   emit({ ...sorry, checked: true });
   assert.notEqual(name().state, "ok");
-  assert.equal(useCopilot.getState().view.nameEntry?.readBack, "refused");
+  assert.equal(card(), "refused");
   assert.equal(useCopilot.getState().view.nameEntry?.readBackRecovery, "ask");
   // The repeat that followed on the call ("It is Sam Miller.", then the caller's "Sam Millerius." heard unclearly) still changes nothing.
   emit(line("CA-C3B", 7, "a4", "agent", "It is Sam Miller.", 23_000));
@@ -158,22 +164,22 @@ test("the C3 call as it went: the read-back heard again, then 'Sorry?', is refus
 });
 
 test("when the second model hears the same misheard line, or its check fails, nothing changes", () => {
-  for (const result of [{ checked: true }, { checkFailed: true }]) {
+  for (const text of ["So it's Samuel Wright.", null]) {
     const asked: string[] = [];
     c3Start("CA-C3C", asked);
     const readBack = misheard("CA-C3C");
     emit(readBack);
-    emit({ ...readBack, ...result });
+    emit(reheard(readBack, text));
     const kept = copilotLine("a3");
     assert.equal(kept?.probing, false);
     assert.equal(kept?.checkFailed, undefined, "a failed check doesn't make the agent's line doubtful");
     assert.equal(kept?.confidence, 0.9);
     const yes = line("CA-C3C", 6, "c3", "caller", "Yes, that's right.", 21_000);
     emit(yes);
-    assert.ok(!asked.includes("c3"), JSON.stringify(result));
-    assert.notEqual(name().state, "ok", JSON.stringify(result));
+    assert.ok(!asked.includes("c3"), String(text));
+    assert.notEqual(name().state, "ok", String(text));
     assert.equal(name().attempts, 0, "the yes isn't a failed attempt");
-    assert.equal(useCopilot.getState().view.nameEntry?.readBack, "available", "read-back is still allowed");
+    assert.equal(card(), "available", "read-back is still allowed");
     liveEvents.emit({ type: "cleared" });
   }
 });
@@ -187,9 +193,18 @@ test("only a line shaped like a read-back, while the name question is the latest
     ["Thank you, one moment.", false],
     ["Okay, let me check.", false],
     ["That's not Sam Miller.", false],
+    ["Sorry?", false],
+    ["Pardon?", false],
+    ["Are you still there?", false],
+    ["Can you hear me?", false],
+    ["And your first name?", false],
+    ["Is that with a C?", false],
+    ["Could you repeat that?", false],
     ["Sandler, is that correct?", true],
     ["So it's similar, right?", true],
     ["Sam Millar?", true],
+    ["Is it Sandler?", true],
+    ["Thank you, Mr Miller.", true], // names someone: heard again, nothing waits on it unless the caller replies
   ];
   for (const [text, probed] of cases) {
     const asked: string[] = [];
@@ -245,7 +260,7 @@ test("a caller's yes that arrives before the agent's line is no failed attempt a
   liveEvents.emit({ type: "cleared" });
 });
 
-test("a Confirm press on the name waits for the check of a possible read-back", () => {
+test("a Confirm press on the name waits while the caller's reply may still refuse a read-back", () => {
   // "Sam Miler." only sounds like the record, so the agent may confirm it in the panel.
   for (const outcome of ["same", "read back, then Sorry?"] as const) {
     const asked: string[] = [];
@@ -257,20 +272,83 @@ test("a Confirm press on the name waits for the check of a possible read-back", 
     useCopilot.getState().confirm("name");
     assert.notEqual(name().state, "ok", `${outcome}: not while the line is being heard again`);
     if (outcome === "same") {
-      emit({ ...readBack, checked: true });
+      emit(reheard(readBack, readBack.text));
       assert.equal(name().state, "ok", "the press counts once the line turns out not to be a read-back");
       assert.equal(name().method, "confirmed by the agent");
     } else {
       emit(heardAgain(readBack));
+      assert.notEqual(name().state, "ok", "nor while the caller's reply to the read-back is being checked (second review)");
+      assert.equal(useCopilot.getState().view.verification.verified, false);
       emit({ ...reply, checked: true });
       assert.notEqual(name().state, "ok", "after a refused read-back the press never counts");
-      assert.equal(useCopilot.getState().view.nameEntry?.readBack, "refused");
+      assert.equal(card(), "refused");
     }
     liveEvents.emit({ type: "cleared" });
   }
 });
 
-test("a pass rebuilding an earlier moment sees the line as the copilot did then: still being heard again", async () => {
+test("a press made before the caller replies counts at once and stays counted when the agent's line is heard again", () => {
+  const asked: string[] = [];
+  c3Start("CA-C3J", asked, "Sam Miler.");
+  useCopilot.getState().confirm("name");
+  assert.equal(name().state, "ok");
+  // Here the press lands before the line the agent was saying reaches the console.
+  emit(misheard("CA-C3J"));
+  assert.equal(name().state, "ok");
+  liveEvents.emit({ type: "cleared" });
+});
+
+test("once the agent goes on talking, a reply to the read-back still being checked keeps the card waiting and holds a press", () => {
+  const asked: string[] = [];
+  c3Start("CA-C3K", asked, "Sam Miler.");
+  const readBack = misheard("CA-C3K");
+  emit(readBack);
+  const yes = line("CA-C3K", 6, "c3", "caller", "Yes.", 21_000);
+  emit(yes);
+  emit(heardAgain(readBack));
+  emit(line("CA-C3K", 7, "a4", "agent", "And the street and city for the delivery?", 24_000));
+  assert.equal(card(), "waiting");
+  useCopilot.getState().confirm("name");
+  assert.notEqual(name().state, "ok");
+  emit({ ...yes, checked: true });
+  assert.equal(name().state, "ok");
+  assert.equal(name().method, "name read back by agent, confirmed by caller");
+  liveEvents.emit({ type: "cleared" });
+});
+
+test("a caller line that already counted is never hidden later, when the agent's line turns out to be a read-back", () => {
+  const asked: string[] = [];
+  c3Start("CA-C3L", asked, "Sam Miler.");
+  const readBack = misheard("CA-C3L");
+  emit(readBack);
+  const states: string[] = [];
+  const said = line("CA-C3L", 6, "c3", "caller", "Sam Miller.", 21_000);
+  emit(said);
+  states.push(name().state);
+  emit(heardAgain(readBack));
+  states.push(name().state);
+  emit({ ...said, checked: true });
+  states.push(name().state);
+  const first = states.indexOf("ok");
+  assert.ok(first === -1 || states.slice(first).every((x) => x === "ok"), states.join(" → "));
+  liveEvents.emit({ type: "cleared" });
+});
+
+test("an agent line said before a press is never heard again afterwards (undo, then Confirm again)", () => {
+  const asked: string[] = [];
+  c3Start("CA-C3M", asked, "Sam Miler.");
+  useCopilot.getState().confirm("name");
+  emit(line("CA-C3M", 5, "a3", "agent", "Thank you, Mr Miller.", 17_500));
+  assert.ok(!asked.includes("a3"), "the name was already confirmed");
+  useCopilot.getState().undo("name");
+  useCopilot.getState().confirm("name");
+  emit(line("CA-C3M", 6, "a4", "agent", "And the street and city for the delivery?", 20_000));
+  assert.ok(!asked.includes("a3"), "said before the presses: never sent later");
+  assert.equal(name().state, "ok");
+  liveEvents.emit({ type: "cleared" });
+});
+
+test("a pass rebuilding an earlier moment sees the line as the copilot did then", async () => {
   const { analyze } = await import("@/lib/copilot/copilot");
   const { sunlake } = await import("./sunlake-data");
   const lines: TranscriptEvent[] = [
@@ -278,12 +356,13 @@ test("a pass rebuilding an earlier moment sees the line as the copilot did then:
     line("CA-C3I", 2, "c1", "caller", "Hello. I need help with order 427. The tablet came yesterday, and the screen is cracked.", 4000),
     line("CA-C3I", 3, "a2", "agent", "First, can I have your full name, please?", 11_000),
     { ...line("CA-C3I", 4, "c2", "caller", "Sandler.", 14_000), firstHeard: "Senleli.", checked: true },
-    { ...line("CA-C3I", 5, "a3", "agent", "So it's Samuel Wright.", 17_500), reheard: { text: "So it's Sam Miller, right?", confidence: 0.9, at: T0 + 23_500 } },
+    { ...line("CA-C3I", 5, "a3", "agent", "So it's Samuel Wright.", 17_500), probedAt: T0 + 20_000, reheard: { text: "So it's Sam Miller, right?", confidence: 0.9, at: T0 + 23_500 } },
     { ...line("CA-C3I", 6, "c3", "caller", "Yes, that's right.", 21_000), checked: true },
   ];
-  const before = analyze(sunlake, lines, [], T0 + 23_000);
-  assert.notEqual(before.verification.factors[0].state, "ok");
-  assert.equal(before.nameEntry?.readBack, "waiting");
+  assert.equal(analyze(sunlake, lines.slice(0, 5), [], T0 + 19_800).nameEntry?.readBack, "available", "before the second hearing started");
+  const during = analyze(sunlake, lines, [], T0 + 23_000);
+  assert.notEqual(during.verification.factors[0].state, "ok");
+  assert.equal(during.nameEntry?.readBack, "waiting");
   const after = analyze(sunlake, lines, [], T0 + 24_000);
   assert.equal(after.verification.factors[0].state, "ok");
   assert.equal(after.verification.factors[0].knownAt, T0 + 23_500, "verified from when the second model's result arrived");

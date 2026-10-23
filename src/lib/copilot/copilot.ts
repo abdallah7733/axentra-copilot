@@ -380,13 +380,17 @@ const readsBackName = (text: string, customer: Customer) => {
 };
 
 const READ_BACK_TAGS_LONGEST = [...READ_BACK_TAGS].filter((t) => t).sort((a, b) => b.split(" ").length - a.split(" ").length);
+/** Everyday words a misheard name doesn't come out as only: "Sorry?", "Are you still there?", "And your first name?". */
+const NOT_A_NAME = new Set(
+  "sorry pardon excuse me hello hi hey there still here hear can could would will you repeat say said again what what's was were that this with a an of for first last second surname spell spelling name names please one moment minute bear wait hold on check checking yes no okay ok thanks thank how do does is are am".split(" ")
+);
 /** A capitalised word inside a sentence, as recognition writes a name ("So it's Samuel Wright."); "I" doesn't count. */
 const namesSomeone = (text: string) =>
   [...text.matchAll(/\p{Lu}[\p{L}'’-]*/gu)].some((m) => m[0] !== "I" && !/^I['’]/.test(m[0]) && !/(^|[.!?]\s*)$/.test(text.slice(0, m.index)));
 /**
  * An agent line that could be the name read-back misheard (23 Oct: "So it's Samuel Wright." for "So it's Sam Miller,
  * right?"): read-back lead-in words, one to four other words, and a question, a confirming tag or a name-like word.
- * "Great, thank you." or "One moment, please." isn't, and neither is a negated line. It only decides which lines are
+ * "Great, thank you.", "One moment, please." or "Sorry?" isn't, and neither is a negated line. It only decides which lines are
  * heard again; what counts as a read-back is still readsBackName, on what the second model heard.
  */
 const shapedLikeReadBack = (text: string) => {
@@ -395,6 +399,7 @@ const shapedLikeReadBack = (text: string) => {
   while (w.length && READ_BACK_LEAD.has(w[0])) w = w.slice(1);
   const tag = READ_BACK_TAGS_LONGEST.find((t) => w.slice(-t.split(" ").length).join(" ") === t);
   if (tag) w = w.slice(0, -tag.split(" ").length);
+  if (w.every((x) => NOT_A_NAME.has(x) || x.length === 1)) return false;
   return w.length >= 1 && w.length <= 4 && (!!tag || /\?/.test(text) || namesSomeone(text));
 };
 
@@ -468,8 +473,15 @@ const givenIn = new WeakMap<CopilotView, GivenApproval[]>();
  * then. It only needs the recommendation, so it doesn't look at approvals itself.
  */
 function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentAction[], now: number, hints: ModelHints, past: boolean): CopilotView {
-  // An agent line heard again as a possible read-back, as the copilot knew it at `now`: before that check finished, it was running.
-  const lines = input.map((l) => (l.reheard && l.reheard.at > now ? { ...l, reheard: undefined, probing: true } : l));
+  // An agent line heard again as a possible read-back, as the copilot knew it at `now`: plainly heard before that check
+  // started, still being heard again until it finished.
+  const lines = input.map((l) =>
+    l.probedAt !== undefined && l.probedAt > now
+      ? { ...l, probing: undefined, reheard: undefined }
+      : l.reheard && l.reheard.at > now
+        ? { ...l, reheard: undefined, probing: true }
+        : l
+  );
   const { kept: actions, undone } = applyUndos(allActions);
   const sopId = pack.sop.id;
   const ref = (section: string) => `${sopId} · ${section}`;
@@ -518,8 +530,23 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   let replyOpen = false;
   let readBackHeld = false;
   // An agent line being heard again as a possible read-back: until that check finishes, nothing that depends on whether
-  // it was one (a later read-back, the caller's yes, a Confirm press on the name) is decided.
-  let probeOpen = false;
+  // it was one (a later read-back, the caller's reply, a Confirm press on the name after that reply) is decided.
+  let openProbe: TranscriptEvent | null = null;
+  // The latest read-back until the caller's reply decides it: the next agent line ends the wait for a reply, but not a
+  // reply already said and still being checked (second review, 23 Oct).
+  let lastReadBack: { ev: Evidence; endedAt: number } | null = null;
+  /** The caller's reply to the read-back, or to the line being heard again, is said but not yet decided at `at`. */
+  const nameReplyOpen = (at: number) => {
+    const probe = openProbe as TranscriptEvent | null;
+    const back = lastReadBack as { endedAt: number } | null;
+    return (
+      (!!probe && corrected.some((l) => l.side === "caller" && l.startedAt > probe.startedAt && l.startedAt < at)) ||
+      (!!back &&
+        corrected.some(
+          (l) => l.checking && l.side === "caller" && l.startedAt >= back.endedAt - READ_BACK_OVERLAP_MS && l.startedAt <= Math.min(back.endedAt + READ_BACK_REPLY_MS, at)
+        ))
+    );
+  };
   /** The caller's later lines in the same reply as `line`: after it, before the agent's next line starts. */
   const restOfReply = (line: TranscriptEvent) => {
     const after = (l: TranscriptEvent) => l.startedAt > line.startedAt || (l.startedAt === line.startedAt && l.seq > line.seq);
@@ -745,8 +772,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       if (a.type === "confirm" && (a.target === "name" || a.target === "address")) {
         const factor = a.target === "name" ? name : address;
         // Once the caller hasn't confirmed a read-back, the agent can't vouch for the name instead.
-        // While the agent's last line is being heard again as a possible read-back, a press waits for that check.
-        if (factor.state === "confirm" && confirmable(factor) && factor.evidence && !locked && !(factor.id === "name" && (readBackRefused || probeOpen))) {
+        // While the caller's reply to a read-back (or to a line being heard again as one) is still undecided, a press
+        // waits: the reply may refuse it. A press before any reply counts either way.
+        if (factor.state === "confirm" && confirmable(factor) && factor.evidence && !locked && !(factor.id === "name" && (readBackRefused || nameReplyOpen(a.at)))) {
           if (pending?.factor === factor) pending = null;
           factor.state = "ok";
           confirmedByPress.add(factor.id);
@@ -860,6 +888,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         name.method = NAME_READ_BACK;
         markVerified(ev);
       } else if (why) readBackRefused = { ev, why, recovery: why === NOT_CHECKED || why === UNCLEAR ? "type" : "ask" };
+      if (backed && why !== undefined) lastReadBack = null;
 
       if (!locked) {
         // The factor the agent asked for; the other only counts if volunteered as a clear match.
@@ -909,7 +938,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         !locked &&
         !readBackRefused &&
         !readBackHeld &&
-        !probeOpen &&
+        !openProbe &&
         name.state === "confirm" &&
         name.confirmReason !== "ambiguous" &&
         name.attempts === 0 &&
@@ -929,12 +958,15 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       // for "So it's Sam Miller, right?" and the second model heard it right (23 Oct C3 call). While read-back is allowed
       // and the name question is the latest one, a line shaped like a read-back is heard again by the second model. It
       // isn't held back: until that check finishes it counts as heard, and only what depends on whether it was a
-      // read-back waits (probeOpen). What counts as a read-back, and the caller's checked plain yes, stay as they are.
+      // read-back waits (openProbe). What counts as a read-back, and the caller's checked plain yes, stay as they are.
       if (!readBack && !asks && !pendingReadBack && canReadBack && nameAsk && nameAskEnds === Infinity && !line.reheard && shapedLikeReadBack(line.text)) {
         readBackChecks.push(line.key);
-        if (line.probing) probeOpen = true;
+        if (line.probing) openProbe = line;
       }
-      if (readBack) expecting = "name";
+      if (readBack) {
+        expecting = "name";
+        lastReadBack = readBack;
+      }
       else if (!asks && (expecting === "name" || expecting === "address")) expecting = null;
       if (asks || readBack) {
         if (asks !== "name" && nameAsk) nameAskEnds = Math.min(nameAskEnds, line.startedAt);
@@ -1147,6 +1179,10 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       ? null
       : identityFactor && identityFactor.state !== "ok"
         ? identityFactor.id
+        : // The caller's next line may be the reply to a read-back: it waits for its check from the start, so a line that
+          // already counted is never hidden later, when the line heard again turns out to be one (second review, 23 Oct).
+          openProbe && name.state !== "ok"
+          ? "name"
         : lowConfidenceChoice || (!choice && (choiceAsked || unreadChoice))
           ? "choice"
           : !intent
@@ -1436,12 +1472,14 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     corrected.some((l) => l.checking && l.side === "caller" && l.startedAt >= readBackUntil - READ_BACK_REPLY_MS - READ_BACK_OVERLAP_MS && l.startedAt <= readBackUntil)
   )
     readBackHeld = true;
+  // Also once the agent has gone on talking, while a reply said in time is still being checked.
+  if (!locked && name.state !== "ok" && nameReplyOpen(now) && !openProbe) readBackHeld = true;
   const readBackState: NonNullable<CopilotView["nameEntry"]>["readBack"] =
     !pack.policy.nameReadBack || locked || name.attempts > 0
       ? "off"
       : readBackRefused
         ? "refused"
-        : readBackHeld || probeOpen || (readBackUntil !== undefined && now <= readBackUntil)
+        : readBackHeld || openProbe || (readBackUntil !== undefined && now <= readBackUntil)
           ? "waiting"
           : readBackUntil !== undefined
             ? "expired"
@@ -1452,8 +1490,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   const nameAction =
     readBackState === "available"
       ? "Say it back as you heard it and wait for the caller's yes, or type it (N)."
-      : readBackState === "waiting" && probeOpen
-        ? "Checking whether you read the name back. Wait for the caller's yes, or type what the caller said (N)."
+      : readBackState === "waiting" && openProbe
+        ? "Checking your last line with the second model in case it was the name read-back. You can type what the caller said (N)."
         : readBackState === "waiting"
           ? "Wait for the caller's yes to your read-back, or type what the caller said (N)."
           : readBackState === "expired"

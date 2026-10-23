@@ -44,6 +44,8 @@ export type TranscriptEvent = {
   reheard?: { text: string | null; confidence: number | null; at: number };
   /** That check is still running; the line counts as heard meanwhile. */
   probing?: boolean;
+  /** Epoch milliseconds when that check started: before then, the line was plainly heard. */
+  probedAt?: number;
   /**
    * Epoch milliseconds when this text reached the copilot: when the line arrived, or when the
    * second model's check finished. Defaults to `endedAt`. Speech time places a line in the

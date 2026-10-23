@@ -73,13 +73,21 @@ export function LiveTranscript({ className }: { className?: string }) {
                     {t.side === "agent" ? "Agent" : "Caller"}
                   </span>
                   <div>
-                    <p className={cn(t.checking && "text-muted-foreground", typed.has(t.key) && "line-through text-muted-foreground")}>{t.text}</p>
+                    <p className={cn(t.checking && !t.probe && "text-muted-foreground", typed.has(t.key) && "line-through text-muted-foreground")}>{t.text}</p>
                     {typed.has(t.key) && <p>{typed.get(t.key)} <span className="text-[11px] text-muted-foreground">(typed by the agent)</span></p>}
                     <p className="text-[11px] text-muted-foreground">
                       {t.key.startsWith("replay-") ? "Replayed line" : <><Mono>{t.delay.toFixed(1)} s</Mono> after speech ended</>}
-                      {t.confidence !== null && t.confidence < 0.6 && !t.checking && <span> · low confidence</span>}
-                      {t.checking && <span> · checking with the second model…</span>}
-                      {t.checkSeconds !== undefined && !t.checkFailed && (
+                      {t.confidence !== null && t.confidence < 0.6 && !(t.checking && !t.probe) && <span> · low confidence</span>}
+                      {t.checking && !t.probe && <span> · checking with the second model…</span>}
+                      {/* An agent line heard again in case it was the name read-back: it stays as first heard either way. */}
+                      {t.checking && t.probe && <span> · hearing it again in case it was the name read-back…</span>}
+                      {!t.checking && t.reheard && (
+                        <span>
+                          {" "}
+                          · {t.reheard.text === null ? "read-back check unavailable, kept as first heard" : t.reheard.text === t.text ? "heard again for the read-back, same words" : <>heard again for the read-back as “{t.reheard.text}”</>}
+                        </span>
+                      )}
+                      {t.checkSeconds !== undefined && !t.checkFailed && !t.probe && (
                         <span>
                           {" "}
                           · checked in <Mono>{t.checkSeconds.toFixed(1)} s</Mono>

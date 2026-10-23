@@ -102,17 +102,25 @@ export const useCopilot = create<CopilotState>((set, get) => {
   const requestCheck = (line: TranscriptEvent, named = false, hold = true): TranscriptEvent => {
     if (requested.has(line.key) || (line.side !== "caller" && !named) || line.firstHeard !== undefined || line.checkFailed) return line;
     requested.add(line.key);
-    if (useLive.getState().checkLine(line.key) !== "started") return line;
+    if (useLive.getState().checkLine(line.key, !hold) !== "started") return line;
     if (hold) return { ...line, checking: true };
     probed.add(line.key);
-    return { ...line, probing: true };
+    return { ...line, probing: true, probedAt: epochNow() };
   };
 
-  /** Lines the rules now name for a check (key answers, agent lines while a term isn't heard, possible read-backs) get it, once. */
+  /**
+   * Lines the rules now name for a check (key answers, agent lines while a term isn't heard, possible read-backs) get it,
+   * once. A possible read-back is heard again only while nothing has been pressed in the panel since it was said: never
+   * an agent line said before an approval or a press (second review, 23 Oct).
+   */
   const withChecks = (lines: TranscriptEvent[], actions: AgentAction[], hints: ModelHints) => {
     const { keyAnswers, readBackChecks } = run(lines, actions, hints).view;
     const late = keyAnswers.filter((key) => !requested.has(key));
-    const probes = readBackChecks.filter((key) => !requested.has(key) && !late.includes(key));
+    const pressedSince = (key: string) => {
+      const said = lines.find((l) => l.key === key);
+      return !said || actions.some((a) => a.at > said.endedAt);
+    };
+    const probes = readBackChecks.filter((key) => !requested.has(key) && !late.includes(key) && !pressedSince(key));
     if (!late.length && !probes.length) return lines;
     return lines.map((l) => (late.includes(l.key) ? requestCheck(l, true) : probes.includes(l.key) ? requestCheck(l, true, false) : l));
   };
@@ -244,9 +252,8 @@ export const useCopilot = create<CopilotState>((set, get) => {
       // A possible read-back heard again: the line keeps the fast text every other rule already used, with what the
       // second model heard beside it (or that its check failed), from when the result arrived.
       if (before && probed.has(line.key)) {
-        probed.delete(line.key);
-        const heard = line.checkFailed ? null : line.text;
-        line = { ...before, probing: false, reheard: { text: heard, confidence: heard === null ? null : line.confidence, at: line.availableAt ?? epochNow() } };
+        if (line.reheard) probed.delete(line.key);
+        line = line.reheard ? { ...before, probing: false, reheard: line.reheard } : before;
       }
       // A key answer (the problem, name, address or choice) waits for the second speech model's check:
       // short answers heard on their own are where the fast model goes wrong.
