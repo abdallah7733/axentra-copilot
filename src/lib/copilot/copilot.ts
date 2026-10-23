@@ -61,7 +61,7 @@ export type Factor = {
    * asks again or types the caller's words, and can't just confirm it. "ambiguous": the answer names
    * two candidates or denies something else; asked again, never confirmed.
    */
-  confirmReason?: "low-confidence" | "garbled" | "sounds-like" | "disagree" | "ambiguous";
+  confirmReason?: "low-confidence" | "garbled" | "sounds-like" | "disagree" | "ambiguous" | "after-read-back";
   /** The caller's yes to the agent's read-back of the name (see Policy.nameReadBack). */
   confirmedBy?: Evidence;
   /** When the caller finished their first answer for this factor (all its lines): with knownAt, how long accepting it took. */
@@ -817,6 +817,16 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   const confirmable = (f: Factor) =>
     f.confirmReason === "sounds-like" || ((f.confirmReason === "low-confidence" || f.confirmReason === "garbled") && resemblesRecord(f));
 
+  /**
+   * When the agent first read this detail back after a wrong answer (READ_BACK_AFTER_FAILED). Until then the caller had
+   * said nothing close to the record, so the read-back gave them its words.
+   */
+  const readBackAfterWrong: Record<"name" | "address", number | null> = { name: null, address: null };
+  /** Spoken (not typed) after the agent read this detail back following a wrong answer. */
+  const spokenAfterReadBack = (f: Factor, evs: Evidence[]) => {
+    const since = readBackAfterWrong[f.id as "name" | "address"];
+    return since !== null && evs.every((e) => e.typedFrom === undefined) && evs.some((e) => e.at > since);
+  };
   /** A caller line while the agent is waiting for this factor. */
   function hear(factor: Factor, line: TranscriptEvent, ev: Evidence) {
     if (factor.state === "ok" || locked) return;
@@ -832,7 +842,14 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     const result = factor.id === "name" ? matchName(heard, customer) : matchAddress(heard, customer);
     factor.heard = heard;
     factor.evidence = ev;
-    if (result === "match") {
+    if (result === "match" && spokenAfterReadBack(factor, pending.evs)) {
+      // The caller said the detail only after the agent had read it back on this call: it may be the agent's words
+      // repeated, so it never verifies by itself, and it isn't a failed attempt either (review, 23 Oct). The only spoken
+      // route left is the read-back's own checked plain yes; otherwise the agent types it, recorded as typed.
+      factor.state = "confirm";
+      factor.confirmReason = "after-read-back";
+      pending.result = "sounds-like";
+    } else if (result === "match") {
       matched(factor, ev, reason, factor.id === "address" ? addressMethod(heard) : undefined, Math.max(...pending.evs.map((e) => e.knownAt)));
       pending = null;
     } else if (result === "ambiguous") {
@@ -1099,11 +1116,11 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         if (why === null || readBackHeld || again || ((why || continues) && !saysNamePart(line.text))) {
           // A confirmed read-back, a reply still being decided, a "Sorry?", or a reply to one with no name in it: never a failed attempt.
         } else if (expecting === "name") hear(name, line, ev);
-        else if (name.state !== "ok" && matchName(line.text, customer) === "match") matched(name, ev, doubt([ev], line.text));
+        else if (name.state !== "ok" && matchName(line.text, customer) === "match" && !spokenAfterReadBack(name, [ev])) matched(name, ev, doubt([ev], line.text));
         if (whyA === null || addrHeld || againA || ((whyA || continuesA) && !saysAddressPart(line.text))) {
           // The same for the address read-back.
         } else if (expecting === "address") hear(address, line, ev);
-        else if (address.state !== "ok" && matchAddress(line.text, customer) === "match") matched(address, ev, doubt([ev], line.text), addressMethod(line.text));
+        else if (address.state !== "ok" && matchAddress(line.text, customer) === "match" && !spokenAfterReadBack(address, [ev])) matched(address, ev, doubt([ev], line.text), addressMethod(line.text));
       }
 
       const wants = readChoice(line.text);
@@ -1248,10 +1265,12 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           ? line
           : null;
       if (readBack) {
+        if (name.state === "failed" && readBackAfterWrong.name === null) readBackAfterWrong.name = line.startedAt;
         expecting = "name";
         lastReadBack = { ...readBack, line };
         readBacksSeen.push(line);
       } else if (addrBack) {
+        if (address.state === "failed" && readBackAfterWrong.address === null) readBackAfterWrong.address = line.startedAt;
         expecting = "address";
         lastAddrBack = { ...addrBack, line };
         addrBacksSeen.push(line);
@@ -1737,7 +1756,11 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           id: `verification-failed-${f.id}`,
           level: "warning",
           title: `${f.label}: not matched (attempt ${f.attempts} of ${pack.policy.maxVerificationAttempts})`,
-          detail: `${attemptsLeft === 1 ? "One attempt left" : `${attemptsLeft} attempts left`}. Don't say which detail didn't match.`,
+          detail: `${attemptsLeft === 1 ? "One attempt left" : `${attemptsLeft} attempts left`}. Don't say which detail didn't match.${
+            (f.id === "name" ? pack.policy.nameReadBack && !readBackRefused : pack.policy.addressReadBack && !addrRefused) && f.attempts <= READ_BACK_AFTER_FAILED
+              ? ` You can still read back the ${f.id === "name" ? "full name" : "street and city"} you understood, as a question, without saying why.`
+              : ""
+          }`,
           sopRef: ref("Verification"),
           evidence: f.evidence ? [f.evidence] : [],
         });
@@ -1828,6 +1851,19 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
             ? `No reply to your read-back within ${READ_BACK_REPLY_MS / 1000} s, so a yes now won't count. Ask for the street and city again, or type them (A).`
             : "Type what the caller said (A), or ask again.";
   for (const f of [name, address]) {
+    if (f.state === "confirm" && f.evidence && f.confirmReason === "after-read-back" && !locked) {
+      const what = f.id === "name" ? "the name" : "the street and city";
+      const live = f.id === "name" ? readBackState === "available" || readBackState === "waiting" : addrState === "available" || addrState === "waiting";
+      prompts.push({
+        target: f.id,
+        askAgain: true,
+        text: `Heard "${f.heard ?? f.evidence.text}" only after you read ${what} back following a wrong answer, so it doesn't verify ${what} by itself.${
+          live ? ` ${f.id === "name" ? nameAction : addrAction}` : ` Type ${f.id === "name" ? "the name (N)" : "the street and city (A)"} only if you're sure it's the caller's own answer; otherwise offer a call back to the number on the order.`
+        }`,
+        evidence: f.evidence,
+      });
+      continue;
+    }
     if ((f.state === "confirm" || f.state === "failed") && f.evidence && f.id === "address" && addrRefused) {
       // After a refused read-back, as for the name: neither another read-back nor the Confirm button counts.
       const newer = f.evidence.at > addrRefused.ev.at;

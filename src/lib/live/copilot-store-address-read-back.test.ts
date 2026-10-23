@@ -381,3 +381,43 @@ test("a second wrong address answer locks identity, and a read-back after it doe
   c.say("c4", "Yes.", 32_000, 32_400);
   assert.notEqual(c.address().state, "ok");
 });
+
+/* Second review (23 Oct): after a wrong answer, the read-back gives the caller the record's words. */
+test("after a wrong name and the agent's read-back, the caller saying the name doesn't verify it; typing it does, recorded as typed", () => {
+  const c = call("AW-NAME");
+  c.agent("a1", "Thank you for calling Sunlake. How can I help you today?", 0, 2000);
+  c.say("c1", "Hello. I need help with order 427. The tablet came yesterday, and the screen is cracked.", 3000, 9000);
+  c.agent("a2", "First, can I have your full name, please?", 10_000, 12_000);
+  c.say("c2", "John Smith.", 12_500, 13_500);
+  c.agent("a2b", "Okay.", 15_000, 15_400);
+  assert.equal(c.name().state, "failed");
+  c.agent("a3", "That's Sam Miller, is that right?", 16_000, 18_000);
+  c.say("c3", "Yes, Sam Miller.", 18_500, 19_500);
+  assert.notEqual(c.name().state, "ok", "a reply that isn't a plain yes never verifies, even when it says the name");
+  assert.equal(c.name().confirmReason, "after-read-back");
+  assert.match(c.view().prompts.find((p) => p.target === "name")?.text ?? "", /doesn't verify the name by itself/);
+  c.agent("a4", "Could you give me your full name once more?", 22_000, 24_000);
+  c.say("c4", "Sam Miller.", 24_500, 25_500);
+  assert.notEqual(c.name().state, "ok", "a fresh answer after hearing the name read back doesn't verify it either");
+  assert.equal(c.name().attempts, 1, "and isn't a failed attempt");
+  c.at(30_000);
+  c.s().correct("c4", "Sam Miller");
+  assert.equal(c.name().state, "ok");
+  assert.equal(c.name().evidence?.typedFrom !== undefined, true);
+});
+
+test("the same for the address: after a wrong answer and the read-back, the caller repeating the street and city doesn't verify it", () => {
+  const c = call("AW-ADDR");
+  c.agent("a1", "Thank you for calling Sunlake. How can I help you today?", 0, 2000);
+  c.say("c1", "Hello. I need help with order 427. The tablet came yesterday, and the screen is cracked.", 3000, 9000);
+  c.agent("a2", "First, can I have your full name, please?", 10_000, 12_000);
+  c.say("c2", "Sam Miller.", 12_500, 13_500);
+  c.agent("a3", "Thank you. And the street and city for the delivery?", 15_000, 17_000);
+  c.say("c3", "Main Street in Boston.", 17_500, 19_000);
+  c.agent("a3b", "Okay.", 21_000, 21_400);
+  assert.equal(c.address().state, "failed");
+  c.agent("a4", "So that's Hill Road, Dallas, is that right?", 22_000, 24_500);
+  c.say("c4", "Yes, Hill Road in Dallas.", 25_000, 26_000);
+  assert.notEqual(c.address().state, "ok");
+  assert.equal(c.address().confirmReason, "after-read-back");
+});
