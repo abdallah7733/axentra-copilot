@@ -144,7 +144,7 @@ test("a read-back the fast model misheard is heard again without being held back
   liveEvents.emit({ type: "cleared" });
 });
 
-test("the C3 call as it went: the read-back heard again, then 'Sorry?', is refused as before", () => {
+test("the C3 call as it went: the read-back heard again, then 'Sorry?', allows the same read-back once more", () => {
   const asked: string[] = [];
   c3Start("CA-C3B", asked);
   const readBack = misheard("CA-C3B");
@@ -154,8 +154,9 @@ test("the C3 call as it went: the read-back heard again, then 'Sorry?', is refus
   emit(heardAgain(readBack));
   emit({ ...sorry, checked: true });
   assert.notEqual(name().state, "ok");
-  assert.equal(card(), "refused");
-  assert.equal(useCopilot.getState().view.nameEntry?.readBackRecovery, "ask");
+  // Before his yes of 23 Oct, "Sorry?" ended read-back for the call.
+  assert.equal(card(), "available");
+  assert.equal(useCopilot.getState().view.nameEntry?.readBackRepeat, true);
   // The repeat that followed on the call ("It is Sam Miller.", then the caller's "Sam Millerius." heard unclearly) still changes nothing.
   emit(line("CA-C3B", 7, "a4", "agent", "It is Sam Miller.", 23_000));
   emit({ ...line("CA-C3B", 8, "c4", "caller", "Sam Millerius.", 25_500), confidence: 0.4, checked: true });
@@ -262,12 +263,12 @@ test("a caller's yes that arrives before the agent's line is no failed attempt a
 
 test("a Confirm press on the name waits while the caller's reply may still refuse a read-back", () => {
   // "Sam Miler." only sounds like the record, so the agent may confirm it in the panel.
-  for (const outcome of ["same", "read back, then Sorry?"] as const) {
+  for (const outcome of ["same", "read back, then No."] as const) {
     const asked: string[] = [];
     c3Start("CA-C3H", asked, "Sam Miler.");
     const readBack = misheard("CA-C3H");
     emit(readBack);
-    const reply = line("CA-C3H", 6, "c3", "caller", outcome === "same" ? "Yes." : "Sorry?", 21_000);
+    const reply = line("CA-C3H", 6, "c3", "caller", outcome === "same" ? "Yes." : "No.", 21_000);
     emit(reply);
     useCopilot.getState().confirm("name");
     assert.notEqual(name().state, "ok", `${outcome}: not while the line is being heard again`);

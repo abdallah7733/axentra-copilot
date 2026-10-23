@@ -60,7 +60,7 @@ function DevelopmentBand() {
   if (process.env.NEXT_PUBLIC_CONSOLE_CHANNEL !== "development") return null;
   return (
     <div role="status" className="flex min-h-7 items-center justify-center gap-2 border-b border-amber-500/40 bg-amber-500/15 px-4 py-1 text-xs font-medium text-amber-700 dark:text-amber-500">
-      Development console {process.env.NEXT_PUBLIC_BUILD_COMMIT || "(no build id)"}, not the pitch console · Name read-back {pack.policy.nameReadBack ? "on" : "off"}
+      Development console {process.env.NEXT_PUBLIC_BUILD_COMMIT || "(no build id)"}, not the pitch console · Name read-back {pack.policy.nameReadBack ? "on" : "off"} · Address read-back {pack.policy.addressReadBack ? "on" : "off"}
     </div>
   );
 }

@@ -148,6 +148,8 @@ export const sunlake: ClientPack = {
     // Abdallah allowed the name read-back in the development console on 22 Oct, with conditions (see Policy.nameReadBack).
     // A build setting, off unless the build sets NEXT_PUBLIC_NAME_READ_BACK=1, so merging doesn't turn it on publicly.
     nameReadBack: process.env.NEXT_PUBLIC_NAME_READ_BACK === "1",
+    // The address read-back, allowed in the development console on 23 Oct with the same conditions; its own build setting.
+    addressReadBack: process.env.NEXT_PUBLIC_ADDRESS_READ_BACK === "1",
     authority: [
       { upTo: 500, approver: "Agent (Tier 1)", agentCanApprove: true, row: 0 },
       { upTo: 1500, approver: "Team Lead", agentCanApprove: false, row: 1 },

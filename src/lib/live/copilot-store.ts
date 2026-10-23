@@ -228,7 +228,8 @@ export const useCopilot = create<CopilotState>((set, get) => {
     setView({ lines, actions, hints, ...run(lines, actions, hints) });
     // A read-back waits a fixed time for the caller's yes: look again when it runs out, even if nobody speaks.
     clearTimeout(expiryTimer);
-    const until = get().view.nameEntry?.readBackUntil;
+    const untils = [get().view.nameEntry?.readBackUntil, get().view.addressEntry?.readBackUntil].filter((u) => u !== undefined);
+    const until = untils.length ? Math.min(...untils) : undefined;
     if (until !== undefined) expiryTimer = setTimeout(() => setView(run(get().lines, get().actions, get().hints)), Math.max(0, until - epochNow()) + 50);
     void assistReady().then((ready) => ready && askModel());
   };

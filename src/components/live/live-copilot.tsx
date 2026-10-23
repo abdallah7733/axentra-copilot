@@ -149,7 +149,8 @@ function NameField({ entry }: { entry: NonNullable<CopilotView["nameEntry"]> }) 
         note={
           <>
             Type the caller&rsquo;s words and press <kbd className="font-mono">Enter</kbd>. <kbd className="font-mono">N</kbd> comes back here.
-            {entry.readBack === "available" && <> Or say the full name you heard back as a question (&ldquo;That&rsquo;s &hellip;, is that right?&rdquo;) and wait for the caller&rsquo;s yes.</>}
+            {entry.readBack === "available" && entry.readBackRepeat && <> The caller asked to hear it again: say the same read-back once more and wait for a plain yes.</>}
+            {entry.readBack === "available" && !entry.readBackRepeat && <> Or say the full name you heard back as a question (&ldquo;That&rsquo;s &hellip;, is that right?&rdquo;) and wait for the caller&rsquo;s yes.</>}
           </>
         }
       />
@@ -168,7 +169,19 @@ function AddressField({ entry }: { entry: NonNullable<CopilotView["addressEntry"
     <div className="rounded-lg border-2 border-cyan bg-cyan/5 p-3" aria-label="Caller's street and city">
       <div className="flex items-center justify-between gap-2 text-xs">
         <span className="font-medium">Caller&rsquo;s street and city</span>
-        <span className="text-muted-foreground">{entry.checking ? "Checking what the caller said…" : null}</span>
+        <span className="text-muted-foreground">
+          {entry.checking
+            ? "Checking what the caller said…"
+            : entry.readBack === "waiting"
+              ? "Waiting for the caller’s yes (up to 8 s)…"
+              : entry.readBack === "expired"
+                ? "No reply to the read-back: ask again or type the street and city"
+                : entry.readBack === "refused"
+                  ? entry.readBackRecovery === "type"
+                    ? "Yes not confirmed: type the street and city only if you clearly heard them"
+                    : "Not confirmed by the caller: ask for the street and city again"
+                  : null}
+        </span>
       </div>
       <TypeHeard
         lineKey={entry.key}
@@ -178,6 +191,8 @@ function AddressField({ entry }: { entry: NonNullable<CopilotView["addressEntry"
           <>
             Type the street and city as the caller said them and press <kbd className="font-mono">Enter</kbd>. <kbd className="font-mono">A</kbd> comes back here.
             If you didn&rsquo;t hear it clearly, ask again instead.
+            {entry.readBack === "available" && entry.readBackRepeat && <> The caller asked to hear it again: say the same street and city once more and wait for a plain yes.</>}
+            {entry.readBack === "available" && !entry.readBackRepeat && <> Or say the street and city you heard back as one question (&ldquo;So that&rsquo;s &hellip;, is that right?&rdquo;) and wait for the caller&rsquo;s yes.</>}
           </>
         }
       />

@@ -174,6 +174,7 @@ export function CallDetails({ className }: { className?: string }) {
           <Row label="Copilot">Rules ({pack.sop.id})</Row>
           {/* A build setting (NEXT_PUBLIC_NAME_READ_BACK), so a recording shows which rules it ran. */}
           <Row label="Name read-back">{pack.policy.nameReadBack ? "On (this build)" : "Off"}</Row>
+          <Row label="Address read-back">{pack.policy.addressReadBack ? "On (this build)" : "Off"}</Row>
           {health?.assist === "local" && (
             <>
               <Row label="Local model">

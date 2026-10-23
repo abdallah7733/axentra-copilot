@@ -133,6 +133,12 @@ export type Policy = {
    * rules allow it (stage call review, 21 Oct: the caller's name arrives as phone audio, the agent's words don't).
    */
   nameReadBack?: boolean;
+  /**
+   * The same for the street and city (his yes, 23 Oct): the agent says the street and city back as one question, word for
+   * word as on the order, and the caller's clear, checked yes verifies the address, labelled "address read back by agent,
+   * confirmed by caller", never as recognition.
+   */
+  addressReadBack?: boolean;
   authority: AuthorityBand[];
   refundTiming: string;
   /** A verb phrase that follows "it": "ships the same day by expedited shipping". Say when it ships, never when it arrives. */

@@ -211,11 +211,13 @@ export type CopilotView = {
   nameEntry: {
     key: string;
     checking: boolean;
-    readBack: "off" | "available" | "waiting" | "expired" | "refused";
+    readBack: ReadBackState;
     /** While waiting: epoch ms after which the caller's yes no longer counts (the field shows the expiry itself). */
     readBackUntil?: number;
     /** After a refusal: ask for the full name again, or type the name (only for a yes the system couldn't confirm). */
     readBackRecovery?: "ask" | "type";
+    /** The caller only asked to hear the read-back again ("Sorry?"): the same read-back may be said once more. */
+    readBackRepeat?: true;
     /** While waiting: the second model is hearing the agent's line again in case it was the read-back, either the
      * agent's last line or an earlier one the agent has said something after. */
     readBackProbe?: "last" | "earlier";
@@ -226,8 +228,22 @@ export type CopilotView = {
    * 20 s went on the address, typed into a card that came only after both models had heard it wrong). Shown once
    * the name is verified; null once the address is. Typed words are checked against the order as before.
    */
-  addressEntry: { key: string; checking: boolean } | null;
+  addressEntry: {
+    key: string;
+    checking: boolean;
+    /** Only when the build allows the address read-back (Policy.addressReadBack): the same states as the name's. */
+    readBack?: ReadBackState;
+    readBackUntil?: number;
+    readBackRecovery?: "ask" | "type";
+    readBackRepeat?: true;
+  } | null;
 };
+
+/**
+ * Whether saying a detail back counts: "waiting": said back, waiting for the caller's yes; "expired": no reply within
+ * READ_BACK_REPLY_MS; "refused": the caller's reply wasn't a clear, checked yes, so read-back is over for this call.
+ */
+export type ReadBackState = "off" | "available" | "waiting" | "expired" | "refused";
 
 const DAY = 86_400_000;
 
@@ -382,6 +398,52 @@ const readsBackName = (text: string, customer: Customer) => {
   return after !== "" || /\?/.test(text.slice(found)) || before[0] === "is";
 };
 
+/** How an address verified by read-back is labelled: the same as the name (his yes, 23 Oct). */
+export const ADDRESS_READ_BACK = "address read back by agent, confirmed by caller";
+/** Lead-in words for the address read-back too ("So the delivery address is …"): none of them asks anything else. */
+const ADDRESS_LEAD = new Set([...READ_BACK_LEAD, ..."address delivery deliver delivering ship shipping street city and to for in at on we we're".split(" ")]);
+const ADDRESS_TAGS = new Set([...READ_BACK_TAGS, "is that your address", "is that the right address", "is that the address"]);
+const STATE_SPOKEN: Record<string, string[]> = { tx: ["texas"], ca: ["california"], ny: ["new", "york"], fl: ["florida"] };
+
+/**
+ * The agent says the caller's street and city back as one question and nothing else: "So that's Hill Road, Dallas, is
+ * that right?". Every word of the order's street, then "in" or nothing, then every word of its city, word for word, then
+ * the state if said; the same lead-in and tag rules as the name read-back. No sound-alike counts.
+ */
+const readsBackAddress = (text: string, customer: Customer) => {
+  if (/\b(not|no|never)\b|n't\b/i.test(text)) return false;
+  const said = textWords(text);
+  const street = textWords(customer.address.street);
+  const city = textWords(customer.address.city);
+  const at = said.findIndex((_, i) => street.length > 0 && street.every((w, j) => said[i + j] === w));
+  if (at < 0) return false;
+  let i = at + street.length;
+  if (said[i] === "in") i++;
+  if (!city.length || !city.every((w, j) => said[i + j] === w)) return false;
+  i += city.length;
+  const state = textWords(customer.address.state);
+  for (const form of [state, ...state.map((w) => STATE_SPOKEN[w] ?? [])]) {
+    if (form.length && form.every((w, j) => said[i + j] === w)) {
+      i += form.length;
+      break;
+    }
+  }
+  const before = said.slice(0, at);
+  const after = said.slice(i).join(" ");
+  const found = text.search(new RegExp(street.map((w) => w.replace(/[^a-z0-9]/g, "\\W*")).join("\\W+"), "i"));
+  if (found < 0 || /\?/.test(text.slice(0, found)) || !before.every((w) => ADDRESS_LEAD.has(w)) || !ADDRESS_TAGS.has(after)) return false;
+  return after !== "" || /\?/.test(text.slice(found)) || before[0] === "is";
+};
+
+/** A reply that only asks to hear it again ("Sorry?", "Pardon?", "Can you say that again?"), and nothing else. */
+const AGAIN_WORDS = new Set("sorry pardon what excuse me say that again repeat please can could you come i didn't catch hear it one more time sir madam ma'am".split(" "));
+const AGAIN_CUE = /\b(sorry|pardon|what|again|repeat|excuse|catch|hear)\b/;
+const saysAgain = (text: string) => {
+  const w = textWords(text);
+  return w.length > 0 && w.length <= 8 && w.every((x) => AGAIN_WORDS.has(x)) && AGAIN_CUE.test(w.join(" "));
+};
+
+const STREET_TYPE_WORDS = new Set("road rd street st avenue ave drive dr lane ln".split(" "));
 const READ_BACK_TAGS_LONGEST = [...READ_BACK_TAGS].filter((t) => t).sort((a, b) => b.split(" ").length - a.split(" ").length);
 /** Everyday words a misheard name doesn't come out as only: "Sorry?", "Are you still there?", "And your first name?". */
 const NOT_A_NAME = new Set(
@@ -562,6 +624,20 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   // Read-backs and lines heard again so far, to date a name press that waited for them (pressCountsFrom).
   const readBacksSeen: TranscriptEvent[] = [];
   const probesSeen: TranscriptEvent[] = [];
+  // One repeat of a read-back after a reply that only asked to hear it again ("Sorry?"), per detail (his yes, 23 Oct).
+  // `Open`: that reply came, and the agent hasn't asked anything or read back since.
+  const repeatUsed = { name: false, address: false };
+  let nameRepeatOpen = false;
+  let addrRepeatOpen = false;
+  // The same read-back for the street and city (his yes, 23 Oct), with the same conditions and the same states as the
+  // name's above. The agent's line isn't heard again for it.
+  let addrBack: { ev: Evidence; endedAt: number } | null = null;
+  let addrRefused: { ev: Evidence; why: string; recovery: "ask" | "type" } | null = null;
+  let addrReplyOpen = false;
+  let addrHeld = false;
+  let earlyAddrBack: TranscriptEvent | null = null;
+  let lastAddrBack: { ev: Evidence; endedAt: number; line: TranscriptEvent } | null = null;
+  const addrBacksSeen: TranscriptEvent[] = [];
   /**
    * The caller's lines that reply to the agent's line `said`: after it, before the agent's next line, the same lines the
    * read-back rule reads as the reply (the first one, then restOfReply), whenever they start.
@@ -581,17 +657,34 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
    * When a name press made at `at` could first count: after the second hearing, and the checks of the caller's reply,
    * that it waited for (third review, 23 Oct: the press was dated when it was made, before it counted on screen).
    */
-  const pressCountsFrom = (at: number) => {
+  const addressReplyOpen = (at: number) => {
+    const back = lastAddrBack as { line: TranscriptEvent } | null;
+    return !!back && replyTo(back.line).some((l) => l.checking && l.startedAt < at);
+  };
+  const pressCountsFrom = (at: number, id: Factor["id"]) => {
     let from = at;
-    for (const p of probesSeen) {
-      const done = p.reheard?.at;
-      // Held only if part of the reply had reached the console before the second hearing landed (fourth review).
-      if (done !== undefined && done > at && replyTo(p).some((l) => l.startedAt < at && (l.first?.at ?? l.availableAt ?? l.endedAt) < done)) from = Math.max(from, done);
-    }
-    for (const b of readBacksSeen)
+    if (id === "name")
+      for (const p of probesSeen) {
+        const done = p.reheard?.at;
+        // Held only if part of the reply had reached the console before the second hearing landed (fourth review).
+        if (done !== undefined && done > at && replyTo(p).some((l) => l.startedAt < at && (l.first?.at ?? l.availableAt ?? l.endedAt) < done)) from = Math.max(from, done);
+      }
+    for (const b of id === "name" ? readBacksSeen : addrBacksSeen)
       for (const l of replyTo(b)) if (l.startedAt < at && l.heldAt !== undefined && (l.availableAt ?? l.endedAt) > at) from = Math.max(from, l.availableAt ?? l.endedAt);
     return from;
   };
+  /**
+   * The reply to a read-back only asks to hear it again ("Sorry?"), all of it: "again", or "wait" while a later line of
+   * the same reply is still being checked. Null for anything else, which refuses the read-back as before.
+   */
+  const askedAgain = (line: TranscriptEvent): "again" | "wait" | null => {
+    if (!saysAgain(line.text) || (line.firstHeard !== undefined && !saysAgain(line.firstHeard))) return null;
+    const rest = restOfReply(line);
+    if (rest.some((l) => !l.checking && !saysAgain(l.text))) return null;
+    return rest.some((l) => l.checking) ? "wait" : "again";
+  };
+  const addressParts = [...textWords(customer.address.street).filter((w) => !STREET_TYPE_WORDS.has(w)), ...textWords(customer.address.city)];
+  const saysAddressPart = (text: string) => textWords(text).some((w) => !isFiller(w) && addressParts.some((p) => soundsLike(w, p)));
   /** The caller's later lines in the same reply as `line`: after it, before the agent's next line starts. */
   const restOfReply = (line: TranscriptEvent) => {
     const after = (l: TranscriptEvent) => l.startedAt > line.startedAt || (l.startedAt === line.startedAt && l.seq > line.seq);
@@ -816,14 +909,16 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       const a = item.action;
       if (a.type === "confirm" && (a.target === "name" || a.target === "address")) {
         const factor = a.target === "name" ? name : address;
-        // Once the caller hasn't confirmed a read-back, the agent can't vouch for the name instead.
+        // Once the caller hasn't confirmed a read-back, the agent can't vouch for the name (or the address) instead.
         // While the caller's reply to a read-back (or to a line being heard again as one) is still undecided, a press
         // waits: the reply may refuse it. A press before any reply counts either way.
-        if (factor.state === "confirm" && confirmable(factor) && factor.evidence && !locked && !(factor.id === "name" && (readBackRefused || nameReplyOpen(a.at)))) {
+        // Nor once the caller only asked to hear the read-back again ("Sorry?"): they haven't confirmed it either.
+        const replyOpenAt = repeatUsed[factor.id] || (factor.id === "name" ? readBackRefused || nameReplyOpen(a.at) : addrRefused || addressReplyOpen(a.at));
+        if (factor.state === "confirm" && confirmable(factor) && factor.evidence && !locked && !replyOpenAt) {
           if (pending?.factor === factor) pending = null;
           factor.state = "ok";
           confirmedByPress.add(factor.id);
-          factor.knownAt = Math.max(factor.id === "name" ? pressCountsFrom(a.at) : a.at, factor.evidence.knownAt);
+          factor.knownAt = Math.max(pressCountsFrom(a.at, factor.id), factor.evidence.knownAt);
           // A confirm press is the agent vouching for the answer: always disclosed, for the name as for the address.
           factor.method = a.target === "address" ? factor.method ?? "confirmed by the agent" : "confirmed by the agent";
           markVerified(factor.evidence);
@@ -924,6 +1019,14 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           why = undefined;
         }
       }
+      // A reply that only asks to hear it again ("Sorry?") allows the same read-back once more instead of ending it.
+      let again = false;
+      if (backed && why === "it isn't a plain yes" && !repeatUsed.name) {
+        const asked = askedAgain(line);
+        if (asked === "wait") readBackHeld = true;
+        if (asked) why = undefined;
+        if (asked === "again") [again, repeatUsed.name, nameRepeatOpen] = [true, true, true];
+      }
       if (backed && why === null) {
         if (pending?.factor === name) pending = null;
         name.state = "ok";
@@ -934,15 +1037,52 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         name.method = NAME_READ_BACK;
         markVerified(ev);
       } else if (why) readBackRefused = { ev, why, recovery: why === NOT_CHECKED || why === UNCLEAR ? "type" : "ask" };
-      if (backed && why !== undefined) lastReadBack = null;
+      if (backed && (why !== undefined || again)) lastReadBack = null;
+
+      // The same for the street and city.
+      earlyAddrBack = null;
+      const backedA: { ev: Evidence; endedAt: number } | null = addrBack;
+      addrBack = null;
+      const continuesA = !backedA && addrReplyOpen;
+      if (backedA) addrReplyOpen = true;
+      let whyA: string | null | undefined = backedA && !locked && address.state !== "ok" ? whyNotConfirmed(line, ev, backedA.endedAt) : undefined;
+      if (backedA && whyA === null) {
+        const rest = restOfReply(line);
+        const went = rest.find((l) => !l.checking && !confirmsOnly(l.text));
+        if (went) whyA = `the caller went on: "${went.text}"`;
+        else if (rest.some((l) => l.checking)) {
+          addrHeld = true;
+          whyA = undefined;
+        }
+      }
+      let againA = false;
+      if (backedA && whyA === "it isn't a plain yes" && !repeatUsed.address) {
+        const asked = askedAgain(line);
+        if (asked === "wait") addrHeld = true;
+        if (asked) whyA = undefined;
+        if (asked === "again") [againA, repeatUsed.address, addrRepeatOpen] = [true, true, true];
+      }
+      if (backedA && whyA === null) {
+        if (pending?.factor === address) pending = null;
+        address.state = "ok";
+        address.evidence = backedA.ev;
+        address.confirmedBy = ev;
+        address.knownAt = Math.max(backedA.ev.knownAt, ev.knownAt);
+        address.confirmReason = undefined;
+        address.method = ADDRESS_READ_BACK;
+        markVerified(ev);
+      } else if (whyA) addrRefused = { ev, why: whyA, recovery: whyA === NOT_CHECKED || whyA === UNCLEAR ? "type" : "ask" };
+      if (backedA && (whyA !== undefined || againA)) lastAddrBack = null;
 
       if (!locked) {
         // The factor the agent asked for; the other only counts if volunteered as a clear match.
-        if (why === null || readBackHeld || ((why || continues) && !saysNamePart(line.text))) {
-          // A confirmed read-back, a reply still being decided, or a reply to one with no name in it: never a failed attempt.
+        if (why === null || readBackHeld || again || ((why || continues) && !saysNamePart(line.text))) {
+          // A confirmed read-back, a reply still being decided, a "Sorry?", or a reply to one with no name in it: never a failed attempt.
         } else if (expecting === "name") hear(name, line, ev);
         else if (name.state !== "ok" && matchName(line.text, customer) === "match") matched(name, ev, doubt([ev], line.text));
-        if (expecting === "address") hear(address, line, ev);
+        if (whyA === null || addrHeld || againA || ((whyA || continuesA) && !saysAddressPart(line.text))) {
+          // The same for the address read-back.
+        } else if (expecting === "address") hear(address, line, ev);
         else if (address.state !== "ok" && matchAddress(line.text, customer) === "match") matched(address, ev, doubt([ev], line.text), addressMethod(line.text));
       }
 
@@ -975,7 +1115,10 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       closeAnswer();
       lastCaller = null;
       replyOpen = false;
-      const asks = agentAsksFor(line.text, !verified() && !locked);
+      addrReplyOpen = false;
+      const asksRaw = agentAsksFor(line.text, !verified() && !locked);
+      // No read-back of either detail while the caller's reply to an earlier one is still being checked.
+      const replyChecking = [...readBacksSeen, ...addrBacksSeen].some((b) => replyTo(b).some((l) => l.checking));
       // Saying the name back is allowed only when the client allows it, once the caller has given a full answer the
       // speech models couldn't confirm (never a partial, ambiguous or missing one), before any failed attempt (a
       // failure is corrected by typing the caller's words), and once per call: a reply that isn't a clear yes ends it.
@@ -987,7 +1130,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         !openProbe &&
         // Nor while the caller's reply to an earlier read-back is still being checked: a repeated read-back would take
         // over from it, and a press or an approval would count before that reply's "No." (fourth review, 23 Oct).
-        !readBacksSeen.some((b) => replyTo(b).some((l) => l.checking)) &&
+        !replyChecking &&
+        !addrHeld &&
         name.state === "confirm" &&
         name.confirmReason !== "ambiguous" &&
         name.attempts === 0 &&
@@ -1002,13 +1146,32 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           : reheard && readsBackName(reheard.text!, customer)
             ? { ...ev, text: reheard.text!, firstHeard: line.text, knownAt: Math.max(ev.knownAt, reheard.at), lowConfidence: false }
             : null;
-      readBack = !asks && canReadBack && saidBack ? { ev: saidBack, endedAt: line.endedAt } : null;
+      // The street and city said back under the same conditions. A read-back that names the address ("So the address is
+      // Hill Road, Dallas, right?") isn't a new address question.
+      const canReadBackAddr: boolean =
+        !!pack.policy.addressReadBack &&
+        !locked &&
+        !addrRefused &&
+        !addrHeld &&
+        !readBackHeld &&
+        !openProbe &&
+        !replyChecking &&
+        address.state === "confirm" &&
+        address.confirmReason !== "ambiguous" &&
+        address.attempts === 0 &&
+        address.heard !== undefined &&
+        address.evidence?.side === "caller";
+      addrBack =
+        canReadBackAddr && !ev.lowConfidence && (!asksRaw || asksRaw === "address") && readsBackAddress(line.text, customer) ? { ev, endedAt: line.endedAt } : null;
+      const asks = addrBack ? null : asksRaw;
+      readBack = !asks && !addrBack && canReadBack && saidBack ? { ev: saidBack, endedAt: line.endedAt } : null;
       // The agent's mic is clean, but the fast model can still mishear a read-back: it wrote "So it's Samuel Wright."
       // for "So it's Sam Miller, right?" and the second model heard it right (23 Oct C3 call). While read-back is allowed
       // and the name question is the latest one, a line shaped like a read-back is heard again by the second model. It
       // isn't held back: until that check finishes it counts as heard, and only what depends on whether it was a
       // read-back waits (openProbe). What counts as a read-back, and the caller's checked plain yes, stay as they are.
-      if (!readBack && !asks && !pendingReadBack && canReadBack && nameAsk && nameAskEnds === Infinity && !line.reheard && shapedLikeReadBack(line.text)) {
+      // After the caller's "Sorry?", the repeated read-back is heard again the same way.
+      if (!readBack && !addrBack && !asks && !pendingReadBack && canReadBack && nameAsk && (nameAskEnds === Infinity || nameRepeatOpen) && !line.reheard && shapedLikeReadBack(line.text)) {
         readBackChecks.push(line.key);
         if (line.probing) openProbe = line;
       }
@@ -1041,13 +1204,41 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         (readsBackName(line.text, customer) || shapedLikeReadBack(line.text))
           ? line
           : null;
+      earlyAddrBack =
+        !!pack.policy.addressReadBack &&
+        !addrBack &&
+        !readBack &&
+        !asks &&
+        !locked &&
+        !addrRefused &&
+        !addrHeld &&
+        address.attempts === 0 &&
+        address.state !== "ok" &&
+        expecting === "address" &&
+        corrected.some(
+          (l) =>
+            l.checking &&
+            l.side === "caller" &&
+            !!addressAsk &&
+            l.startedAt > addressAsk.at &&
+            l.startedAt < line.startedAt &&
+            !addrBacksSeen.some((b) => replyTo(b).includes(l)),
+        ) &&
+        readsBackAddress(line.text, customer)
+          ? line
+          : null;
       if (readBack) {
         expecting = "name";
         lastReadBack = { ...readBack, line };
         readBacksSeen.push(line);
+      } else if (addrBack) {
+        expecting = "address";
+        lastAddrBack = { ...addrBack, line };
+        addrBacksSeen.push(line);
       }
       else if (!asks && (expecting === "name" || expecting === "address")) expecting = null;
-      if (asks || readBack) {
+      if (asks || readBack || addrBack) [nameRepeatOpen, addrRepeatOpen] = [false, false];
+      if (asks || readBack || addrBack) {
         if (asks !== "name" && nameAsk) nameAskEnds = Math.min(nameAskEnds, line.startedAt);
         if (asks !== "address" && addressAsk) addressAskEnds = Math.min(addressAskEnds, line.startedAt);
       }
@@ -1263,6 +1454,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           // finished) turns out to be one (second and third reviews, 23 Oct).
           (openProbe || earlyReadBack) && name.state !== "ok"
           ? "name"
+        : earlyAddrBack && address.state !== "ok"
+          ? "address"
         : lowConfidenceChoice || (!choice && (choiceAsked || unreadChoice))
           ? "choice"
           : !intent
@@ -1554,7 +1747,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     readBackHeld = true;
   // Also once the agent has gone on talking, while a reply said in time is still being checked.
   if (!locked && name.state !== "ok" && nameReplyOpen(now) && !openProbe) readBackHeld = true;
-  const readBackState: NonNullable<CopilotView["nameEntry"]>["readBack"] =
+  const readBackState: ReadBackState =
     !pack.policy.nameReadBack || locked || name.attempts > 0
       ? "off"
       : readBackRefused
@@ -1570,7 +1763,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   const probeWhich = probed ? (ordered.some((l) => l.side === "agent" && l.startedAt > probed.startedAt) ? ("earlier" as const) : ("last" as const)) : undefined;
   // The name card leads with what to do: reading a diagnosis first cost about 3 s on the 21 Oct stage call.
   const nameAction =
-    readBackState === "available"
+    readBackState === "available" && nameRepeatOpen
+      ? "The caller asked to hear it again: say the same read-back once more and wait for a plain yes, or type it (N)."
+      : readBackState === "available"
       ? "Say it back as you heard it and wait for the caller's yes, or type it (N)."
       : readBackState === "waiting" && openProbe
         ? `Checking your ${probeWhich ?? "last"} line with the second model in case it was the name read-back. You can type what the caller said (N).`
@@ -1579,7 +1774,63 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           : readBackState === "expired"
             ? `No reply to your read-back within ${READ_BACK_REPLY_MS / 1000} s, so a yes now won't count. Ask for the full name again, or type it (N).`
             : "Type what the caller said (N), or ask again.";
+  // The same for the street and city (Policy.addressReadBack).
+  const addrUntil = addrBack ? (addrBack as { endedAt: number }).endedAt + READ_BACK_REPLY_MS : undefined;
+  if (
+    addrUntil !== undefined &&
+    corrected.some((l) => l.checking && l.side === "caller" && l.startedAt >= addrUntil - READ_BACK_REPLY_MS - READ_BACK_OVERLAP_MS && l.startedAt <= addrUntil)
+  )
+    addrHeld = true;
+  if (!locked && address.state !== "ok" && addressReplyOpen(now)) addrHeld = true;
+  const addrState: ReadBackState =
+    !pack.policy.addressReadBack || locked || address.attempts > 0
+      ? "off"
+      : addrRefused
+        ? "refused"
+        : addrHeld || (addrUntil !== undefined && now <= addrUntil)
+          ? "waiting"
+          : addrUntil !== undefined
+            ? "expired"
+            : address.state === "confirm" && address.confirmReason !== "ambiguous"
+              ? "available"
+              : "off";
+  const addrAction =
+    addrState === "available" && addrRepeatOpen
+      ? "The caller asked to hear it again: say the same street and city once more and wait for a plain yes, or type what the caller said (A)."
+      : addrState === "available"
+        ? "Say the street and city back as you heard them, as one question, and wait for the caller's yes, or type what the caller said (A)."
+        : addrState === "waiting"
+          ? "Wait for the caller's yes to your read-back, or type what the caller said (A)."
+          : addrState === "expired"
+            ? `No reply to your read-back within ${READ_BACK_REPLY_MS / 1000} s, so a yes now won't count. Ask for the street and city again, or type them (A).`
+            : "Type what the caller said (A), or ask again.";
   for (const f of [name, address]) {
+    if (f.state === "confirm" && f.evidence && f.id === "address" && addrRefused) {
+      // After a refused read-back, as for the name: neither another read-back nor the Confirm button counts.
+      const newer = f.evidence.at > addrRefused.ev.at;
+      prompts.push({
+        target: "address",
+        askAgain: true,
+        text: newer
+          ? `Address not recognised. Type what the caller said (A), or ask again. Heard "${f.heard ?? f.evidence.text}". The read-back wasn't confirmed earlier, so reading it back or pressing Confirm won't count on this call.`
+          : addrRefused.recovery === "ask"
+            ? `Read-back not confirmed: the caller's reply "${addrRefused.ev.text}" doesn't count, because ${addrRefused.why}. Ask for the street and city again, and type the new answer (A) only if it still isn't recognised. Reading the address back again won't count on this call.`
+            : `Read-back not confirmed: the caller's reply "${addrRefused.ev.text}" doesn't count, because ${addrRefused.why}. If you clearly heard the caller give their street and city and say yes, type them (A); otherwise ask again. Reading the address back again won't count on this call.`,
+        evidence: newer ? f.evidence : addrRefused.ev,
+      });
+      continue;
+    }
+    if (f.state === "confirm" && f.evidence && f.id === "address" && addrState !== "off") {
+      // The card leads with the read-back, as for the name; the agent can still confirm a sound-alike they heard clearly.
+      const heard = f.heard ?? f.evidence.text;
+      prompts.push({
+        target: "address",
+        askAgain: !confirmable(f) || repeatUsed.address || undefined,
+        text: `Address not recognised. ${addrAction} Heard "${heard}".${addrState === "available" && confirmable(f) && !repeatUsed.address ? " If you heard it clearly, you can confirm instead (recorded as confirmed by you)." : ""}`,
+        evidence: f.evidence,
+      });
+      continue;
+    }
     if (f.state === "confirm" && f.evidence && f.id === "name" && readBackRefused) {
       // After a refused read-back, typing is the way on: neither another read-back nor the Confirm button counts.
       const newer = f.evidence.at > readBackRefused.ev.at;
@@ -1593,11 +1844,12 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
             : `Read-back not confirmed: the caller's reply "${readBackRefused.ev.text}" doesn't count, because ${readBackRefused.why}. If you clearly heard the caller give their name and say yes, type the name (N); otherwise ask for the full name again. Reading the name back again won't count on this call.`,
         evidence: newer ? f.evidence : readBackRefused.ev,
       });
-    } else if (f.state === "confirm" && f.evidence && f.id === "name" && (readBackState === "waiting" || readBackState === "expired")) {
-      // Said back: the card says what the read-back is waiting for, or that the wait is over.
+    } else if (f.state === "confirm" && f.evidence && f.id === "name" && (readBackState === "waiting" || readBackState === "expired" || repeatUsed.name)) {
+      // Said back: the card says what the read-back is waiting for, or that the wait is over. After a "Sorry?", the
+      // Confirm button no longer counts, so the card doesn't offer it.
       prompts.push({
         target: "name",
-        askAgain: !confirmable(f) || undefined,
+        askAgain: !confirmable(f) || repeatUsed.name || undefined,
         text: `Name not recognised. ${nameAction} Heard "${f.heard ?? f.evidence.text}".`,
         evidence: f.evidence,
       });
@@ -1712,6 +1964,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       ...(readBackState === "waiting" && !readBackHeld && readBackUntil !== undefined ? { readBackUntil } : {}),
       ...(readBackState === "refused" && readBackRefused ? { readBackRecovery: (readBackRefused as { recovery: "ask" | "type" }).recovery } : {}),
       ...(readBackState === "waiting" && probeWhich ? { readBackProbe: probeWhich } : {}),
+      ...(readBackState === "available" && nameRepeatOpen ? { readBackRepeat: true as const } : {}),
     };
     if (checkingAnswer) nameEntry = { key: checkingAnswer.key, checking: true, readBack: readBackState, ...extra };
     // Not on an answer from before the agent asked again: typing there would rewrite a failed attempt (independent review).
@@ -1728,8 +1981,16 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       asked
         ? [...corrected].reverse().find((l) => l.checking && l.side === "caller" && l.startedAt > asked.at && l.startedAt < addressAskEnds && matchAddress(l.text, customer) !== "match")
         : undefined;
-    if (checkingAnswer) addressEntry = { key: checkingAnswer.key, checking: true };
-    else if (address.evidence?.side === "caller" && (!asked || address.evidence.at > asked.at)) addressEntry = { key: address.evidence.key, checking: false };
+    const extra = pack.policy.addressReadBack
+      ? {
+          readBack: addrState,
+          ...(addrState === "waiting" && !addrHeld && addrUntil !== undefined ? { readBackUntil: addrUntil } : {}),
+          ...(addrState === "refused" && addrRefused ? { readBackRecovery: (addrRefused as { recovery: "ask" | "type" }).recovery } : {}),
+          ...(addrState === "available" && addrRepeatOpen ? { readBackRepeat: true as const } : {}),
+        }
+      : {};
+    if (checkingAnswer) addressEntry = { key: checkingAnswer.key, checking: true, ...extra };
+    else if (address.evidence?.side === "caller" && (!asked || address.evidence.at > asked.at)) addressEntry = { key: address.evidence.key, checking: false, ...extra };
   }
 
   /* ---------- SOP steps ---------- */

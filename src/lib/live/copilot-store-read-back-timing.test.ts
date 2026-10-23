@@ -320,7 +320,7 @@ test("after a refused read-back, a line with the name while the new answer is ch
   c.at(28_000);
   c.arrive("a3", "agent", "That's Sam Miller, is that right?", 25_500, 27_500);
   c.at(29_000);
-  c.arrive("c3", "caller", "Sorry?", 28_000, 28_400);
+  c.arrive("c3", "caller", "No.", 28_000, 28_400);
   c.at(30_500);
   if (c.held("c3")) c.checked("c3");
   assert.equal(c.view().nameEntry?.readBack, "refused");
