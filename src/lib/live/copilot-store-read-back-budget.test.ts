@@ -103,7 +103,7 @@ test("name: silence, silence, third read-back + Yes. does not verify; spent budg
   // Typing still works.
   c.s().correct("c2", "Sam Miller");
   assert.equal(c.name().state, "ok");
-  assert.equal(c.name().method, "typed by the agent");
+  assert.equal(c.name().method, "typed by the agent, after the agent said it on the call");
 });
 
 test("address: silence, silence, third read-back + Yes. does not verify", () => {

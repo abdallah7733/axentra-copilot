@@ -296,11 +296,11 @@ test("each reply that isn't a finished, checked, plain yes leaves the name unver
     assert.equal(card.askAgain, true, `${label}: no Confirm button`);
   }
 
-  // A yes long after the question isn't its answer.
+  // A yes long after the question isn't its answer. It isn't a refusal either: the read-back expired, and the one more
+  // the card offers still counts (second review of C7, 23 Oct).
   const late = view(upToName(NAME, [READ_BACK, { side: "caller", text: "Yes.", checked: true, shift: 8500 }]), [], withReadBack);
   assert.notEqual(nameOf(late).state, "ok");
-  assert.match(nameCard(late)!.text, /came too long after the question/);
-  assert.equal(late.nameEntry?.readBackRecovery, "ask");
+  assert.equal(late.nameEntry?.readBack, "available");
 
   // Silence: no reply, then the agent moves on. Nothing verifies and it isn't a refusal: the read-back is offered again.
   const silent = view(upToName(NAME, [READ_BACK, ADDRESS_Q]), [], withReadBack);
@@ -326,7 +326,7 @@ test("silence after the read-back: the wait ends 8 s after the question, and a y
   assert.equal(nameOf(view(upToName(NAME, [READ_BACK, { ...YES, shift: 6000 }]), [], withReadBack)).state, "ok");
   v = view(upToName(NAME, [READ_BACK, { ...YES, shift: 6001 }]), [], withReadBack);
   assert.notEqual(nameOf(v).state, "ok");
-  assert.match(nameCard(v)!.text, /came too long after the question\. Ask for the full name again/);
+  assert.equal(v.nameEntry?.readBack, "available", "a late yes is no reply; saying it back once more still counts");
 });
 
 test("a yes to another question never verifies the name", () => {
@@ -346,7 +346,7 @@ test("after a refused read-back: no second read-back, Confirm does nothing, typi
   const typed: AgentAction[] = [{ type: "correct", key: "k5", text: "Sam Miller", at: at(8) }];
   v = view(upToName(NAME, [READ_BACK, no, ADDRESS_Q]), typed, withReadBack);
   assert.equal(nameOf(v).state, "ok");
-  assert.equal(nameOf(v).method, "typed by the agent");
+  assert.equal(nameOf(v).method, "typed by the agent, after the agent said it on the call", "typed after the agent read the name back");
   assert.equal(v.verification.verified, false, "the street and city are still required");
   v = view(upToName(NAME, [READ_BACK, no, ADDRESS_Q, { side: "caller", text: "Hill Road, in Dallas." }]), typed, withReadBack);
   assert.equal(v.verification.verified, true);

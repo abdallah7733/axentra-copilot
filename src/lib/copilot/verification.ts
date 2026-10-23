@@ -36,9 +36,8 @@ const CORRECTION = /^(no|wait|actually|mean|meant|correction|sorry|oops|scratch|
 /** Words passed over between a correction word and what it corrects to ("No wait, it was Tom Baker"). */
 const BRIDGE = /^(was|be|said|its|i'd|i'll|i've|that's|thats|um|uh|like|so|oh)$/;
 /**
- * Everyday words that are not a name, a street or a city, so they are never a second candidate after a correction word:
- * "Sam Miller. Wait, do you need my order number?" and "Hill Road in Dallas. Actually, I'm at work." still match
- * (independent review of C7, 23 Oct). A word capitalised inside a sentence counts as a candidate anyway ("it's Will Rose").
+ * Everyday words that are not a name, a street or a city, so they are never a second candidate after a correction word
+ * even when written with a capital ("Sam Miller. Sorry, the Tablet is cracked.").
  */
 const COMMON = new Set(
   (
@@ -48,7 +47,10 @@ const COMMON = new Set(
     "off office ok okay only order orders other our out over phone right same see send she should so some something spell spelled spelling " +
     "sure tablet screen cracked broken damaged arrived came box package item refund replacement money then there these they thing think " +
     "those through time today too two three four five six seven eight nine ten zip up us use want wanted was way we well were what when where " +
-    "which who why will with without work would yes yet yesterday your you're both two"
+    "which who why will with without work would yes yet yesterday your you're both two " +
+    "great perfect fine alright cool awesome correct exactly absolutely nope yep yup lovely nice wonderful brilliant indeed " +
+    "certainly definitely course really true wow oh ah bye goodbye cheers hey morning afternoon evening sorry excellent " +
+    "brand model colour color black white silver grey gray blue red"
   ).split(" "),
 );
 /** The words capitalised inside a sentence (proper names, as the speech models write them), lower case. */
@@ -71,9 +73,9 @@ export const deniesIdentity = (text: string) => denies(answerWords(text));
  *   else denied. Rather than guess the scope, ask again.
  * - "Sam Miller or John Smith": two candidates. Ask again.
  * - "Sam Miller. No wait, it's Tom Baker." (or the other way round): the caller corrected themselves from the record's
- *   words to another candidate, so their own answer conflicts. Ask again (his rule, 23 Oct). Only a candidate straight
- *   after the correction word counts (filler between is passed over): "Sam Miller, no, M I L L E R." and "Sam Miller.
- *   Wait, do you need my order number?" still match.
+ *   words to another candidate, so their own answer conflicts. Ask again (his rule, 23 Oct). The first record word or
+ *   candidate after the correction word decides (everyday and lower-case words between are passed over): "Sam Miller,
+ *   no, M I L L E R." and "Sam Miller. Wait, do you need my order number?" still match.
  */
 function frame(tokens: string[], expected: string[], recordWords: string[] = [], caps = new Set<string>()): FactorResult | null {
   const isExpected = (t: string | undefined) => !!t && expected.some((e) => soundsLike(t, e));
@@ -84,20 +86,29 @@ function frame(tokens: string[], expected: string[], recordWords: string[] = [],
   if (denials.length) return "ambiguous";
   const other = (t: string) => t !== "or" && !NOT_AN_ANSWER.test(t) && !isExpected(t) && !recordWords.includes(t);
   if (tokens.includes("or") && tokens.some((t) => other(t) && !CORRECTION.test(t))) return "ambiguous";
-  // A second candidate: a word that could itself be a name, street or city. Not a number, a spelled letter ("M I L L E
-  // R", "two Ls") or an everyday word, unless it is written as a name.
+  // A second candidate: a word written as a name, street or city is (capitalised inside a sentence, as the speech models
+  // write names). Not a number, a spelled letter ("M I L L E R", "two Ls") or an everyday word: "Sam Miller. Sorry, I'm
+  // driving." and "Good morning. Sorry, it's Sam Miller." still match (second review of C7, 23 Oct).
   const candidate = (t: string | undefined) =>
-    !!t && other(t) && !CORRECTION.test(t) && !BRIDGE.test(t) && t.length > 1 && !/^\d/.test(t) && !/^[a-z]s$/.test(t) && (caps.has(t) || !COMMON.has(t));
+    !!t && other(t) && !CORRECTION.test(t) && !BRIDGE.test(t) && t.length > 1 && !/^\d/.test(t) && !/^[a-z]s$/.test(t) && caps.has(t) && !COMMON.has(t);
+  // A correction to a sound-alike of the record ("Sam Miller, sorry, Muller.", "Hill Road in Dallas. Sorry, Hall Road."):
+  // the caller's last word on it is only a sound-alike, so it never verifies on its own (second review of C7, 23 Oct).
+  const soundAlike = (t: string | undefined) => !!t && t.length > 1 && caps.has(t) && isExpected(t) && !expected.includes(t);
   const skip = (t: string) => NOT_AN_ANSWER.test(t) || CORRECTION.test(t) || BRIDGE.test(t);
+  let corrected = false;
   for (const [m, t] of tokens.entries()) {
     if (!CORRECTION.test(t)) continue;
     let [n, p] = [m + 1, m - 1];
-    while (n < tokens.length && skip(tokens[n])) n++;
+    // Forward, everyday and lower-case words are passed over to the first word that is the record's or another
+    // candidate: "Wait, I think it's Tom Baker.", "Actually, we moved, it's Elm Street in Austin now." (second review of
+    // C7, 23 Oct: only the one word after the correction was looked at).
+    while (n < tokens.length && !isExpected(tokens[n]) && !candidate(tokens[n])) n++;
     while (p >= 0 && skip(tokens[p])) p--;
     // The record's words, then a correction to another candidate; or another candidate corrected to the record's words.
     if ((tokens.slice(0, m).some(isExpected) && candidate(tokens[n])) || (candidate(tokens[p]) && isExpected(tokens[n]))) return "ambiguous";
+    if (tokens.slice(0, m).some(isExpected) && soundAlike(tokens[n])) corrected = true;
   }
-  return null;
+  return corrected ? "close" : null;
 }
 
 export function matchName(text: string, customer: Customer): FactorResult {
@@ -222,4 +233,29 @@ export function readBackFits(which: "name" | "address", text: string, customer: 
   // The street name and its type can run together ("Helrout" for "Hill Road").
   const expected = [rest, rest.flatMap((p) => (p === streetName && which === "address" ? [p, ...streetRest] : [p]))].map((r) => skeleton(r.join("")));
   return expected.some((e) => 1 - editDistance(restHeard, e) / Math.max(restHeard.length, e.length) >= 0.7);
+}
+
+/**
+ * The line names someone other than the record's name, as an answer about the name would: a word written as a name
+ * that isn't the record's (by sound), its street or city, or an everyday word. In a short line any such word counts
+ * ("Jones.", "Tom Baker."); in a longer one only straight after "it's", "this is", "my name is" or a correction word
+ * ("Actually it's Tom Baker.", "Sorry, Pam Miller."), so "Yes, it's the Samsung one." and "It's a Galaxy tablet." don't
+ * (second review of C7, 23 Oct).
+ */
+export function namesAnother(text: string, customer: Customer): boolean {
+  const expected = words(customer.name);
+  const notName = new Set([...words(customer.address.street), ...words(customer.address.city), ...words(customer.address.state), ...Object.values(STREET_TYPES).flat(), ...Object.values(STATE_NAMES).flat()]);
+  const isCandidate = (w: string) => {
+    const t = w.toLowerCase().replace(/['’]s$/, "");
+    return t.length > 1 && !/^i(['’](m|d|ll|ve))?$/.test(t) && !expected.some((e) => soundsLike(t, e)) && !notName.has(t) && !COMMON.has(t) && !NOT_AN_ANSWER.test(t) && !CORRECTION.test(t) && !BRIDGE.test(t);
+  };
+  // A short line counts only if it is written as a name, every word capitalised ("Tom Baker.", not "Great, thank you.").
+  const all = text.match(/\p{L}[\p{L}'’-]*/gu) ?? [];
+  const short = all.length <= 3 && all.every((w) => /^\p{Lu}/u.test(w));
+  for (const m of text.matchAll(/\p{Lu}[\p{L}'’-]*(?:\s+\p{Lu}[\p{L}'’-]*)*/gu)) {
+    if (!m[0].split(/\s+/).some(isCandidate)) continue;
+    if (short) return true;
+    if (/(?:^|[^\p{L}])(?:my name is|my name's|name is|name's|it's|its|it is|this is|i'm|i am|sorry|actually|no|wait|meant|mean)[\s,]*$/u.test(text.slice(0, m.index).toLowerCase())) return true;
+  }
+  return false;
 }
