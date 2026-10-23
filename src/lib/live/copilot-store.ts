@@ -228,8 +228,9 @@ export const useCopilot = create<CopilotState>((set, get) => {
     setView({ lines, actions, hints, ...run(lines, actions, hints) });
     // A read-back waits a fixed time for the caller's yes: look again when it runs out, even if nobody speaks.
     clearTimeout(expiryTimer);
-    const until = get().view.readBackUntil;
-    if (until !== undefined) expiryTimer = setTimeout(() => setView(run(get().lines, get().actions, get().hints)), Math.max(0, until - epochNow()) + 50);
+    // And when a lingering name or address question lapses, so the panel stops showing it as awaited.
+    const until = Math.min(get().view.readBackUntil ?? Infinity, get().view.awaitingUntil ?? Infinity);
+    if (until !== Infinity) expiryTimer = setTimeout(() => setView(run(get().lines, get().actions, get().hints)), Math.max(0, until - epochNow()) + 50);
     void assistReady().then((ready) => ready && askModel());
   };
   const act = (action: AgentAction) => update(get().lines, [...get().actions, action], get().hints);
@@ -264,7 +265,10 @@ export const useCopilot = create<CopilotState>((set, get) => {
       }
       // A key answer (the problem, name, address or choice) waits for the second speech model's check:
       // short answers heard on their own are where the fast model goes wrong.
-      if (!known && get().view.awaiting) line = requestCheck(line);
+      // A lingering question that lapsed since the last pass no longer holds the line, timer or not.
+      const v = get().view;
+      const awaitingNow = v.awaitingUntil !== undefined && epochNow() > v.awaitingUntil ? run(get().lines, get().actions, get().hints).view.awaiting : v.awaiting;
+      if (!known && awaitingNow) line = requestCheck(line);
       // A checked line replaces the one it re-checked.
       // The two sides are transcribed separately, so an answer can arrive before the agent's question.
       // Once the conversation in speech order shows a line is a key answer, it gets its check too.

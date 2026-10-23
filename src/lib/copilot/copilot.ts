@@ -184,6 +184,8 @@ export type CopilotView = {
    * "order 427" and the damage sentence was lost; the second model heard all of it.
    */
   awaiting: "issue" | "name" | "address" | "choice" | null;
+  /** `awaiting` comes from a name or address question lingering over hold lines ("One moment."), and lapses at this time. */
+  awaitingUntil?: number;
   /**
    * Caller lines that answer a key question, judged in speech order: the problem (until one is heard),
    * the name, the address and the choice. Each gets the second model's check once, even when the
@@ -481,6 +483,20 @@ const shapedLikeReadBack = (text: string) => {
   return w.length >= 1 && w.length <= 4 && (!!tag || /\?/.test(text) || namesSomeone(text));
 };
 
+/**
+ * An agent line that only holds or acknowledges ("One moment.", "Okay.", "Thank you.", "Let me
+ * check that."): no question mark and every word from a short list, so it asks nothing, names nobody and moves to no
+ * other topic. The identity question it follows stays open through it, for LINGER_MS.
+ */
+const HOLD_WORDS = new Set(
+  "okay ok alright all great perfect sure thanks thank you one moment minute second sec please just a bit bear with me hold on let check checking see got it sorry mhm uh um hmm so and while i pull look that up".split(" ")
+);
+const onlyHolds = (text: string) => {
+  const w = textWords(text);
+  return !/\?/.test(text) && w.length > 0 && w.every((x) => HOLD_WORDS.has(x));
+};
+export const LINGER_MS = 10_000;
+
 /** A reply that is a plain yes and nothing more ("Yes, that's right, thank you."): a correction, a "yes, but", a question back or anything else isn't. */
 const CONFIRM_START = /^(yes|yeah|yep|yup|correct|exactly|absolutely|right|that's (right|correct|it|me)|that is (right|correct|it|me))\b/;
 const CONFIRM_WORDS = new Set("yes yeah yep yup correct right exactly absolutely that's that is it it's me thank thanks you please sir madam ma'am indeed".split(" "));
@@ -610,6 +626,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   let verifiedAt: Evidence | undefined;
   let locked = false;
   let expecting: "name" | "address" | "order" | null = null;
+  // The name or address question carried over agent lines that only held or acknowledged, until this time.
+  let lingerUntil: number | null = null;
   // The agent's latest question for the name, and their read-back of it still waiting for the caller's answer.
   let nameAsk: Evidence | null = null;
   // The agent's latest question for the street and city (or email).
@@ -1008,6 +1026,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
 
     const line = item.line;
     const ev = evidenceOf(line);
+    if (lingerUntil !== null && line.startedAt > lingerUntil) [expecting, lingerUntil] = [null, null];
 
     if (line.side === "caller") {
       // Judged before this line changes anything: what the copilot was waiting for when it was said.
@@ -1142,14 +1161,28 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       } else if (whyA) addrRefused = { ev, why: whyA, recovery: whyA === NOT_CHECKED || whyA === UNCLEAR ? "type" : "ask" };
       if (backedA && (whyA !== undefined || againA)) lastAddrBack = null;
 
+      const lingering = lingerUntil !== null;
+      const hearLingering = (factor: Factor) => {
+        const before = { ...factor };
+        const pendingBefore = pending;
+        hear(factor, line, ev);
+        if (factor.state === "ok" || (factor.state === "confirm" && factor.confirmReason !== "ambiguous")) return;
+        for (const k of Object.keys(factor)) delete (factor as Record<string, unknown>)[k];
+        Object.assign(factor, before);
+        pending = pendingBefore;
+      };
       if (!locked) {
         // The factor the agent asked for; the other only counts if volunteered as a clear match.
         if (why === null || readBackHeld || again || ((why || continues) && !saysNamePart(line.text))) {
           // A confirmed read-back, a reply still being decided, a "Sorry?", or a reply to one with no name in it: never a failed attempt.
+        } else if (expecting === "name" && lingering) {
+          if (saysNamePart(line.text)) hearLingering(name);
         } else if (expecting === "name") hear(name, line, ev);
         else if (name.state !== "ok" && matchName(line.text, customer) === "match" && !spokenAfterRecordSaid(name, [ev])) matched(name, ev, doubt([ev], line.text));
         if (whyA === null || addrHeld || againA || ((whyA || continuesA) && !saysAddressPart(line.text))) {
           // The same for the address read-back.
+        } else if (expecting === "address" && lingering) {
+          if (saysAddressPart(line.text)) hearLingering(address);
         } else if (expecting === "address") hear(address, line, ev);
         else if (address.state !== "ok" && matchAddress(line.text, customer) === "match" && !spokenAfterRecordSaid(address, [ev])) matched(address, ev, doubt([ev], line.text), addressMethod(line.text));
       }
@@ -1310,7 +1343,12 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         lastAddrBack = { ...addrBack, line };
         addrBacksSeen.push(line);
       }
-      else if (!asks && (expecting === "name" || expecting === "address")) expecting = null;
+      else if (!asks && (expecting === "name" || expecting === "address")) {
+        const f = expecting === "name" ? name : address;
+        if (f.state !== "ok" && !locked && onlyHolds(line.text)) lingerUntil = line.endedAt + LINGER_MS;
+        else [expecting, lingerUntil] = [null, null];
+      }
+      if (asks || readBack || addrBack) lingerUntil = null;
       if (asks || readBack || addrBack) [nameRepeatOpen, addrRepeatOpen] = [false, false];
       if (asks || readBack || addrBack) {
         if (asks !== "name" && nameAsk) nameAskEnds = Math.min(nameAskEnds, line.startedAt);
@@ -1517,7 +1555,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   const words = escalations.filter((e) => e.kind === "words");
   const escalate = escalations.length > 0 || failedChecks.length > 0;
 
-  const identityFactor = expecting === "name" ? name : expecting === "address" ? address : null;
+  const lingerOver = lingerUntil !== null && now > lingerUntil;
+  const identityFactor = lingerOver ? null : expecting === "name" ? name : expecting === "address" ? address : null;
   const awaiting: CopilotView["awaiting"] =
     locked || escalate
       ? null
@@ -2469,6 +2508,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     steps,
     documentation,
     awaiting,
+    ...(lingerUntil !== null && !lingerOver && identityFactor && awaiting === identityFactor.id ? { awaitingUntil: lingerUntil } : {}),
     keyAnswers,
     readBackChecks,
     agentChecks,
