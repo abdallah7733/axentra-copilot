@@ -654,6 +654,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   // A line like a read-back said while the caller's name answer was still being checked, so it can't count as one yet:
   // until the caller says something, their next line may be its reply.
   let earlyReadBack: TranscriptEvent | null = null;
+  // The same kind of line said while part of a caller's answer was still being checked, kept after the caller replies:
+  // until that check lands, the read-back card waits instead of asking for the read-back again (Amendment 3).
+  const earlySaid: { name: TranscriptEvent | null; address: TranscriptEvent | null } = { name: null, address: null };
   // The latest read-back until the caller's reply decides it: the next agent line ends the wait for a reply, but not a
   // reply already said and still being checked (second review, 23 Oct).
   let lastReadBack: { ev: Evidence; endedAt: number; line: TranscriptEvent } | null = null;
@@ -686,6 +689,21 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     const nextAgent = ordered.find((l) => l.side === "agent" && l.key !== said.key && after(l));
     return corrected.filter((l) => l.side === "caller" && after(l) && (!nextAgent || l.startedAt < nextAgent.startedAt));
   };
+  /**
+   * The caller's own answer to the latest question for this detail, all its lines said before `before`: not a reply to a
+   * read-back or to a line heard again, and not after the agent's next question.
+   */
+  const answerLines = (id: "name" | "address", before: number) => {
+    const ask = (id === "name" ? nameAsk : addressAsk) as Evidence | null;
+    const ends = id === "name" ? nameAskEnds : addressAskEnds;
+    const backs = id === "name" ? [...readBacksSeen, ...probesSeen] : addrBacksSeen;
+    return ask ? corrected.filter((l) => l.side === "caller" && l.startedAt > ask.at && l.startedAt < Math.min(before, ends) && !backs.some((b) => replyTo(b).includes(l))) : [];
+  };
+  /**
+   * Part of that answer is still being checked, so it may still change: a read-back of it, or a Confirm press on it,
+   * waits for that check (outside review, 23 Oct, Amendment 3: a two-line answer lost its tick and its approval).
+   */
+  const answerChecking = (id: "name" | "address", before: number) => answerLines(id, before).some((l) => l.checking);
   /** The caller's reply to the read-back, or to the line being heard again, is said but not yet decided at `at`. */
   const nameReplyOpen = (at: number) => {
     const probe = openProbe as TranscriptEvent | null;
@@ -710,6 +728,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       }
     for (const b of id === "name" ? readBacksSeen : addrBacksSeen)
       for (const l of replyTo(b)) if (l.startedAt < at && l.heldAt !== undefined && (l.availableAt ?? l.endedAt) > at) from = Math.max(from, l.availableAt ?? l.endedAt);
+    // And the checks of the caller's own answer that it waited for.
+    for (const l of answerLines(id, at)) if (l.heldAt !== undefined && (l.availableAt ?? l.endedAt) > at) from = Math.max(from, l.availableAt ?? l.endedAt);
     return from;
   };
   /**
@@ -806,6 +826,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   // Cast so TypeScript doesn't narrow it to null: it changes inside hear() and closeAnswer().
   let pending = null as Pending | null;
   const firstAnswer = new Map<Factor["id"], Pending>();
+  // The answer that last matched each detail, all its lines, until the caller says something else.
+  const lastMatch: { name?: { line: TranscriptEvent; heard: string }; address?: { line: TranscriptEvent; heard: string } } = {};
 
   const addressMethod = (text: string) => (/\b(at|@)\b/.test(text.toLowerCase()) && !/\broad\b/i.test(text) ? "email" : "street and city");
 
@@ -880,6 +902,14 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     !spokenAfterRecordSaid(f, [f.evidence]) &&
     [f.heard, f.heardFirst].some((t) => t !== undefined && readBackFits(f.id, t, customer));
   /** A caller line while the agent is waiting for this factor. */
+  /** A caller line that would join the same answer as `line` (ANSWER_GAP_MS, before the agent speaks) is still being checked. */
+  const moreBeingChecked = (line: TranscriptEvent) => {
+    const nextAgent = ordered.find((l) => l.side === "agent" && l.startedAt > line.startedAt);
+    return corrected.some(
+      (l) => l.checking && l.side === "caller" && l.startedAt > line.startedAt && l.startedAt - line.endedAt < ANSWER_GAP_MS && (!nextAgent || l.startedAt < nextAgent.startedAt),
+    );
+  };
+
   function hear(factor: Factor, line: TranscriptEvent, ev: Evidence) {
     if (factor.state === "ok" || locked) return;
     if (pending?.factor !== factor) pending = { factor, evs: [], texts: [], endedAt: 0, result: "none" };
@@ -906,8 +936,15 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       factor.state = "confirm";
       factor.confirmReason = "after-read-back";
       pending.result = "sounds-like";
+    } else if (result === "match" && moreBeingChecked(line)) {
+      // The caller went straight on, and that line is still being checked ("Sam Miller." then "No wait, it's Tom
+      // Baker."): it is part of the same answer and may change it, so nothing verifies until its check lands
+      // (outside review, 23 Oct, Amendment 3).
+      factor.state = "asking";
+      pending.result = "none";
     } else if (result === "match") {
       matched(factor, ev, reason, factor.id === "address" ? addressMethod(heard) : undefined, Math.max(...pending.evs.map((e) => e.knownAt)));
+      if (!reason) lastMatch[factor.id as "name" | "address"] = { line, heard };
       pending = null;
     } else if (result === "ambiguous") {
       // "Sam Miller or John Smith", "Not Boston, Hill Road in Dallas": ask again; neither a match nor a wrong answer.
@@ -1007,7 +1044,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         // While the caller's reply to a read-back (or to a line being heard again as one) is still undecided, a press
         // waits: the reply may refuse it. A press before any reply counts either way.
         // Nor once the caller only asked to hear the read-back again ("Sorry?"): they haven't confirmed it either.
-        const replyOpenAt = repeatUsed[factor.id] || (factor.id === "name" ? readBackRefused || nameReplyOpen(a.at) : addrRefused || addressReplyOpen(a.at));
+        // And while part of the caller's own answer is still being checked: it may still change what the press is on.
+        const replyOpenAt =
+          repeatUsed[factor.id] || (factor.id === "name" ? readBackRefused || nameReplyOpen(a.at) : addrRefused || addressReplyOpen(a.at)) || answerChecking(factor.id, a.at);
         if (factor.state === "confirm" && confirmable(factor) && factor.evidence && !locked && !replyOpenAt) {
           if (pending?.factor === factor) pending = null;
           factor.state = "ok";
@@ -1027,7 +1066,10 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         if (found) setChoice(found.choice, lowConfidenceChoice, a.at);
         lowConfidenceChoice = null;
       } else if (a.type === "approve" && readyToApprove()) {
-        given.push({ at: a.at, via: "panel" });
+        // Only on what was verified by the press: a name typed later doesn't bring back an approval given while the
+        // read-back it relied on was still undecided (Amendment 3 check, 23 Oct).
+        if (Math.max(name.knownAt ?? 0, address.knownAt ?? 0) <= a.at) given.push({ at: a.at, via: "panel" });
+        else refused.push({ at: a.at, via: "panel", reason: "the identity check it relied on didn't hold; it was verified again only after it" });
       }
       continue;
     }
@@ -1127,7 +1169,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         name.state = "ok";
         name.evidence = backed.ev;
         name.confirmedBy = ev;
-        name.knownAt = Math.max(backed.ev.knownAt, ev.knownAt);
+        name.knownAt = Math.max(backed.ev.knownAt, ev.knownAt, ...answerLines("name", backed.ev.at).map((l) => l.availableAt ?? l.endedAt));
         name.confirmReason = undefined;
         name.method = NAME_READ_BACK;
         markVerified(ev);
@@ -1162,12 +1204,29 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         address.state = "ok";
         address.evidence = backedA.ev;
         address.confirmedBy = ev;
-        address.knownAt = Math.max(backedA.ev.knownAt, ev.knownAt);
+        address.knownAt = Math.max(backedA.ev.knownAt, ev.knownAt, ...answerLines("address", backedA.ev.at).map((l) => l.availableAt ?? l.endedAt));
         address.confirmReason = undefined;
         address.method = ADDRESS_READ_BACK;
         markVerified(ev);
       } else if (whyA) addrRefused = { ev, why: whyA, recovery: whyA === NOT_CHECKED || whyA === UNCLEAR ? "type" : "ask" };
       if (backedA && (whyA !== undefined || againA)) lastAddrBack = null;
+
+      // The caller correcting themselves straight after an answer that matched, before the agent spoke ("Sam Miller."
+      // then "No wait, it's Tom Baker."): their own answer conflicts after all, so it's asked again, never verified and
+      // never a failed attempt (his rule, 23 Oct).
+      const selfCorrected = new Set<string>();
+      for (const f of [name, address]) {
+        const id = f.id as "name" | "address";
+        const m = lastMatch[id];
+        if (!m || locked || f.state !== "ok" || f.evidence?.key !== m.line.key) continue;
+        const joins = line.startedAt - m.line.endedAt < ANSWER_GAP_MS && !ordered.some((l) => l.side === "agent" && l.startedAt > m.line.startedAt && l.startedAt < line.startedAt);
+        const heard = `${m.heard} ${line.text}`;
+        if (!joins || (id === "name" ? matchName(heard, customer) : matchAddress(heard, customer)) !== "ambiguous") continue;
+        Object.assign(f, { state: "confirm", confirmReason: "ambiguous", heard, heardFirst: heard, evidence: ev, knownAt: undefined, method: undefined });
+        verifiedAt = undefined;
+        selfCorrected.add(id);
+      }
+      for (const id of ["name", "address"] as const) if (lastMatch[id]?.line.key !== line.key) delete lastMatch[id];
 
       const lingering = lingerUntil !== null;
       const hearLingering = (factor: Factor) => {
@@ -1181,13 +1240,13 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       };
       if (!locked) {
         // The factor the agent asked for; the other only counts if volunteered as a clear match.
-        if (why === null || readBackHeld || again || ((why || continues) && !saysNamePart(line.text))) {
+        if (why === null || readBackHeld || again || ((why || continues) && !saysNamePart(line.text)) || selfCorrected.has("name")) {
           // A confirmed read-back, a reply still being decided, a "Sorry?", or a reply to one with no name in it: never a failed attempt.
         } else if (expecting === "name" && lingering) {
           if (saysNamePart(line.text)) hearLingering(name);
         } else if (expecting === "name") hear(name, line, ev);
         else if (name.state !== "ok" && matchName(line.text, customer) === "match" && !spokenAfterRecordSaid(name, [ev])) matched(name, ev, doubt([ev], line.text));
-        if (whyA === null || addrHeld || againA || ((whyA || continuesA) && !saysAddressPart(line.text))) {
+        if (whyA === null || addrHeld || againA || ((whyA || continuesA) && !saysAddressPart(line.text)) || selfCorrected.has("address")) {
           // The same for the address read-back.
         } else if (expecting === "address" && lingering) {
           if (saysAddressPart(line.text)) hearLingering(address);
@@ -1252,6 +1311,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         // over from it, and a press or an approval would count before that reply's "No." (fourth review, 23 Oct).
         !replyChecking &&
         !addrHeld &&
+        // Nor while part of the caller's own answer is still being checked (below: it counts once that check lands).
+        !answerChecking("name", line.startedAt) &&
         providedWhole(name) &&
         name.attempts === 0 &&
         name.evidence?.side === "caller";
@@ -1275,6 +1336,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         !readBackHeld &&
         !openProbe &&
         !replyChecking &&
+        !answerChecking("address", line.startedAt) &&
         providedWhole(address) &&
         address.attempts === 0 &&
         address.evidence?.side === "caller";
@@ -1310,15 +1372,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         name.attempts === 0 &&
         name.state !== "ok" &&
         expecting === "name" &&
-        corrected.some(
-          (l) =>
-            l.checking &&
-            l.side === "caller" &&
-            !!nameAsk &&
-            l.startedAt > nameAsk.at &&
-            l.startedAt < line.startedAt &&
-            ![...readBacksSeen, ...probesSeen].some((b) => replyTo(b).includes(l)),
-        ) &&
+        answerChecking("name", line.startedAt) &&
         (readsBackName(line.text, customer) || shapedLikeReadBack(line.text))
           ? line
           : null;
@@ -1334,18 +1388,13 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         address.attempts === 0 &&
         address.state !== "ok" &&
         expecting === "address" &&
-        corrected.some(
-          (l) =>
-            l.checking &&
-            l.side === "caller" &&
-            !!addressAsk &&
-            l.startedAt > addressAsk.at &&
-            l.startedAt < line.startedAt &&
-            !addrBacksSeen.some((b) => replyTo(b).includes(l)),
-        ) &&
+        answerChecking("address", line.startedAt) &&
         readsBackAddress(line.text, customer)
           ? line
           : null;
+      if (earlyReadBack) earlySaid.name = earlyReadBack;
+      if (earlyAddrBack) earlySaid.address = earlyAddrBack;
+      if (asks || readBack || addrBack) [earlySaid.name, earlySaid.address] = [null, null];
       if (readBack) {
         expecting = "name";
         readBacksUsed.name++;
@@ -1886,7 +1935,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       ? "off"
       : readBackRefused
         ? "refused"
-        : readBackHeld || openProbe || (readBackUntil !== undefined && now <= readBackUntil)
+        : readBackHeld || openProbe || (readBackUntil !== undefined && now <= readBackUntil) || (earlySaid.name && answerChecking("name", now))
           ? "waiting"
           : readBackUntil !== undefined || !readBackLeft("name")
             ? "expired"
@@ -1903,6 +1952,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       ? "Say back the full name you heard and wait for the caller's yes (it counts only if it is the name on the order), or type what the caller said (N)."
       : readBackState === "waiting" && openProbe
         ? `Checking your ${probeWhich ?? "last"} line with the second model in case it was the name read-back. You can type what the caller said (N).`
+        : readBackState === "waiting" && earlySaid.name && answerChecking("name", now)
+          ? "Your read-back counts once the rest of the caller's answer is checked. You can type what the caller said (N)."
         : readBackState === "waiting"
           ? "Wait for the caller's yes to your read-back, or type what the caller said (N)."
           : readBackState === "expired"
@@ -1923,7 +1974,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       ? "off"
       : addrRefused
         ? "refused"
-        : addrHeld || (addrUntil !== undefined && now <= addrUntil)
+        : addrHeld || (addrUntil !== undefined && now <= addrUntil) || (earlySaid.address && answerChecking("address", now))
           ? "waiting"
           : addrUntil !== undefined || !readBackLeft("address")
             ? "expired"
@@ -1935,6 +1986,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       ? "The caller asked to hear it again: say the same street and city once more and wait for a plain yes, or type what the caller said (A)."
       : addrState === "available"
         ? "Say back the street and city you heard as one question and wait for the caller's yes (it counts only if it is the order's street and city word for word), or type what the caller said (A)."
+        : addrState === "waiting" && earlySaid.address && answerChecking("address", now)
+          ? "Your read-back counts once the rest of the caller's answer is checked. You can type what the caller said (A)."
         : addrState === "waiting"
           ? "Wait for the caller's yes to your read-back, or type what the caller said (A)."
           : addrState === "expired"

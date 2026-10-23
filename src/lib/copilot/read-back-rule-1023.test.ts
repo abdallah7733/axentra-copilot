@@ -135,3 +135,21 @@ test("a caller's 'Yes, Sam Miller.' to a read-back isn't a plain yes, and isn't 
   assert.equal(name(v).confirmReason, "after-read-back");
   assert.equal(name(v).attempts, 0);
 });
+
+test("a caller correcting themselves inside one answer is asked again, whichever way round; a plain 'No, it's…' still counts", async () => {
+  const { matchAddress, matchName } = await import("./verification");
+  const names: [string, string][] = [
+    ["Sam Miller. No wait, it's Tom Baker.", "ambiguous"],
+    ["Tom Baker. No wait, it's Sam Miller.", "ambiguous"],
+    ["Sam Miller, actually Tom Baker.", "ambiguous"],
+    ["No, it's Sam Miller.", "match"],
+    ["No, it's Sam Miller, from Dallas.", "match"],
+    ["Sam Miller. And it's about order 427.", "match"],
+  ];
+  for (const [text, want] of names) assert.equal(matchName(text, customer), want, text);
+  const addresses: [string, string][] = [
+    ["Hill Road in Dallas. Actually, Elm Road in Austin.", "ambiguous"],
+    ["Hill Road in Dallas, no wait, Texas.", "match"],
+  ];
+  for (const [text, want] of addresses) assert.equal(matchAddress(text, customer), want, text);
+});

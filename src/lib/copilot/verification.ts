@@ -31,6 +31,8 @@ const has = (tokens: string[], expected: string) => heardAs(tokens, expected) !=
 const answerWords = (text: string) => words(text).map((w) => w.replace(/'s$/, ""));
 
 const DENIAL = /^(not|never|isn't|isnt|wasn't|wasnt|don't|dont|doesn't|doesnt|didn't|didnt|ain't|aint)$/;
+/** Words a caller corrects themselves with: "Sam Miller. No wait, it's Tom Baker." */
+const CORRECTION = /^(no|wait|actually|mean|correction)$/;
 const denies = (tokens: string[]) => tokens.some((t) => DENIAL.test(t));
 
 export const deniesIdentity = (text: string) => denies(answerWords(text));
@@ -42,6 +44,8 @@ export const deniesIdentity = (text: string) => denies(answerWords(text));
  * - "My name is Sam Miller, not John Smith", "Not Boston, Hill Road in Dallas": something
  *   else denied. Rather than guess the scope, ask again.
  * - "Sam Miller or John Smith": two candidates. Ask again.
+ * - "Sam Miller. No wait, it's Tom Baker." (or the other way round): the caller corrected themselves between the
+ *   record's words and others, so their own answer conflicts. Ask again (his rule, 23 Oct).
  */
 function frame(tokens: string[], expected: string[], recordWords: string[] = []): FactorResult | null {
   const isExpected = (t: string | undefined) => !!t && expected.some((e) => soundsLike(t, e));
@@ -50,8 +54,13 @@ function frame(tokens: string[], expected: string[], recordWords: string[] = [])
   const anyExpected = tokens.some((t) => isExpected(t));
   if (!anyExpected) return null;
   if (denials.length) return "ambiguous";
-  const others = tokens.filter((t) => t !== "or" && !NOT_AN_ANSWER.test(t) && !isExpected(t) && !recordWords.includes(t));
+  const other = (t: string) => t !== "or" && !CORRECTION.test(t) && !NOT_AN_ANSWER.test(t) && !isExpected(t) && !recordWords.includes(t);
+  const others = tokens.filter(other);
   if (tokens.includes("or") && others.length) return "ambiguous";
+  const at = (test: (t: string) => boolean) => tokens.flatMap((t, i) => (test(t) ? [i] : []));
+  const [expectedAt, otherAt] = [at(isExpected), at(other)];
+  const between = (m: number, before: number[], after: number[]) => before.some((i) => i < m) && after.some((i) => i > m);
+  if (at((t) => CORRECTION.test(t)).some((m) => between(m, expectedAt, otherAt) || between(m, otherAt, expectedAt))) return "ambiguous";
   return null;
 }
 
