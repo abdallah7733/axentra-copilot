@@ -73,7 +73,7 @@ test("the agent reads the street and city back and the caller's checked yes veri
   toAddress(c);
   // The card says what to do without ever showing the order's address.
   const card = c.view().prompts.find((p) => p.target === "address")?.text ?? "";
-  assert.match(card, /Say the street and city back as you heard them/);
+  assert.match(card, /Say the street and city back as one question/);
   assert.doesNotMatch(card, /Hill Road|Dallas/);
   c.agent("a4", "So that's Hill Road, Dallas, is that right?", 22_000, 24_500);
   assert.equal(c.view().addressEntry?.readBack, "waiting");
@@ -269,4 +269,80 @@ test("\"Sorry?\" after the address read-back allows it once more, too", () => {
   c.agent("a5", "Hill Road in Dallas, is that right?", 27_000, 28_500);
   c.say("c5", "Yes.", 29_000, 29_400);
   assert.equal(c.address().method, ADDRESS_READ_BACK);
+});
+
+/* Fixes from the independent review of 55b74f2 (23 Oct). */
+function toName(c: ReturnType<typeof call>) {
+  c.agent("a1", "Thank you for calling Sunlake. How can I help you today?", 0, 2000);
+  c.say("c1", "Hello. I need help with order 427. The tablet came yesterday, and the screen is cracked.", 3000, 9000);
+  c.agent("a2", "First, can I have your full name, please?", 10_000, 12_000);
+  c.say("c2", "Sam Miler.", 12_500, 13_500);
+  assert.equal(c.name().confirmReason, "sounds-like");
+}
+
+for (const reply of ["Sorry, I didn't say that.", "What? I didn't say that.", "Sorry, that's not it.", "Sorry, say what?"])
+  test(`a disputing reply refuses the read-back instead of allowing a repeat ("${reply}")`, () => {
+    const c = call("RV-DISPUTE");
+    toName(c);
+    c.agent("a3", "So it's Sam Miller, right?", 15_000, 17_000);
+    c.say("c3", reply, 17_500, 18_500);
+    assert.notEqual(c.view().nameEntry?.readBackRepeat, true);
+    c.agent("a4", "So it's Sam Miller, right?", 20_500, 22_000);
+    c.say("c4", "Yes.", 22_500, 22_900);
+    assert.notEqual(c.name().state, "ok");
+  });
+
+for (const reply of ["Pardon me?", "Can you say that again, please?", "I didn't catch that.", "Sorry, could you repeat it?", "Come again?"])
+  test(`these ask to hear it again ("${reply}")`, () => {
+    const c = call("RV-AGAIN");
+    toName(c);
+    c.agent("a3", "So it's Sam Miller, right?", 15_000, 17_000);
+    c.say("c3", reply, 17_500, 18_500);
+    assert.equal(c.view().nameEntry?.readBackRepeat, true);
+  });
+
+for (const [what, result] of [
+  ["whose check failed", { checkFailed: true }],
+  ["heard with low confidence", { checked: true, confidence: 0.2 }],
+] as const)
+  test(`a "Sorry?" ${what} refuses the read-back as before, and a later yes doesn't count`, () => {
+    const c = call("RV-UNCLEAR");
+    toName(c);
+    c.agent("a3", "So it's Sam Miller, right?", 15_000, 17_000);
+    c.at(18_400);
+    c.arrive("c3", "caller", "Sorry?", 17_500, 17_900);
+    liveEvents.emit({ type: "line", line: { ...c.s().lines.find((l) => l.key === "c3")!, checking: undefined, ...result } as TranscriptEvent });
+    assert.notEqual(c.view().nameEntry?.readBackRepeat, true);
+    assert.equal(c.view().nameEntry?.readBack, "refused");
+    c.agent("a4", "So it's Sam Miller, right?", 20_500, 22_000);
+    c.say("c4", "Yes.", 22_500, 22_900);
+    assert.notEqual(c.name().state, "ok");
+  });
+
+test("an address read-back waiting before the name is verified still tells the store when it runs out", () => {
+  const c = call("RV-ADDRFIRST");
+  c.agent("a1", "Thank you for calling Sunlake. How can I help you today?", 0, 2000);
+  c.say("c1", "Hello. I need help with order 427. The tablet came yesterday, and the screen is cracked.", 3000, 9000);
+  c.agent("a3", "Can I have the street and city for the delivery?", 10_000, 12_000);
+  c.say("c3", "Little road in Nalist.", 12_500, 14_000, 2000, "Hillwood in the alles.");
+  c.agent("a4", "So that's Hill Road, Dallas, is that right?", 17_000, 19_000);
+  assert.equal(c.view().addressEntry, null, "no address field until the name is verified");
+  assert.equal(c.view().readBackUntil, c.T0 + 19_000 + 8000);
+});
+
+test("while the caller's reply to the name read-back is being checked, the address read-back isn't offered yet", () => {
+  const c = call("RV-BUSY");
+  c.agent("a1", "Thank you for calling Sunlake. How can I help you today?", 0, 2000);
+  c.say("c1", "Hello. I need help with order 427. The tablet came yesterday, and the screen is cracked.", 3000, 9000);
+  c.agent("a2", "Can I have the street and city for the delivery?", 10_000, 12_000);
+  c.say("c2", "Little road in Nalist.", 12_500, 14_000, 2000, "Hillwood in the alles.");
+  c.agent("a3", "And your full name, please?", 17_000, 18_500);
+  c.say("c3", "Sam Miler.", 19_000, 20_000);
+  c.agent("a4", "So it's Sam Miller, right?", 21_000, 22_500);
+  c.at(23_500);
+  c.arrive("c4", "caller", "Yes.", 23_000, 23_300);
+  assert.ok(c.held("c4"));
+  assert.notEqual(c.view().verification.factors[1].state, "ok");
+  const offered = c.view().prompts.find((p) => p.target === "address")?.text ?? "";
+  assert.doesNotMatch(offered, /Say the street and city back/);
 });

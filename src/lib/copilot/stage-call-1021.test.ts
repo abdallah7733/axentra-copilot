@@ -80,7 +80,7 @@ test("after the check, the card leads with what to do and the field stays on the
 
   // With read-back allowed, the card offers it first; typing stays.
   v = view(upToName(NAME, [ADDRESS_Q]), [], withReadBack);
-  assert.match(nameCard(v)!.text, /^Name not recognised\. Say it back as you heard it and wait for the caller's yes, or type it \(N\)\. Heard "Sammílis\."/);
+  assert.match(nameCard(v)!.text, /^Name not recognised\. Say the full name back and wait for the caller's yes \(it counts only if it is the name on the order\), or type it \(N\)\. Heard "Sammílis\."/);
   assert.deepEqual(v.nameEntry, { key: "k5", checking: false, readBack: "available" });
 });
 

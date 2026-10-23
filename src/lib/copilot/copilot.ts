@@ -228,6 +228,8 @@ export type CopilotView = {
    * 20 s went on the address, typed into a card that came only after both models had heard it wrong). Shown once
    * the name is verified; null once the address is. Typed words are checked against the order as before.
    */
+  /** When the earliest read-back still waiting for a reply runs out, whether or not its field is shown: the store looks again then. */
+  readBackUntil?: number;
   addressEntry: {
     key: string;
     checking: boolean;
@@ -436,11 +438,20 @@ const readsBackAddress = (text: string, customer: Customer) => {
 };
 
 /** A reply that only asks to hear it again ("Sorry?", "Pardon?", "Can you say that again?"), and nothing else. */
-const AGAIN_WORDS = new Set("sorry pardon what excuse me say that again repeat please can could you come i didn't catch hear it one more time sir madam ma'am".split(" "));
-const AGAIN_CUE = /\b(sorry|pardon|what|again|repeat|excuse|catch|hear)\b/;
+/**
+ * A reply that only asks to hear the read-back again, as a whole phrase: "Sorry?", "Pardon?", "Can you say that again?",
+ * "I didn't catch that." Matched against a short list of phrases, not a bag of words, so "Sorry, I didn't say that." (a
+ * dispute) isn't one (review, 23 Oct).
+ */
+const AGAIN_POLITE = new Set("please sir madam ma'am".split(" "));
+const AGAIN_PHRASE = new RegExp(
+  "^(?:(?:i'm )?sorry|pardon(?: me)?|excuse me|what|huh)?\\s*" +
+    "(?:(?:can|could|would) you (?:say|repeat) (?:that|it)(?: again)?(?: one more time)?|(?:say|repeat) (?:that|it)(?: again)?(?: one more time)?|" +
+    "come again|one more time|i didn't (?:catch|hear) (?:that|it|you)|what was that|what did you say)?$"
+);
 const saysAgain = (text: string) => {
-  const w = textWords(text);
-  return w.length > 0 && w.length <= 8 && w.every((x) => AGAIN_WORDS.has(x)) && AGAIN_CUE.test(w.join(" "));
+  const said = textWords(text).filter((w) => !AGAIN_POLITE.has(w)).join(" ");
+  return said.length > 0 && AGAIN_PHRASE.test(said);
 };
 
 const STREET_TYPE_WORDS = new Set("road rd street st avenue ave drive dr lane ln".split(" "));
@@ -678,9 +689,12 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
    * the same reply is still being checked. Null for anything else, which refuses the read-back as before.
    */
   const askedAgain = (line: TranscriptEvent): "again" | "wait" | null => {
-    if (!saysAgain(line.text) || (line.firstHeard !== undefined && !saysAgain(line.firstHeard))) return null;
+    // Only a checked, clearly heard "Sorry?" (both models) allows the repeat; anything less refuses as before (review, 23 Oct).
+    const clearAgain = (l: TranscriptEvent) =>
+      l.checked && !evidenceOf(l).lowConfidence && saysAgain(l.text) && (l.firstHeard === undefined || saysAgain(l.firstHeard));
+    if (!clearAgain(line)) return null;
     const rest = restOfReply(line);
-    if (rest.some((l) => !l.checking && !saysAgain(l.text))) return null;
+    if (rest.some((l) => !l.checking && !clearAgain(l))) return null;
     return rest.some((l) => l.checking) ? "wait" : "again";
   };
   const addressParts = [...textWords(customer.address.street).filter((w) => !STREET_TYPE_WORDS.has(w)), ...textWords(customer.address.city)];
@@ -1747,6 +1761,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     readBackHeld = true;
   // Also once the agent has gone on talking, while a reply said in time is still being checked.
   if (!locked && name.state !== "ok" && nameReplyOpen(now) && !openProbe) readBackHeld = true;
+  // A read-back said while a reply to an earlier one is still being checked (either detail) wouldn't count, so the
+  // offer waits until that check lands (review, 23 Oct).
+  const replyCheckingNow = [...readBacksSeen, ...addrBacksSeen].some((b) => replyTo(b).some((l) => l.checking));
   const readBackState: ReadBackState =
     !pack.policy.nameReadBack || locked || name.attempts > 0
       ? "off"
@@ -1756,7 +1773,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           ? "waiting"
           : readBackUntil !== undefined
             ? "expired"
-            : name.state === "confirm" && name.confirmReason !== "ambiguous"
+            : name.state === "confirm" && name.confirmReason !== "ambiguous" && !replyCheckingNow && !addrHeld
               ? "available"
               : "off";
   const probed = openProbe as TranscriptEvent | null;
@@ -1766,7 +1783,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     readBackState === "available" && nameRepeatOpen
       ? "The caller asked to hear it again: say the same read-back once more and wait for a plain yes, or type it (N)."
       : readBackState === "available"
-      ? "Say it back as you heard it and wait for the caller's yes, or type it (N)."
+      ? "Say the full name back and wait for the caller's yes (it counts only if it is the name on the order), or type it (N)."
       : readBackState === "waiting" && openProbe
         ? `Checking your ${probeWhich ?? "last"} line with the second model in case it was the name read-back. You can type what the caller said (N).`
         : readBackState === "waiting"
@@ -1791,14 +1808,14 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           ? "waiting"
           : addrUntil !== undefined
             ? "expired"
-            : address.state === "confirm" && address.confirmReason !== "ambiguous"
+            : address.state === "confirm" && address.confirmReason !== "ambiguous" && !replyCheckingNow && !readBackHeld && !openProbe
               ? "available"
               : "off";
   const addrAction =
     addrState === "available" && addrRepeatOpen
       ? "The caller asked to hear it again: say the same street and city once more and wait for a plain yes, or type what the caller said (A)."
       : addrState === "available"
-        ? "Say the street and city back as you heard them, as one question, and wait for the caller's yes, or type what the caller said (A)."
+        ? "Say the street and city back as one question and wait for the caller's yes (it counts only if it is the order's street and city word for word), or type what the caller said (A)."
         : addrState === "waiting"
           ? "Wait for the caller's yes to your read-back, or type what the caller said (A)."
           : addrState === "expired"
@@ -2385,6 +2402,10 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     ],
     nameEntry,
     addressEntry,
+    readBackUntil: [
+      readBackState === "waiting" && !readBackHeld ? readBackUntil : undefined,
+      addrState === "waiting" && !addrHeld ? addrUntil : undefined,
+    ].reduce<number | undefined>((a, u) => (u === undefined ? a : a === undefined ? u : Math.min(a, u)), undefined),
   };
   givenIn.set(view, given);
   return view;
