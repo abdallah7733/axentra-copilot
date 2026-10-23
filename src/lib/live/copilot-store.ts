@@ -103,24 +103,27 @@ export const useCopilot = create<CopilotState>((set, get) => {
     if (requested.has(line.key) || (line.side !== "caller" && !named) || line.firstHeard !== undefined || line.checkFailed) return line;
     requested.add(line.key);
     if (useLive.getState().checkLine(line.key, !hold) !== "started") return line;
-    if (hold) return { ...line, checking: true };
+    if (hold) return { ...line, checking: true, heldAt: epochNow() };
     probed.add(line.key);
     return { ...line, probing: true, probedAt: epochNow() };
   };
 
   /**
    * Lines the rules now name for a check (key answers, agent lines while a term isn't heard, possible read-backs) get it,
-   * once. A possible read-back is heard again only while nothing has been pressed in the panel since it was said: never
-   * an agent line said before an approval or a press (second review, 23 Oct).
+   * once. A possible read-back is heard again only while the name isn't accepted yet and nothing has been pressed in the
+   * panel since it was said: never an agent line said before an approval or a press (second review, 23 Oct), and never
+   * one that would only reopen a name already accepted (third review: a reply that had counted was then held again).
    */
   const withChecks = (lines: TranscriptEvent[], actions: AgentAction[], hints: ModelHints) => {
-    const { keyAnswers, readBackChecks } = run(lines, actions, hints).view;
+    const { keyAnswers, readBackChecks, verification } = run(lines, actions, hints).view;
     const late = keyAnswers.filter((key) => !requested.has(key));
+    // Pressing Confirm on the problem has nothing to do with the name or an approval.
     const pressedSince = (key: string) => {
       const said = lines.find((l) => l.key === key);
-      return !said || actions.some((a) => a.at > said.endedAt);
+      return !said || actions.some((a) => a.at > said.endedAt && !(a.type === "confirm" && a.target === "issue"));
     };
-    const probes = readBackChecks.filter((key) => !requested.has(key) && !late.includes(key) && !pressedSince(key));
+    const nameAccepted = verification.factors.some((f) => f.id === "name" && f.state === "ok");
+    const probes = nameAccepted ? [] : readBackChecks.filter((key) => !requested.has(key) && !late.includes(key) && !pressedSince(key));
     if (!late.length && !probes.length) return lines;
     return lines.map((l) => (late.includes(l.key) ? requestCheck(l, true) : probes.includes(l.key) ? requestCheck(l, true, false) : l));
   };
@@ -254,6 +257,10 @@ export const useCopilot = create<CopilotState>((set, get) => {
       if (before && probed.has(line.key)) {
         if (line.reheard) probed.delete(line.key);
         line = line.reheard ? { ...before, probing: false, reheard: line.reheard } : before;
+      } else if (before) {
+        // A checked line replaces the one it re-checked; what first arrived, and when it was held, stay with it for the
+        // passes that rebuild an earlier moment.
+        line = { ...line, first: before.first ?? { text: before.text, confidence: before.confidence, at: before.availableAt ?? before.endedAt }, heldAt: line.heldAt ?? before.heldAt };
       }
       // A key answer (the problem, name, address or choice) waits for the second speech model's check:
       // short answers heard on their own are where the fast model goes wrong.

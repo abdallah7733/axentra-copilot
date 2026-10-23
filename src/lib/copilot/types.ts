@@ -46,6 +46,10 @@ export type TranscriptEvent = {
   probing?: boolean;
   /** Epoch milliseconds when that check started: before then, the line was plainly heard. */
   probedAt?: number;
+  /** Epoch milliseconds when the line was held back for the second model's check: on arrival, or later. */
+  heldAt?: number;
+  /** The line as it first reached the copilot, when a check has replaced it since (`at`: its availableAt then). */
+  first?: { text: string; confidence: number | null; at: number };
   /**
    * Epoch milliseconds when this text reached the copilot: when the line arrived, or when the
    * second model's check finished. Defaults to `endedAt`. Speech time places a line in the

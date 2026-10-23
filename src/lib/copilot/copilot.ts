@@ -216,6 +216,8 @@ export type CopilotView = {
     readBackUntil?: number;
     /** After a refusal: ask for the full name again, or type the name (only for a yes the system couldn't confirm). */
     readBackRecovery?: "ask" | "type";
+    /** While waiting: the second model is hearing the agent's last line again in case it was the read-back. */
+    readBackProbe?: true;
   } | null;
   /**
    * Where the agent types the caller's street and city, the same way as the name: from the moment the caller's
@@ -469,6 +471,24 @@ type RefusedApproval = GivenApproval & { reason: string };
 const givenIn = new WeakMap<CopilotView, GivenApproval[]>();
 
 /**
+ * The lines as the copilot had them at `at`, for a pass that rebuilds that moment: a line that hadn't arrived is left
+ * out, one whose held check finished later was still being checked (with what the fast model heard), and one held only
+ * later was then plainly heard. A line held from its arrival used to drop out of these passes altogether, so a Confirm
+ * press the panel was still holding for it counted there (third review, 23 Oct). `before`: strictly before `at`.
+ */
+function asOf(lines: TranscriptEvent[], at: number, before = false): TranscriptEvent[] {
+  const by = (t: number) => (before ? t < at : t <= at);
+  return lines.flatMap((l): TranscriptEvent[] => {
+    const usable = l.availableAt ?? l.endedAt;
+    if (!by(l.first?.at ?? usable)) return [];
+    const held = l.heldAt !== undefined && by(l.heldAt);
+    if (by(usable)) return [l.checking && l.heldAt !== undefined && !held ? { ...l, checking: undefined } : l];
+    const first = l.first ?? { text: l.firstHeard ?? l.text, confidence: l.confidence, at: usable };
+    return [{ ...l, text: first.text, confidence: first.confidence, availableAt: first.at, firstHeard: undefined, checked: undefined, checkFailed: undefined, checking: held || undefined }];
+  });
+}
+
+/**
  * `past`: this pass rebuilds what the copilot knew at an earlier moment, to check an approval given
  * then. It only needs the recommendation, so it doesn't look at approvals itself.
  */
@@ -532,20 +552,40 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   // An agent line being heard again as a possible read-back: until that check finishes, nothing that depends on whether
   // it was one (a later read-back, the caller's reply, a Confirm press on the name after that reply) is decided.
   let openProbe: TranscriptEvent | null = null;
+  // A line like a read-back said while the caller's name answer was still being checked, so it can't count as one yet:
+  // until the caller says something, their next line may be its reply.
+  let earlyReadBack: TranscriptEvent | null = null;
   // The latest read-back until the caller's reply decides it: the next agent line ends the wait for a reply, but not a
   // reply already said and still being checked (second review, 23 Oct).
-  let lastReadBack: { ev: Evidence; endedAt: number } | null = null;
+  let lastReadBack: { ev: Evidence; endedAt: number; line: TranscriptEvent } | null = null;
+  // Read-backs and lines heard again so far, to date a name press that waited for them (pressCountsFrom).
+  const readBacksSeen: TranscriptEvent[] = [];
+  const probesSeen: TranscriptEvent[] = [];
+  /**
+   * The caller's lines that reply to the agent's line `said`: after it, before the agent's next line, the same lines the
+   * read-back rule reads as the reply (the first one, then restOfReply), whenever they start.
+   */
+  const replyTo = (said: TranscriptEvent) => {
+    const after = (l: TranscriptEvent) => l.startedAt > said.startedAt || (l.startedAt === said.startedAt && l.seq > said.seq);
+    const nextAgent = ordered.find((l) => l.side === "agent" && l.key !== said.key && after(l));
+    return corrected.filter((l) => l.side === "caller" && after(l) && (!nextAgent || l.startedAt < nextAgent.startedAt));
+  };
   /** The caller's reply to the read-back, or to the line being heard again, is said but not yet decided at `at`. */
   const nameReplyOpen = (at: number) => {
     const probe = openProbe as TranscriptEvent | null;
-    const back = lastReadBack as { endedAt: number } | null;
-    return (
-      (!!probe && corrected.some((l) => l.side === "caller" && l.startedAt > probe.startedAt && l.startedAt < at)) ||
-      (!!back &&
-        corrected.some(
-          (l) => l.checking && l.side === "caller" && l.startedAt >= back.endedAt - READ_BACK_OVERLAP_MS && l.startedAt <= Math.min(back.endedAt + READ_BACK_REPLY_MS, at)
-        ))
-    );
+    const back = lastReadBack as { line: TranscriptEvent } | null;
+    return (!!probe && replyTo(probe).some((l) => l.startedAt < at)) || (!!back && replyTo(back.line).some((l) => l.checking && l.startedAt < at));
+  };
+  /**
+   * When a name press made at `at` could first count: after the second hearing, and the checks of the caller's reply,
+   * that it waited for (third review, 23 Oct: the press was dated when it was made, before it counted on screen).
+   */
+  const pressCountsFrom = (at: number) => {
+    let from = at;
+    for (const p of probesSeen) if (p.reheard && p.reheard.at > at && replyTo(p).some((l) => l.startedAt < at)) from = Math.max(from, p.reheard.at);
+    for (const b of readBacksSeen)
+      for (const l of replyTo(b)) if (l.startedAt < at && l.heldAt !== undefined && (l.availableAt ?? l.endedAt) > at) from = Math.max(from, l.availableAt ?? l.endedAt);
+    return from;
   };
   /** The caller's later lines in the same reply as `line`: after it, before the agent's next line starts. */
   const restOfReply = (line: TranscriptEvent) => {
@@ -778,7 +818,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           if (pending?.factor === factor) pending = null;
           factor.state = "ok";
           confirmedByPress.add(factor.id);
-          factor.knownAt = Math.max(a.at, factor.evidence.knownAt);
+          factor.knownAt = Math.max(factor.id === "name" ? pressCountsFrom(a.at) : a.at, factor.evidence.knownAt);
           // A confirm press is the agent vouching for the answer: always disclosed, for the name as for the address.
           factor.method = a.target === "address" ? factor.method ?? "confirmed by the agent" : "confirmed by the agent";
           markVerified(factor.evidence);
@@ -858,6 +898,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       const heard = readOrder(line, ev, lastCaller);
       callerMentions.push(...heard);
       lastCaller = { line, ev, expecting };
+      earlyReadBack = null;
 
       // The caller's reply to the agent saying the name back verifies it only as a clear, checked yes, all of it (see
       // whyNotConfirmed and restOfReply), labelled as read back. Any other reply ends read-back for this call: the agent
@@ -963,9 +1004,24 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         readBackChecks.push(line.key);
         if (line.probing) openProbe = line;
       }
+      if (line.probedAt !== undefined) probesSeen.push(line);
+      // Said before the name answer's check finished, it isn't a read-back yet; once it is, the caller's reply must not
+      // have counted on its own first (third review, 23 Oct: "Yes, Sam Miller." verified, then went back for its check).
+      earlyReadBack =
+        !!pack.policy.nameReadBack &&
+        !readBack &&
+        !asks &&
+        !locked &&
+        name.state !== "ok" &&
+        expecting === "name" &&
+        corrected.some((l) => l.checking && l.side === "caller" && !!nameAsk && l.startedAt > nameAsk.at && l.startedAt < line.startedAt) &&
+        (readsBackName(line.text, customer) || shapedLikeReadBack(line.text))
+          ? line
+          : null;
       if (readBack) {
         expecting = "name";
-        lastReadBack = readBack;
+        lastReadBack = { ...readBack, line };
+        readBacksSeen.push(line);
       }
       else if (!asks && (expecting === "name" || expecting === "address")) expecting = null;
       if (asks || readBack) {
@@ -1093,7 +1149,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       const pressedAt = orderPresses.find(
         (at) =>
           stands(at) &&
-          rules(pack, lines.filter((l) => (l.availableAt ?? l.endedAt) <= at), allActions.filter((x) => x.at < at), at, hints, true).order.match?.order.id === found.order.id
+          rules(pack, asOf(lines, at), allActions.filter((x) => x.at < at), at, hints, true).order.match?.order.id === found.order.id
       );
       const differ = source?.differ;
       const several = source?.several;
@@ -1180,8 +1236,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       : identityFactor && identityFactor.state !== "ok"
         ? identityFactor.id
         : // The caller's next line may be the reply to a read-back: it waits for its check from the start, so a line that
-          // already counted is never hidden later, when the line heard again turns out to be one (second review, 23 Oct).
-          openProbe && name.state !== "ok"
+          // already counted is never hidden later, when the line heard again (or said before the name answer's check
+          // finished) turns out to be one (second and third reviews, 23 Oct).
+          (openProbe || earlyReadBack) && name.state !== "ok"
           ? "name"
         : lowConfidenceChoice || (!choice && (choiceAsked || unreadChoice))
           ? "choice"
@@ -1284,7 +1341,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       // history as not counted, rather than disappearing (Step 5 check, 13 Oct).
       const withdrawn: GivenApproval[] = [];
       for (const u of undone) {
-        const before = rules(pack, lines.filter((l) => (l.availableAt ?? l.endedAt) < u.undoneAt), allActions.filter((x) => x.at < u.undoneAt), u.undoneAt, hints, true);
+        const before = rules(pack, asOf(lines, u.undoneAt, true), allActions.filter((x) => x.at < u.undoneAt), u.undoneAt, hints, true);
         for (const g of givenIn.get(before) ?? []) {
           const known = (x: GivenApproval) => x.at === g.at && x.via === g.via;
           if (g.via === "call" && g.at >= u.confirmedAt && !given.some(known) && !withdrawn.some(known)) withdrawn.push(g);
@@ -1305,7 +1362,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           history.push({ at: a.at, via: a.via, evidence: a.evidence, counted: false, reason });
           continue;
         }
-        const then = rules(pack, lines.filter((l) => (l.availableAt ?? l.endedAt) <= a.at), allActions.filter((x) => x.at <= a.at), a.at, hints, true);
+        const then = rules(pack, asOf(lines, a.at), allActions.filter((x) => x.at <= a.at), a.at, hints, true);
         const r = then.recommendation;
         const changedSince = choiceChanges.some((t) => t > a.at);
         // A Confirm press the approval relied on was taken back after it: confirming again doesn't revive it.
@@ -1629,6 +1686,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     const extra = {
       ...(readBackState === "waiting" && !readBackHeld && readBackUntil !== undefined ? { readBackUntil } : {}),
       ...(readBackState === "refused" && readBackRefused ? { readBackRecovery: (readBackRefused as { recovery: "ask" | "type" }).recovery } : {}),
+      ...(readBackState === "waiting" && openProbe ? { readBackProbe: true as const } : {}),
     };
     if (checkingAnswer) nameEntry = { key: checkingAnswer.key, checking: true, readBack: readBackState, ...extra };
     // Not on an answer from before the agent asked again: typing there would rewrite a failed attempt (independent review).

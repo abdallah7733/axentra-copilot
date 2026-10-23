@@ -129,15 +129,17 @@ function NameField({ entry }: { entry: NonNullable<CopilotView["nameEntry"]> }) 
         <span className="text-muted-foreground">
           {entry.checking
             ? "Checking what the caller said…"
-            : entry.readBack === "waiting"
-              ? "Waiting for the caller’s yes (up to 8 s)…"
-              : entry.readBack === "expired"
-                ? "No reply to the read-back: ask again or type the name"
-                : entry.readBack === "refused"
-                  ? entry.readBackRecovery === "type"
-                    ? "Yes not confirmed: type the name only if you clearly heard it"
-                    : "Not confirmed by the caller: ask for the full name again"
-                  : null}
+            : entry.readBack === "waiting" && entry.readBackProbe
+              ? "Checking whether your last line was the read-back…"
+              : entry.readBack === "waiting"
+                ? "Waiting for the caller’s yes (up to 8 s)…"
+                : entry.readBack === "expired"
+                  ? "No reply to the read-back: ask again or type the name"
+                  : entry.readBack === "refused"
+                    ? entry.readBackRecovery === "type"
+                      ? "Yes not confirmed: type the name only if you clearly heard it"
+                      : "Not confirmed by the caller: ask for the full name again"
+                    : null}
         </span>
       </div>
       <TypeHeard

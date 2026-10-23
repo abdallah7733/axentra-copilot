@@ -85,6 +85,7 @@ export function LiveTranscript({ className }: { className?: string }) {
                         <span>
                           {" "}
                           · {t.reheard.text === null ? "read-back check unavailable, kept as first heard" : t.reheard.text === t.text ? "heard again for the read-back, same words" : <>heard again for the read-back as “{t.reheard.text}”</>}
+                          {t.reheard.text !== null && t.reheard.confidence !== null && t.reheard.confidence < 0.6 && " (unclear, so not used)"}
                         </span>
                       )}
                       {t.checkSeconds !== undefined && !t.checkFailed && !t.probe && (
