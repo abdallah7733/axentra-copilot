@@ -1,0 +1,407 @@
+{
+ "manifest": "axentra-step7-development-cases",
+ "version": "v1",
+ "date": "2026-10-19",
+ "split": "development (never reserved/final test)",
+ "status": "frozen v1 19 Oct 2026 (approved by Abdallah 18 Oct 23:06 UTC); scripts only, not recorded",
+ "fictional": true,
+ "baseline_config": "B0: console 5bb7bf2, rules only, whisper small + large-v3-turbo-q5_0 check",
+ "cases": [
+  {
+   "id": "D01",
+   "tests": "short genuine phrase; stock-phrase filter",
+   "segments": {
+    "A": {
+     "role": "agent",
+     "text": "You'll get an email with the return label shortly."
+    },
+    "C": {
+     "role": "caller",
+     "text": "Thank you.",
+     "delivery": "crisp, ~0.5 s"
+    }
+   },
+   "spans": [],
+   "expected": {
+    "fields": {},
+    "workflow": "NO_EFFECT"
+   },
+   "issues": [
+    "I-46"
+   ],
+   "workflow_start_state": "R-D03: identity verified; replacement approved; agent just said return-label line",
+   "workflow_reset": "new harness run per case (empty call state)"
+  },
+  {
+   "id": "D02",
+   "tests": "repeated negation",
+   "segments": {
+    "A": {
+     "role": "agent",
+     "text": "Would you like a refund instead?"
+    },
+    "C": {
+     "role": "caller",
+     "text": "No. No.",
+     "delivery": "two words ~0.4 s apart"
+    }
+   },
+   "spans": [
+    {
+     "tag": "NEG",
+     "count": 2
+    }
+   ],
+   "expected": {
+    "fields": {
+     "choice": "unchanged (not refund)"
+    },
+    "workflow": "NO_EFFECT"
+   },
+   "issues": [
+    "I-46"
+   ],
+   "workflow_start_state": "R-D03: identity verified; damage established; no choice yet",
+   "workflow_reset": "new harness run per case (empty call state)"
+  },
+  {
+   "id": "D03",
+   "tests": "longer utterance; range not an order; negated refund",
+   "segments": {
+    "A": {
+     "role": "agent",
+     "text": "Thanks for calling. How can I help you today?"
+    },
+    "C": {
+     "role": "caller",
+     "text": "Hi. I ordered a wireless speaker last week. The site said four to seven days for delivery, and it came this morning with the front grille smashed. I'd like a replacement, not a refund, please.",
+     "delivery": "spoken naturally; no target length; measure actual duration"
+    }
+   },
+   "spans": [
+    {
+     "tag": "RANGE",
+     "text": "four to seven days",
+     "canonical": "4-7 days"
+    }
+   ],
+   "expected": {
+    "fields": {
+     "intent": "damaged",
+     "choice": "replacement",
+     "refund_wanted": false,
+     "order_id": null
+    },
+    "workflow": "intent and choice read; no order number",
+    "record": "R-D03"
+   },
+   "issues": [
+    "I-44"
+   ],
+   "workflow_start_state": "R-D03: nothing heard; identity not started",
+   "workflow_reset": "new harness run per case (empty call state)"
+  },
+  {
+   "id": "D04",
+   "tests": "complete 5-digit order; amount nearby",
+   "segments": {
+    "A": {
+     "role": "agent",
+     "text": "Can I have the order number, please?"
+    },
+    "C": {
+     "role": "caller",
+     "text": "Sure, it's order five eight three one six. It was a hundred and twenty-nine dollars.",
+     "delivery": "digits one by one, no pause"
+    }
+   },
+   "spans": [
+    {
+     "tag": "ORDER_ID",
+     "canonical": "58316"
+    },
+    {
+     "tag": "AMOUNT",
+     "canonical": "129"
+    }
+   ],
+   "expected": {
+    "fields": {
+     "order_id": "58316"
+    },
+    "workflow": "DONE_RIGHT or CLARIFY; never decoy 58361",
+    "record": "R-D04"
+   },
+   "issues": [
+    "I-44"
+   ],
+   "workflow_start_state": "R-D04: identity verified; no order heard",
+   "workflow_reset": "new harness run per case (empty call state)"
+  },
+  {
+   "id": "D05",
+   "tests": "paused multi-part number",
+   "segments": {
+    "A": {
+     "role": "agent",
+     "text": "And which order is this about?"
+    },
+    "C": {
+     "role": "caller",
+     "text": "Order seven one four [pause 1.0 s] two six.",
+     "delivery": "normal"
+    }
+   },
+   "spans": [
+    {
+     "tag": "ORDER_ID",
+     "canonical": "71426"
+    }
+   ],
+   "expected": {
+    "fields": {
+     "order_id": "71426"
+    },
+    "workflow": "DONE_RIGHT or CLARIFY; SPLIT at L3 is an error; never decoy 71462",
+    "record": "R-D05"
+   },
+   "issues": [
+    "I-43"
+   ],
+   "workflow_start_state": "R-D05: identity verified; no order heard",
+   "workflow_reset": "new harness run per case (empty call state)"
+  },
+  {
+   "id": "D06",
+   "tests": "leading zero and self-correction",
+   "segments": {
+    "A": {
+     "role": "agent",
+     "text": "Could you read me the order number?"
+    },
+    "C": {
+     "role": "caller",
+     "text": "It's zero six two nine one. Sorry, no, zero six two nine four.",
+     "delivery": "say 'zero', not 'oh'"
+    }
+   },
+   "spans": [
+    {
+     "tag": "ORDER_ID_SUPERSEDED",
+     "canonical": "06291"
+    },
+    {
+     "tag": "ORDER_ID",
+     "canonical": "06294"
+    }
+   ],
+   "expected": {
+    "fields": {
+     "order_id": "06294"
+    },
+    "workflow": "06294 or CLARIFY; decoy 06291 matched = UNSAFE",
+    "record": "R-D06"
+   },
+   "issues": [
+    "I-43",
+    "I-44"
+   ],
+   "workflow_start_state": "R-D06: identity verified; no order heard",
+   "workflow_reset": "new harness run per case (empty call state)"
+  },
+  {
+   "id": "D07",
+   "tests": "paused full name",
+   "segments": {
+    "A": {
+     "role": "agent",
+     "text": "Can I have your full name, please?"
+    },
+    "C": {
+     "role": "caller",
+     "text": "It's Mariam [pause 1.0 s] Haddad.",
+     "delivery": "normal"
+    }
+   },
+   "spans": [
+    {
+     "tag": "NAME",
+     "canonical": "Mariam Haddad"
+    }
+   ],
+   "expected": {
+    "fields": {
+     "name": "Mariam Haddad"
+    },
+    "workflow": "DONE_RIGHT or CLARIFY; decoy Marian Hadley never accepted",
+    "record": "R-D07"
+   },
+   "issues": [
+    "I-43"
+   ],
+   "workflow_start_state": "R-D07: nothing verified; 0 failed attempts",
+   "workflow_reset": "new harness run per case (empty call state)"
+  },
+  {
+   "id": "D08",
+   "tests": "paused street and city",
+   "segments": {
+    "A": {
+     "role": "agent",
+     "text": "And the street and city for the delivery?"
+    },
+    "C": {
+     "role": "caller",
+     "text": "Forty-eight Willow Lane [pause 1.0 s] in Portland.",
+     "delivery": "normal"
+    }
+   },
+   "spans": [
+    {
+     "tag": "HOUSE_NO",
+     "canonical": "48"
+    },
+    {
+     "tag": "STREET",
+     "canonical": "Willow Lane"
+    },
+    {
+     "tag": "CITY",
+     "canonical": "Portland"
+    }
+   ],
+   "expected": {
+    "fields": {
+     "house_no": "48",
+     "street": "Willow Lane",
+     "city": "Portland"
+    },
+    "workflow": "DONE_RIGHT or CLARIFY; decoy Willow Way never accepted",
+    "record": "R-D08"
+   },
+   "issues": [
+    "I-43"
+   ],
+   "workflow_start_state": "R-D08: name verified; address not started; 0 failed attempts",
+   "workflow_reset": "new harness run per case (empty call state)"
+  },
+  {
+   "id": "D09",
+   "tests": "quiet speech; sound-alike decoy",
+   "segments": {
+    "A": {
+     "role": "agent",
+     "text": "Can I have your full name, please?"
+    },
+    "C": {
+     "role": "caller",
+     "text": "Grace Whitfield.",
+     "delivery": "quiet low voice, not a whisper"
+    }
+   },
+   "spans": [
+    {
+     "tag": "NAME",
+     "canonical": "Grace Whitfield"
+    }
+   ],
+   "expected": {
+    "fields": {
+     "name": "Grace Whitfield"
+    },
+    "workflow": "DONE_RIGHT or CLARIFY; decoy Grace Whitford accepted = UNSAFE",
+    "record": "R-D09"
+   },
+   "issues": [
+    "Step 6 quiet speech"
+   ],
+   "workflow_start_state": "R-D09: nothing verified; 0 failed attempts",
+   "workflow_reset": "new harness run per case (empty call state)"
+  },
+  {
+   "id": "D10",
+   "tests": "negative control: no speech",
+   "segments": {
+    "A": {
+     "role": "agent",
+     "text": "Are you still there?"
+    },
+    "C": {
+     "role": "caller",
+     "text": "",
+     "delivery": "5 s silence, quiet room"
+    }
+   },
+   "spans": [],
+   "expected": {
+    "fields": {},
+    "workflow": "NO_EFFECT; any word = INVENTED"
+   },
+   "issues": [
+    "I-46"
+   ],
+   "workflow_start_state": "R-D03: identity verified; damage established",
+   "workflow_reset": "new harness run per case (empty call state)"
+  }
+ ],
+ "evaluation_records": {
+  "R-D03": {
+   "customer": "Ines Duarte",
+   "orders": [
+    "30418"
+   ]
+  },
+  "R-D04": {
+   "customer": "Leila Mansour",
+   "orders": [
+    "58316"
+   ],
+   "decoy_orders": [
+    "58361"
+   ]
+  },
+  "R-D05": {
+   "customer": "Owen Brooks",
+   "orders": [
+    "71426"
+   ],
+   "decoy_orders": [
+    "71462"
+   ]
+  },
+  "R-D06": {
+   "customer": "Hannah Cole",
+   "orders": [
+    "06294"
+   ],
+   "decoy_orders": [
+    "06291"
+   ]
+  },
+  "R-D07": {
+   "customer": "Mariam Haddad",
+   "street": "Cedar Court",
+   "city": "Austin",
+   "decoy_customers": [
+    "Marian Hadley"
+   ]
+  },
+  "R-D08": {
+   "customer": "Lucas Ferreira",
+   "street": "Willow Lane",
+   "city": "Portland",
+   "decoy_addresses": [
+    "Willow Way, Portland"
+   ]
+  },
+  "R-D09": {
+   "customer": "Grace Whitfield",
+   "street": "Elm Row",
+   "city": "Denver",
+   "decoy_customers": [
+    "Grace Whitford"
+   ]
+  }
+ },
+ "notes": "Reference = what was actually said after recording, not the script. Records are for the offline workflow harness, which needs approval before it is built. Workflow (L4) is scored only per case from its own start state in the offline harness, never from one accumulating call. Evaluation records never enter the stage pack or console build."
+}

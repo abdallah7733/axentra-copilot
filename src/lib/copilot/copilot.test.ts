@@ -496,7 +496,7 @@ test("13 Oct call 9: Confirm can't verify a name that doesn't match; the agent t
   const prompt = v.prompts.find((p) => p.target === "name")!;
   assert.equal(prompt.askAgain, true, "no Confirm button for text that doesn't match");
   assert.match(prompt.text, /doesn't match the name on the order/);
-  assert.match(prompt.text, /type what they said/);
+  assert.match(prompt.text, /^Name not recognised\. Type what the caller said \(N\)/, "the card leads with what to do (read-back is off unless the build turns it on)");
 
   // An accidental press (call 9) verifies nothing.
   const at = events(s)[5].endedAt + 500;
@@ -520,7 +520,7 @@ test("a low-confidence name that matches the order keeps the plain confirm promp
   const v = after(s, 6);
   assert.equal(v.verification.factors[0].state, "confirm");
   const prompt = v.prompts.find((p) => p.target === "name")!.text;
-  assert.match(prompt, /confirm if you heard it clearly/);
+  assert.match(prompt, /^Name unclear\. Confirm if you heard it clearly/);
   assert.doesNotMatch(prompt, /doesn't match/);
 });
 
@@ -1328,13 +1328,14 @@ test("call 7 as heard: the misheard refund approval is flagged and sent for the 
   assert.equal(v.recommendation?.unheardApproval, undefined);
 
   // Or the agent approves in the panel: recorded as a panel approval. The terms that weren't heard clearly stay
-  // on screen ("visa ending to 208"; the unclear line), the return label was heard.
+  // on screen ("visa ending to 208"; the unclear line), the return label was heard. The amount ($329) was heard
+  // right, so only the card is asked for (22 Oct call: amount and card are separate terms).
   v = call7After(20, [call7Fix, { type: "approve", at: call6Start + 118_000 }]);
   assert.equal(v.recommendation?.approval.state, "approved");
   assert.equal(v.recommendation?.approval.via, "panel");
   assert.equal(
     v.suggestedReply?.text,
-    "I've set up a full refund of $329.00 to your Visa ending 2208. It's issued when the carrier scans the return and takes 3 to 5 business days to appear."
+    "The refund goes to your Visa ending 2208. It's issued when the carrier scans the return and takes 3 to 5 business days to appear."
   );
 });
 
@@ -1349,11 +1350,12 @@ test("the refund terms count only when the facts are right and not negated (outs
   // The outside review's probe: every keyword is there, every fact is wrong.
   assert.equal(
     terms("A refund of 999 dollars to Visa ending 1111. We do not need a scan. It takes 30 business days. There is no return label."),
-    `${amount} ${issued} ${label}`
+    `To be clear: I've set up a full refund of $329.00 to your Visa ending 2208. ${issued} ${label}`
   );
-  // Right amount, wrong card; right card, wrong amount.
-  assert.equal(terms("I've set up a full refund of $329 to your Visa ending 1111.", issued, label), amount);
-  assert.equal(terms("I've set up a full refund of $299 to your Visa ending 2208.", issued, label), amount);
+  // Right amount, wrong card; right card, wrong amount: only the wrong one is asked for, as a restatement the
+  // rules take as the correction (22 Oct call; outside review of 22 Oct, item 7).
+  assert.equal(terms("I've set up a full refund of $329 to your Visa ending 1111.", issued, label), "To be clear: the refund goes to your Visa ending 2208.");
+  assert.equal(terms("I've set up a full refund of $299 to your Visa ending 2208.", issued, label), "To be clear: that's a full refund of $329.00.");
   // The scan named but negated, or the wrong delay.
   assert.equal(terms(amount, "It's issued without a scan and takes 3 to 5 business days.", label), issued);
   assert.equal(terms(amount, "It's issued when the carrier scans the return and takes 10 business days.", label), issued);

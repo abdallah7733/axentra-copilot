@@ -30,10 +30,26 @@ export type TranscriptEvent = {
   firstHeard?: string;
   /** The check failed or timed out: the fast model's text stands, as a doubtful line. */
   checkFailed?: boolean;
+  /** The second model's check finished and its text stands, changed or not. Unset while checking, after a failed check, or when no check ran. */
+  checked?: boolean;
   /** The agent typed what the caller said; this is what speech recognition heard instead. */
   typedFrom?: string;
   /** Epoch milliseconds when the agent typed it. */
   typedAt?: number;
+  /**
+   * An agent line that may be the name read-back misheard, heard again by the second model without being held back
+   * (23 Oct call: "So it's Samuel Wright." for "So it's Sam Miller, right?"). `text` stays the fast model's, and every
+   * other rule uses it; only the read-back rule reads this. `text: null`: the check failed. `at`: when it finished.
+   */
+  reheard?: { text: string | null; confidence: number | null; at: number };
+  /** That check is still running; the line counts as heard meanwhile. */
+  probing?: boolean;
+  /** Epoch milliseconds when that check started: before then, the line was plainly heard. */
+  probedAt?: number;
+  /** Epoch milliseconds when the line was held back for the second model's check: on arrival, or later. */
+  heldAt?: number;
+  /** The line as it first reached the copilot, when a check has replaced it since (`at`: its availableAt then). */
+  first?: { text: string; confidence: number | null; at: number };
   /**
    * Epoch milliseconds when this text reached the copilot: when the line arrived, or when the
    * second model's check finished. Defaults to `endedAt`. Speech time places a line in the
@@ -111,6 +127,18 @@ export type Policy = {
   photoDays: number;
   repeatClaimWindowDays: number;
   maxVerificationAttempts: number;
+  /**
+   * The agent saying the caller's full name back, word for word, and the caller's clear, checked yes verify the name,
+   * labelled "name read back by agent, confirmed by caller", never as recognition. Off unless the client's verification
+   * rules allow it (stage call review, 21 Oct: the caller's name arrives as phone audio, the agent's words don't).
+   */
+  nameReadBack?: boolean;
+  /**
+   * The same for the street and city (his yes, 23 Oct): the agent says the street and city back as one question, word for
+   * word as on the order, and the caller's clear, checked yes verifies the address, labelled "address read back by agent,
+   * confirmed by caller", never as recognition.
+   */
+  addressReadBack?: boolean;
   authority: AuthorityBand[];
   refundTiming: string;
   /** A verb phrase that follows "it": "ships the same day by expedited shipping". Say when it ships, never when it arrives. */

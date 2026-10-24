@@ -21,6 +21,23 @@ const duration = (ms: number) => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 };
 
+/* How long the name took: from the end of the caller's first name answer to the accepted name, and how it was
+   accepted (read back, typed, confirmed by the agent or recognised), to compare the read-back with typing (22 Oct).
+   Both routes start at the same point; typing stops at the keystroke, the read-back at the caller's checked yes. */
+function NameTiming() {
+  const name = useCopilot((s) => s.view.verification.factors[0]);
+  if (name.state !== "ok" || name.answeredAt === undefined || name.knownAt === undefined) return null;
+  const method = name.method ?? "";
+  const route = method.startsWith("name read back") ? "read back" : method.includes("typed") ? "typed" : method.startsWith("confirmed") ? "confirmed by you" : "recognised";
+  return (
+    <Row label="Name accepted">
+      <Mono>
+        {Math.max(0, (name.knownAt - name.answeredAt) / 1000).toFixed(1)} s after the first name answer ended · {route}
+      </Mono>
+    </Row>
+  );
+}
+
 /* The customer record the caller ID points to. Caller ID matching is simulated in
    this demo (every call is the demo customer), and the record stays locked until
    the caller passes the SOP identity check by voice. */
@@ -77,6 +94,7 @@ export function CallDetails({ className }: { className?: string }) {
   const mics = useLive((s) => s.mics);
   const micId = useLive((s) => s.micId);
   const replaying = useLive((s) => s.replaying);
+  const dropped = useLive((s) => s.dropped);
   const assistTimes = useCopilot((s) => s.assistTimes);
   const assistLog = useCopilot((s) => s.assistLog);
   const [now, setNow] = useState(0);
@@ -89,8 +107,9 @@ export function CallDetails({ className }: { className?: string }) {
 
   const mid = median(delays);
   // Checked answers: from the end of speech to the checked text, which is when the copilot can use it.
-  const checked = lines.filter((l) => l.checkSeconds !== undefined && !l.checkFailed).map((l) => (l.availableAtEpoch - l.endedAtEpoch) / 1000);
-  const notChecked = lines.filter((l) => l.checkFailed || l.checkSkipped).length;
+  // Read-back hearings (probes) hold nothing back, so they don't count here.
+  const checked = lines.filter((l) => l.checkSeconds !== undefined && !l.checkFailed && !l.probe).map((l) => (l.availableAtEpoch - l.endedAtEpoch) / 1000);
+  const notChecked = lines.filter((l) => !l.probe && (l.checkFailed || l.checkSkipped)).length;
   const checkedMid = median(checked);
   const running = phase === "active" || replaying;
   const elapsed = startedAt === null ? null : (running ? Math.max(now, startedAt) : endedAt ?? startedAt) - startedAt;
@@ -114,6 +133,19 @@ export function CallDetails({ className }: { className?: string }) {
             <Mono>
               {checkedMid === null ? "none yet" : `${checkedMid.toFixed(1)} s median (${checked.length})`}
               {notChecked > 0 && ` · ${notChecked} not checked`}
+            </Mono>
+          </Row>
+          <NameTiming />
+          {/* Speech that never became a line. Zero is the expected value; a count means words may be missing. */}
+          <Row label="Phrases with no text">
+            <Mono>
+              {(["agent", "caller"] as const)
+                .map((side) => {
+                  const { short, empty } = dropped[side];
+                  const parts = [short && `${short} too short`, empty && `${empty} no words`].filter(Boolean).join(", ");
+                  return `${side === "agent" ? "Agent" : "Caller"} ${short + empty}${parts ? ` (${parts})` : ""}`;
+                })
+                .join(" · ")}
             </Mono>
           </Row>
           {/* After a call, the input the call really used, which can differ from the selection. */}
@@ -140,6 +172,9 @@ export function CallDetails({ className }: { className?: string }) {
           <Row label="Speech detection">{health?.vad ? "On" : "Off"}</Row>
           <Row label="Key answers checked by">{health?.check ? <Mono>whisper {health.checkModel ?? "large-v3-turbo"}</Mono> : "Off"}</Row>
           <Row label="Copilot">Rules ({pack.sop.id})</Row>
+          {/* A build setting (NEXT_PUBLIC_NAME_READ_BACK), so a recording shows which rules it ran. */}
+          <Row label="Name read-back">{pack.policy.nameReadBack ? "On (this build)" : "Off"}</Row>
+          <Row label="Address read-back">{pack.policy.addressReadBack ? "On (this build)" : "Off"}</Row>
           {health?.assist === "local" && (
             <>
               <Row label="Local model">
@@ -159,7 +194,10 @@ export function CallDetails({ className }: { className?: string }) {
           <Row label="Cloud AI">None</Row>
           {/* Ties a recording to the code it ran. */}
           <Row label="Console build">
-            <Mono>{process.env.NEXT_PUBLIC_BUILD_COMMIT || "development"}</Mono>
+            <Mono>
+              {process.env.NEXT_PUBLIC_BUILD_COMMIT || "development"}
+              {process.env.NEXT_PUBLIC_CONSOLE_CHANNEL === "development" ? ", development console" : ""}
+            </Mono>
           </Row>
         </dl>
         <p className="flex items-start gap-2 px-4 pb-4 pt-2 text-xs text-muted-foreground leading-relaxed">

@@ -88,17 +88,44 @@ export const useCopilot = create<CopilotState>((set, get) => {
   let healthCheckedAt = 0;
   // Re-check once the caller has been quiet long enough for an identity answer to be complete.
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
+  let expiryTimer: ReturnType<typeof setTimeout> | undefined;
   // Lines already sent for the second model's check (or found uncheckable) this call: each at most once.
   let requested = new Set<string>();
+  // Agent lines being heard again as a possible read-back: their result goes beside the fast text, not over it.
+  let probed = new Set<string>();
 
   /**
-   * Asks for the check on a line, once; the line is held back while it runs. Caller lines while an answer is
-   * awaited; agent lines only when the rules name them (an approval or terms that may have been misheard).
+   * Asks for the check on a line, once. Held back while it runs (`hold`): caller lines while an answer is awaited, and
+   * agent lines the rules name (an approval or terms that may have been misheard). Not held: an agent line that may be
+   * the name read-back misheard (CopilotView.readBackChecks), which counts as heard meanwhile.
    */
-  const requestCheck = (line: TranscriptEvent, named = false): TranscriptEvent => {
+  const requestCheck = (line: TranscriptEvent, named = false, hold = true): TranscriptEvent => {
     if (requested.has(line.key) || (line.side !== "caller" && !named) || line.firstHeard !== undefined || line.checkFailed) return line;
     requested.add(line.key);
-    return useLive.getState().checkLine(line.key) === "started" ? { ...line, checking: true } : line;
+    if (useLive.getState().checkLine(line.key, !hold) !== "started") return line;
+    if (hold) return { ...line, checking: true, heldAt: epochNow() };
+    probed.add(line.key);
+    return { ...line, probing: true, probedAt: epochNow() };
+  };
+
+  /**
+   * Lines the rules now name for a check (key answers, agent lines while a term isn't heard, possible read-backs) get it,
+   * once. A possible read-back is heard again only while the name isn't accepted yet and nothing has been pressed in the
+   * panel since it was said: never an agent line said before an approval or a press (second review, 23 Oct), and never
+   * one that would only reopen a name already accepted (third review: a reply that had counted was then held again).
+   */
+  const withChecks = (lines: TranscriptEvent[], actions: AgentAction[], hints: ModelHints) => {
+    const { keyAnswers, readBackChecks, verification } = run(lines, actions, hints).view;
+    const late = keyAnswers.filter((key) => !requested.has(key));
+    // Pressing Confirm on the problem has nothing to do with the name or an approval.
+    const pressedSince = (key: string) => {
+      const said = lines.find((l) => l.key === key);
+      return !said || actions.some((a) => a.at > said.endedAt && !(a.type === "confirm" && a.target === "issue"));
+    };
+    const nameAccepted = verification.factors.some((f) => f.id === "name" && f.state === "ok");
+    const probes = nameAccepted ? [] : readBackChecks.filter((key) => !requested.has(key) && !late.includes(key) && !pressedSince(key));
+    if (!late.length && !probes.length) return lines;
+    return lines.map((l) => (late.includes(l.key) ? requestCheck(l, true) : probes.includes(l.key) ? requestCheck(l, true, false) : l));
   };
 
   const assistOn = () => useLive.getState().health?.assist === "local";
@@ -199,15 +226,22 @@ export const useCopilot = create<CopilotState>((set, get) => {
 
   const update = (lines: TranscriptEvent[], actions: AgentAction[], hints: ModelHints) => {
     setView({ lines, actions, hints, ...run(lines, actions, hints) });
+    // A read-back waits a fixed time for the caller's yes: look again when it runs out, even if nobody speaks.
+    clearTimeout(expiryTimer);
+    // And when a lingering name or address question lapses, so the panel stops showing it as awaited.
+    const until = Math.min(get().view.readBackUntil ?? Infinity, get().view.awaitingUntil ?? Infinity);
+    if (until !== Infinity) expiryTimer = setTimeout(() => setView(run(get().lines, get().actions, get().hints)), Math.max(0, until - epochNow()) + 50);
     void assistReady().then((ready) => ready && askModel());
   };
   const act = (action: AgentAction) => update(get().lines, [...get().actions, action], get().hints);
 
   const reset = (callId: string | null) => {
     clearTimeout(settleTimer);
+    clearTimeout(expiryTimer);
     queued = null;
     classified = new Set();
     requested = new Set();
+    probed = new Set();
     set({ callId, highlightKey: null, worded: null, assistTimes: [], assistLog: [], assist: assistOn() ? "ready" : "off" });
     update([], [], {});
   };
@@ -217,16 +251,28 @@ export const useCopilot = create<CopilotState>((set, get) => {
     else if (event.type === "cleared") reset(null);
     else if (event.type === "line" && event.line.callId === get().callId) {
       let line = event.line;
-      const known = get().lines.some((l) => l.key === line.key);
+      const before = get().lines.find((l) => l.key === line.key);
+      const known = !!before;
+      // A possible read-back heard again: the line keeps the fast text every other rule already used, with what the
+      // second model heard beside it (or that its check failed), from when the result arrived.
+      if (before && probed.has(line.key)) {
+        if (line.reheard) probed.delete(line.key);
+        line = line.reheard ? { ...before, probing: false, reheard: line.reheard } : before;
+      } else if (before) {
+        // A checked line replaces the one it re-checked; what first arrived, and when it was held, stay with it for the
+        // passes that rebuild an earlier moment.
+        line = { ...line, first: before.first ?? { text: before.text, confidence: before.confidence, at: before.availableAt ?? before.endedAt }, heldAt: line.heldAt ?? before.heldAt };
+      }
       // A key answer (the problem, name, address or choice) waits for the second speech model's check:
       // short answers heard on their own are where the fast model goes wrong.
-      if (!known && get().view.awaiting) line = requestCheck(line);
+      // A lingering question that lapsed since the last pass no longer holds the line, timer or not.
+      const v = get().view;
+      const awaitingNow = v.awaitingUntil !== undefined && epochNow() > v.awaitingUntil ? run(get().lines, get().actions, get().hints).view.awaiting : v.awaiting;
+      if (!known && awaitingNow) line = requestCheck(line);
       // A checked line replaces the one it re-checked.
-      let lines = [...get().lines.filter((l) => l.key !== line.key), line];
       // The two sides are transcribed separately, so an answer can arrive before the agent's question.
       // Once the conversation in speech order shows a line is a key answer, it gets its check too.
-      const late = run(lines, get().actions, get().hints).view.keyAnswers.filter((key) => !requested.has(key));
-      if (late.length) lines = lines.map((l) => (late.includes(l.key) ? requestCheck(l, true) : l));
+      const lines = withChecks([...get().lines.filter((l) => l.key !== line.key), line], get().actions, get().hints);
       update(lines, get().actions, get().hints);
       clearTimeout(settleTimer);
       settleTimer = setTimeout(() => setView(run(get().lines, get().actions, get().hints)), ANSWER_GAP_MS + 100);
