@@ -16,6 +16,7 @@ import {
   type TwilioCall,
   type TwilioDevice,
 } from "./engine";
+import { isShortReply, sendShortReply } from "./short-reply";
 
 /*
   Live presenter mode: a real call through the Milestone 1 Twilio number, with
@@ -230,22 +231,25 @@ export const useLive = create<LiveState>((set, get) => {
   }
 
   /** One queue per side so each speaker's phrases stay in order. */
-  function sideSink(side: Side, callEpoch: number) {
+  function sideSink(side: Side, callEpoch: number, turn: { agentEnd: number | null }) {
     let queue = Promise.resolve();
     const drop = (why: "short" | "empty") => {
       const dropped = get().dropped;
       set({ dropped: { ...dropped, [side]: { ...dropped[side], [why]: dropped[side][why] + 1 } } });
     };
     return (phrase: Phrase) => {
-      if (!phrase.samples) {
+      const shortReply = sendShortReply(phrase, side, turn.agentEnd);
+      if (!phrase.samples || (phrase.short && !shortReply)) {
         if (callEpoch === epoch) drop("short");
         return;
       }
+      if (side === "agent") turn.agentEnd = phrase.endedAt;
       const samples = phrase.samples;
       queue = queue
         .then(async () => {
           const result = await recognize(side, samples);
           if (callEpoch !== epoch) return;
+          if (shortReply && !isShortReply(result.text)) return drop("short");
           if (!result.text) return drop("empty");
           // Kept for the second model's check: caller answers, and agent lines the copilot may ask about.
           recentAudio.set(`${side}-${phrase.id}`, samples);
@@ -277,7 +281,9 @@ export const useLive = create<LiveState>((set, get) => {
       await new Promise((r) => setTimeout(r, 200));
     }
     if (callEpoch !== epoch || currentCall !== call || !local || !remote) return;
-    const results = await Promise.allSettled([captureStream(local, sideSink("agent", callEpoch)), captureStream(remote, sideSink("caller", callEpoch))]);
+    // When the agent last stopped speaking, for the caller's short replies.
+    const turn = { agentEnd: null as number | null };
+    const results = await Promise.allSettled([captureStream(local, sideSink("agent", callEpoch, turn)), captureStream(remote, sideSink("caller", callEpoch, turn))]);
     const started = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
     if (callEpoch !== epoch || started.length < 2) {
       started.forEach((h) => h.close());

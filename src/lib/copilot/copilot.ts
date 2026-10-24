@@ -1120,8 +1120,17 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   const recordStreet = textWords(customer.address.street).filter((w) => !STREET_TYPE_WORDS.has(w));
   const recordCity = textWords(customer.address.city);
   /** The caller said this record word themselves (as either model heard it) before `at`. */
+  // Typed words count only from when they were typed: before that, the caller's line is what the models heard (6:03 PM
+  // call, 23 Oct: "Hill Road, Dallas" typed later hid that the agent had said "hill road" first).
   const callerSaid = (part: string, at: number) =>
-    corrected.some((l) => l.side === "caller" && l.startedAt < at && [l.text, l.firstHeard].some((t) => !!t && textWords(t).map((w) => w.replace(/'s$/, "")).includes(part)));
+    corrected.some(
+      (l) =>
+        l.side === "caller" &&
+        l.startedAt < at &&
+        [l.typedFrom === undefined || (l.typedAt ?? Infinity) < at ? l.text : undefined, l.typedFrom, l.firstHeard].some(
+          (t) => !!t && textWords(t).map((w) => w.replace(/'s$/, "")).includes(part),
+        ),
+    );
   /**
    * The agent said the detail: all of it, word for word or by sound ("So your name is Sam Miler, right?" as the fast
    * model heard it), or any part the caller hadn't said themselves yet ("And is the last name Miller?" after "Sam.",
@@ -2544,6 +2553,12 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
               : "off";
   const probed = openProbe as TranscriptEvent | null;
   const probeWhich = probed ? (ordered.some((l) => l.side === "agent" && l.startedAt > probed.startedAt) ? ("earlier" as const) : ("last" as const)) : undefined;
+  // Once the agent has said the detail, the caller repeating it is the agent's words again and can't verify it, so the
+  // card says to type it rather than to ask again (6:03 PM call, 23 Oct).
+  const AFTER_SAID = {
+    name: "Type what the caller said (N). You've said the name on the call, so the caller repeating it can't verify it.",
+    address: "Type what the caller said (A). You've said the street and city on the call, so the caller repeating them can't verify them.",
+  };
   // The name card leads with what to do: reading a diagnosis first cost about 3 s on the 21 Oct stage call.
   const nameAction =
     readBackState === "available" && nameRepeatOpen
@@ -2560,7 +2575,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
             ? readBackLeft("name")
               ? `No reply to your read-back within ${READ_BACK_REPLY_MS / 1000} s, so a yes now won't count. Say it back once more (the last time it counts), ask for the full name again, or type it (N).`
               : `No reply to your read-back within ${READ_BACK_REPLY_MS / 1000} s, so a yes now won't count, and reading the name back again won't count on this call. Ask for the full name again, or type it (N).`
-            : "Type what the caller said (N), or ask again.";
+            : recordSaidAt.name !== null
+              ? AFTER_SAID.name
+              : "Type what the caller said (N), or ask again.";
   // The same for the street and city (Policy.addressReadBack).
   const addrUntil = addrBack ? (addrBack as { endedAt: number }).endedAt + READ_BACK_REPLY_MS : undefined;
   if (
@@ -2594,7 +2611,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
             ? readBackLeft("address")
               ? `No reply to your read-back within ${READ_BACK_REPLY_MS / 1000} s, so a yes now won't count. Say it back once more (the last time it counts), ask for the street and city again, or type them (A).`
               : `No reply to your read-back within ${READ_BACK_REPLY_MS / 1000} s, so a yes now won't count, and reading the address back again won't count on this call. Ask for the street and city again, or type them (A).`
-            : "Type what the caller said (A), or ask again.";
+            : recordSaidAt.address !== null
+              ? AFTER_SAID.address
+              : "Type what the caller said (A), or ask again.";
   for (const f of [name, address]) {
     if (f.state === "confirm" && f.evidence && f.confirmReason === "after-read-back" && !locked) {
       const what = f.id === "name" ? "the name" : "the street and city";
@@ -2677,14 +2696,15 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       });
     } else if (f.state === "confirm" && f.evidence) {
       const what = f.id === "name" ? "name" : "address";
+      const saidIt = recordSaidAt[f.id as "name" | "address"] !== null;
       prompts.push({
         target: f.id,
         askAgain: !confirmable(f) || undefined,
         text:
           !confirmable(f) && (f.confirmReason === "low-confidence" || f.confirmReason === "garbled")
-            ? `Heard "${f.heard ?? f.evidence.text}"${f.confirmReason === "garbled" ? ", which looks garbled (the same words repeated)" : " with low confidence"}, and it doesn't match the ${what} on the order. Ask the caller to repeat it, or type what they said; typed words are checked against the order.`
+            ? `Heard "${f.heard ?? f.evidence.text}"${f.confirmReason === "garbled" ? ", which looks garbled (the same words repeated)" : " with low confidence"}, and it doesn't match the ${what} on the order. ${saidIt ? `${AFTER_SAID[f.id as "name" | "address"]} Typed words are checked against the order.` : "Ask the caller to repeat it, or type what they said; typed words are checked against the order."}`
             : f.confirmReason === "disagree"
-            ? `Heard "${f.heard}", first heard as "${f.evidence.firstHeard}". The two speech models disagree, so this isn't counted as a wrong answer. Ask the caller to repeat it, or type what they said.`
+            ? `Heard "${f.heard}", first heard as "${f.evidence.firstHeard}". The two speech models disagree, so this isn't counted as a wrong answer. ${saidIt ? AFTER_SAID[f.id as "name" | "address"] : "Ask the caller to repeat it, or type what they said."}`
             : f.confirmReason === "ambiguous"
             ? `Heard "${f.heard}". It names more than one ${f.id === "name" ? "name" : "address"}, or denies part of one, so it isn't counted either way. Ask for the ${f.id === "name" ? "full name" : "street and city"} once more.`
             : f.confirmReason === "sounds-like"

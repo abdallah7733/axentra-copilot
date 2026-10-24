@@ -133,18 +133,21 @@ function wav(samples: Float32Array, sampleRate: number): ArrayBuffer {
 
 /* ---------- Speech-aware phrase splitting (same tuning as the tested engine page) ---------- */
 
-export type Phrase = { id: number; startedAt: number; endedAt: number; samples: Float32Array | null };
+/** `short`: fewer than MIN_VOICED voiced frames but at least MIN_SHORT; its samples are kept for the caller to decide on. */
+export type Phrase = { id: number; startedAt: number; endedAt: number; samples: Float32Array | null; short?: boolean };
 
 const FRAME_MS = 20;
 
 /**
  * Splits a stream into phrases at pauses instead of fixed chunks. Levels are 20 ms
  * frame RMS against an adaptive noise floor. A phrase starts after 60 ms of speech
- * (keeping 300 ms before it), ends after 600 ms of silence, and is cut at 12 s.
+ * (keeping 300 ms before it), ends after 600 ms of silence, and is cut at 12 s. A phrase with fewer than 12 voiced
+ * frames (0.24 s) is too short to send; from 6 (0.12 s) its audio is kept and marked short, because a caller's quick
+ * "Yes." to a read-back measured 9-10 (6:03 PM call, 23 Oct) and about 0.3 s (2:15 AM call, 24 Oct).
  */
-function createSegmenter(rate: number, onFinal: (p: Phrase) => void) {
+export function createSegmenter(rate: number, onFinal: (p: Phrase) => void) {
   const size = Math.round((rate * FRAME_MS) / 1000);
-  const PREROLL = 15, START = 3, HANGOVER = 30, TAIL = 10, MIN_VOICED = 12, MAX = 600, SPLIT_WINDOW = 100;
+  const PREROLL = 15, START = 3, HANGOVER = 30, TAIL = 10, MIN_VOICED = 12, MIN_SHORT = 6, MAX = 600, SPLIT_WINDOW = 100;
   type Seg = { id: number; frames: Float32Array[]; levels: number[]; voiced: number; silence: number; startedAt: number };
   let carry = new Float32Array(0);
   let ring: [Float32Array, number][] = [];
@@ -165,7 +168,13 @@ function createSegmenter(rate: number, onFinal: (p: Phrase) => void) {
     id: ++nextId, frames, levels, voiced, silence: 0, startedAt: performance.now() - frames.length * FRAME_MS,
   });
   const emit = (s: Seg, frames: Float32Array[], endedAt: number) =>
-    onFinal({ id: s.id, startedAt: s.startedAt, endedAt, samples: s.voiced >= MIN_VOICED ? join(frames) : null });
+    onFinal({
+      id: s.id,
+      startedAt: s.startedAt,
+      endedAt,
+      samples: s.voiced >= MIN_SHORT ? join(frames) : null,
+      ...(s.voiced < MIN_VOICED && s.voiced >= MIN_SHORT ? { short: true } : {}),
+    });
 
   function handle(frame: Float32Array) {
     const level = rms(frame);
