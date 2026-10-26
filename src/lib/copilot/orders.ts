@@ -68,16 +68,22 @@ function spell(pieces: Piece[], lengths: Set<number>): string[] {
  * number, which is the only time an un-anchored "4 to 7" is read as an order.
  */
 export function findOrderMentions(text: string, idLengths: number[], expectingOrder = false): OrderMention[] {
-  const tokens = words(text);
+  return scan(words(text), idLengths, expectingOrder).map(({ mention }) => mention);
+}
+
+/** Mentions with the token span each one used: [start, end). */
+function scan(tokens: string[], idLengths: number[], expectingOrder: boolean): { mention: OrderMention; start: number; end: number }[] {
   const lengths = new Set(idLengths.flatMap((n) => [n - 1, n, n + 1]).filter((n) => n > 0));
   const exactLengths = new Set(idLengths);
-  const mentions: OrderMention[] = [];
+  const mentions: { mention: OrderMention; start: number; end: number }[] = [];
   const used = new Set<number>();
+  // One spoken digit per piece, so a run can be as long as the longest order number, plus a sound-alike.
+  const maxPieces = Math.max(4, ...idLengths) + 1;
 
   const readRun = (start: number) => {
     const pieces: Piece[] = [];
     let i = start;
-    while (pieces.length < 4) {
+    while (pieces.length < maxPieces) {
       const p = piece(tokens, i);
       if (!p) break;
       pieces.push(p);
@@ -103,10 +109,9 @@ export function findOrderMentions(text: string, idLengths: number[], expectingOr
     if (!anchored && (soundAlike ? !expectingOrder : !exactLengths.has(candidates[0].length))) return;
     for (let k = start; k < end; k++) used.add(k);
     mentions.push({
-      heard: pieces.map((p) => p.word).join(" "),
-      candidates,
-      method: soundAlike ? "sound-alike" : digitsOnly ? "exact" : "spoken",
-      anchored,
+      mention: { heard: pieces.map((p) => p.word).join(" "), candidates, method: soundAlike ? "sound-alike" : digitsOnly ? "exact" : "spoken", anchored },
+      start,
+      end,
     });
   };
 
@@ -129,6 +134,27 @@ export function findOrderMentions(text: string, idLengths: number[], expectingOr
     i = Math.max(i, end - 1);
   }
   return mentions;
+}
+
+/**
+ * A pause can split one spoken order number across two caller lines ("Order 714." then "Two six."
+ * for 71426, Step 7 case D05). Reads the two lines as one answer and returns the order number only
+ * when the digits run across the line break and spell a complete order number: nothing is guessed,
+ * filled in, or taken from a near length. The caller decides when two lines are one answer.
+ */
+export function findSplitOrder(first: string, second: string, idLengths: number[], expectingOrder = false): OrderMention | null {
+  const head = words(first);
+  const tail = words(second);
+  if (!head.length || !tail.length || !piece(tail, 0)?.real) return null;
+  const exactLengths = new Set(idLengths);
+  // The first line already holds a complete order number: nothing is missing.
+  if (scan(head, idLengths, expectingOrder).some(({ mention }) => exactLengths.has(mention.candidates[0].length))) return null;
+  for (const { mention, start, end } of scan([...head, ...tail], idLengths, expectingOrder)) {
+    if (start >= head.length || end <= head.length) continue;
+    const candidates = mention.candidates.filter((c) => exactLengths.has(c.length));
+    if (candidates.length) return { ...mention, candidates };
+  }
+  return null;
 }
 
 export type OrderMatch = {

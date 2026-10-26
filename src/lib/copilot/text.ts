@@ -6,6 +6,8 @@ export function normalize(text: string): string {
     .toLowerCase()
     .replace(/[’‘`]/g, "'")
     .replace(/(\d),(\d{3})\b/g, "$1$2")
+    // Three or more single digits joined by hyphens are one number read digit by digit: "0-6-2-9-1" is 06291.
+    .replace(/\b\d(?:-\d){2,}\b/g, (run) => run.replace(/-/g, ""))
     // Recognition writes a spoken "4 to 7" as "4-7"; keep the words so both readings stay possible.
     .replace(/\b(\d{1,2})-(\d{1,2})\b/g, "$1 to $2")
     .replace(/[^\p{L}\p{N}'$@.\s-]/gu, " ")

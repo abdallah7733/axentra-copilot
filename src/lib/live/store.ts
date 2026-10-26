@@ -16,6 +16,7 @@ import {
   type TwilioCall,
   type TwilioDevice,
 } from "./engine";
+import { isShortReply, sendShortReply } from "./short-reply";
 
 /*
   Live presenter mode: a real call through the Milestone 1 Twilio number, with
@@ -57,6 +58,10 @@ export type LiveLine = {
   checkFailed?: boolean;
   /** A key answer the second model couldn't check: its audio was no longer held, or the engine has no check model. */
   checkSkipped?: "no-audio" | "no-model";
+  /** An agent line heard again in case it was the name read-back: nothing waits for it and its text stays as first heard. */
+  probe?: boolean;
+  /** What the second model heard on that line (text null: the check failed), and when (epoch ms). */
+  reheard?: { text: string | null; confidence: number | null; at: number };
 };
 
 export type EngineState = "checking" | "offline" | "online";
@@ -75,6 +80,12 @@ type LiveState = {
   callStartedAt: number | null;
   callEndedAt: number | null;
   lines: LiveLine[];
+  /**
+   * Phrases this call that never became a line: too little voice to send, or the fast model returned no words.
+   * Counted per side so a lost phrase shows up in Call details (22 Oct call: the refund sentence's card ending
+   * never appeared, with nothing on screen to say whether audio was lost).
+   */
+  dropped: Record<Side, { short: number; empty: number }>;
   delays: number[];
   levels: { agent: number; caller: number; agentInput: string } | null;
   mics: Mic[];
@@ -98,11 +109,14 @@ type LiveState = {
    * Re-checks a caller line with the engine's second speech model. Returns "started", or why it
    * couldn't: no audio held for it (only the last few caller phrases are kept), or no check model.
    * A key answer that can't be checked is marked on screen (not in a replay, which has no audio).
+   * `probe`: an agent line heard again in case it was the name read-back; its text stays as first heard
+   * and the second model's hearing is kept beside it (LiveLine.reheard).
    */
-  checkLine: (key: string) => "started" | "no-audio" | "no-model";
+  checkLine: (key: string, probe?: boolean) => "started" | "no-audio" | "no-model";
 };
 
 const MIC_KEY = "axentra-mic-label";
+const noDrops = (): Record<Side, { short: number; empty: number }> => ({ agent: { short: 0, empty: 0 }, caller: { short: 0, empty: 0 } });
 
 /** Shown on a projected screen, so keep only the country code and last four digits. */
 const maskNumber = (from: string | undefined) => {
@@ -171,10 +185,12 @@ export const useLive = create<LiveState>((set, get) => {
         endedAt: line.endedAtEpoch,
         final: true,
         confidence: line.confidence,
-        checking: line.checking,
+        checking: line.probe ? undefined : line.checking,
         firstHeard: line.firstHeard,
         checkFailed: line.checkFailed,
+        checked: line.checkSeconds !== undefined && !line.checkFailed && !line.checking && !line.probe ? true : undefined,
         availableAt: line.availableAtEpoch,
+        ...(line.reheard ? { reheard: line.reheard } : {}),
       },
     });
   }
@@ -215,15 +231,26 @@ export const useLive = create<LiveState>((set, get) => {
   }
 
   /** One queue per side so each speaker's phrases stay in order. */
-  function sideSink(side: Side, callEpoch: number) {
+  function sideSink(side: Side, callEpoch: number, turn: { agentEnd: number | null }) {
     let queue = Promise.resolve();
+    const drop = (why: "short" | "empty") => {
+      const dropped = get().dropped;
+      set({ dropped: { ...dropped, [side]: { ...dropped[side], [why]: dropped[side][why] + 1 } } });
+    };
     return (phrase: Phrase) => {
-      if (!phrase.samples) return;
+      const shortReply = sendShortReply(phrase, side, turn.agentEnd);
+      if (!phrase.samples || (phrase.short && !shortReply)) {
+        if (callEpoch === epoch) drop("short");
+        return;
+      }
+      if (side === "agent") turn.agentEnd = phrase.endedAt;
       const samples = phrase.samples;
       queue = queue
         .then(async () => {
           const result = await recognize(side, samples);
-          if (callEpoch !== epoch || !result.text) return;
+          if (callEpoch !== epoch) return;
+          if (shortReply && !isShortReply(result.text)) return drop("short");
+          if (!result.text) return drop("empty");
           // Kept for the second model's check: caller answers, and agent lines the copilot may ask about.
           recentAudio.set(`${side}-${phrase.id}`, samples);
           for (const key of [...recentAudio.keys()].slice(0, -RECENT_AUDIO)) recentAudio.delete(key);
@@ -254,7 +281,9 @@ export const useLive = create<LiveState>((set, get) => {
       await new Promise((r) => setTimeout(r, 200));
     }
     if (callEpoch !== epoch || currentCall !== call || !local || !remote) return;
-    const results = await Promise.allSettled([captureStream(local, sideSink("agent", callEpoch)), captureStream(remote, sideSink("caller", callEpoch))]);
+    // When the agent last stopped speaking, for the caller's short replies.
+    const turn = { agentEnd: null as number | null };
+    const results = await Promise.allSettled([captureStream(local, sideSink("agent", callEpoch, turn)), captureStream(remote, sideSink("caller", callEpoch, turn))]);
     const started = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
     if (callEpoch !== epoch || started.length < 2) {
       started.forEach((h) => h.close());
@@ -280,7 +309,8 @@ export const useLive = create<LiveState>((set, get) => {
     recentAudio.clear();
     // A check still running is dropped with the call (its result can't reach the next call), so settle
     // it now: the fast model's text stands, as a doubtful line, instead of "checking" for ever.
-    for (const l of get().lines) if (l.checking) updateLine(l.key, { checking: false, checkFailed: true, availableAtEpoch: epochNow() });
+    for (const l of get().lines)
+      if (l.checking) updateLine(l.key, l.probe ? { checking: false, reheard: { text: null, confidence: null, at: epochNow() } } : { checking: false, checkFailed: true, availableAtEpoch: epochNow() });
     set({ phase: "ready", status: message, callEndedAt: performance.now() });
     liveEvents.emit({ type: "call-ended", callId, at: epochNow() });
     void stopCaptures();
@@ -296,6 +326,7 @@ export const useLive = create<LiveState>((set, get) => {
     callStartedAt: null,
     callEndedAt: null,
     lines: [],
+    dropped: noDrops(),
     delays: [],
     levels: null,
     mics: [],
@@ -303,11 +334,11 @@ export const useLive = create<LiveState>((set, get) => {
     replaying: false,
     sopOpen: false,
 
-    checkLine: (key) => {
+    checkLine: (key, probe = false) => {
       const samples = recentAudio.get(key);
       const skipped = !get().health?.check ? "no-model" : !samples ? "no-audio" : null;
       if (skipped || !samples) {
-        if (skipped && !get().replaying) updateLine(key, { checkSkipped: skipped }, false);
+        if (skipped && !get().replaying && !probe) updateLine(key, { checkSkipped: skipped }, false);
         return skipped ?? "no-audio";
       }
       recentAudio.delete(key);
@@ -315,13 +346,17 @@ export const useLive = create<LiveState>((set, get) => {
       const began = performance.now();
       const heard = get().lines.find((l) => l.key === key);
       const fast = heard?.text ?? "";
-      // The copilot asked for this check and already holds the line back; only the screen needs to know.
-      updateLine(key, { checking: true }, false);
+      // The copilot asked for this check and already holds the line back (or, for a probe, counts it as heard); only
+      // the screen needs to know.
+      updateLine(key, probe ? { checking: true, probe: true } : { checking: true }, false);
+      const failed = (checkSeconds: number) =>
+        updateLine(key, probe ? { checking: false, checkSeconds, reheard: { text: null, confidence: null, at: epochNow() } } : { checking: false, checkFailed: true, checkSeconds, availableAtEpoch: epochNow() });
       recognize(heard?.side ?? "caller", samples, true).then(
         (result) => {
           if (callEpoch !== epoch) return;
           const checkSeconds = (performance.now() - began) / 1000;
-          if (!result.text) return updateLine(key, { checking: false, checkFailed: true, checkSeconds, availableAtEpoch: epochNow() });
+          if (!result.text) return failed(checkSeconds);
+          if (probe) return updateLine(key, { checking: false, checkSeconds, reheard: { text: result.text, confidence: result.confidence, at: epochNow() } });
           updateLine(key, {
             checking: false,
             text: result.text,
@@ -332,7 +367,7 @@ export const useLive = create<LiveState>((set, get) => {
           });
         },
         () => {
-          if (callEpoch === epoch) updateLine(key, { checking: false, checkFailed: true, checkSeconds: (performance.now() - began) / 1000, availableAtEpoch: epochNow() });
+          if (callEpoch === epoch) failed((performance.now() - began) / 1000);
         }
       );
       return "started";
@@ -409,6 +444,7 @@ export const useLive = create<LiveState>((set, get) => {
             status: "Incoming call",
             callerFrom: maskNumber(call.parameters.From),
             lines: [],
+            dropped: noDrops(),
             delays: [],
             levels: null,
             error: null,
@@ -440,7 +476,7 @@ export const useLive = create<LiveState>((set, get) => {
     hangUp: () => currentCall?.disconnect(),
     clearTranscript: () => {
       cancelReplay();
-      set({ lines: [], delays: [], levels: null, callStartedAt: null, callEndedAt: null });
+      set({ lines: [], dropped: noDrops(), delays: [], levels: null, callStartedAt: null, callEndedAt: null });
       liveEvents.emit({ type: "cleared" });
     },
 
@@ -451,7 +487,7 @@ export const useLive = create<LiveState>((set, get) => {
       epoch++;
       startCall(`replay-${Date.now()}`);
       const began = performance.now();
-      set({ replaying: true, lines: [], delays: [], levels: null, error: null, callerFrom: "Replay, no call", callStartedAt: began, callEndedAt: null });
+      set({ replaying: true, lines: [], dropped: noDrops(), delays: [], levels: null, error: null, callerFrom: "Replay, no call", callStartedAt: began, callEndedAt: null });
       script.forEach((l, i) => {
         replayTimers.push(
           setTimeout(() => {

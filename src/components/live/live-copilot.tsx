@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode, type Ref } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowSquareOutIcon, CheckCircleIcon, CheckIcon, LockSimpleIcon, PackageIcon, QuotesIcon, ShieldWarningIcon, WarningIcon, XIcon } from "@phosphor-icons/react";
 import { Badge } from "@/components/ui/badge";
@@ -9,7 +9,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Explain, LiveDot, Mono, PanelHeader, ease } from "@/components/workspace/bits";
 import { sameWording } from "@/lib/copilot/assist";
-import { approvalReadiness, isAcknowledgement, type Alert, type Evidence, type SopStep } from "@/lib/copilot/copilot";
+import { approvalReadiness, isAcknowledgement, type Alert, type CopilotView, type Evidence, type SopStep } from "@/lib/copilot/copilot";
 import { money } from "@/lib/demo-data";
 import { pack, useCopilot } from "@/lib/live/copilot-store";
 import { toEpoch, useLive } from "@/lib/live/store";
@@ -60,7 +60,7 @@ const TYPE_LABEL: Record<string, string> = {
  * When recognition got a caller's answer wrong, the agent types what the caller said. The
  * copilot checks it word for word against the order; it never shows the agent the record.
  */
-function TypeHeard({ lineKey, target }: { lineKey: string; target: string }) {
+function TypeHeard({ lineKey, target, inputRef, note }: { lineKey: string; target: string; inputRef?: Ref<HTMLInputElement>; note?: ReactNode }) {
   const correct = useCopilot((s) => s.correct);
   const [text, setText] = useState("");
   const [refused, setRefused] = useState(false);
@@ -74,9 +74,10 @@ function TypeHeard({ lineKey, target }: { lineKey: string; target: string }) {
   };
   return (
     <form onSubmit={submit} className="space-y-1 pt-1">
-      <p className="text-[11px] text-muted-foreground">Heard it differently? Type the caller&rsquo;s words, not &ldquo;checked&rdquo; or &ldquo;confirmed&rdquo;.</p>
+      <p className="text-[11px] text-muted-foreground">{note ?? <>Heard it differently? Type the caller&rsquo;s words, not &ldquo;checked&rdquo; or &ldquo;confirmed&rdquo;.</>}</p>
       <div className="flex items-center gap-1.5">
         <Input
+          ref={inputRef}
           value={text}
           onChange={(e) => {
             setText(e.target.value);
@@ -92,6 +93,110 @@ function TypeHeard({ lineKey, target }: { lineKey: string; target: string }) {
       </div>
       {refused && <p className="text-[11px] text-amber-700 dark:text-amber-500">That&rsquo;s an acknowledgement, not what the caller said. Type their words.</p>}
     </form>
+  );
+}
+
+/** The agent is typing or choosing in this element: an identity field never takes the cursor from it. */
+const inUse = (el: Element | null) => el instanceof HTMLElement && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
+
+/** Focuses the field when it appears (taken from a button too: otherwise Enter would press the button last clicked), and on its key. */
+function useFieldKey(key: string) {
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!inUse(document.activeElement)) input.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() !== key || e.metaKey || e.ctrlKey || e.altKey || inUse(e.target as Element | null)) return;
+      e.preventDefault();
+      input.current?.focus();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [key]);
+  return input;
+}
+
+/**
+ * The caller's name field, ready from the moment the answer arrives, while the second speech model still checks
+ * it: on the 21 Oct stage call about 10 s went on reaching a field inside a card that came 2.5 s later. N moves
+ * to it and Enter uses the words. It is one field for the whole answer, so typing survives the cards changing.
+ */
+function NameField({ entry }: { entry: NonNullable<CopilotView["nameEntry"]> }) {
+  const input = useFieldKey("n");
+  return (
+    <div className="rounded-lg border-2 border-cyan bg-cyan/5 p-3" aria-label="Caller's name">
+      <div className="flex items-center justify-between gap-2 text-xs">
+        <span className="font-medium">Caller&rsquo;s name</span>
+        <span className="text-muted-foreground">
+          {entry.checking
+            ? "Checking what the caller said…"
+            : entry.readBack === "waiting" && entry.readBackProbe
+              ? `Checking whether your ${entry.readBackProbe} line was the read-back…`
+              : entry.readBack === "waiting"
+                ? "Waiting for the caller’s yes (up to 8 s)…"
+                : entry.readBack === "expired"
+                  ? "No reply to the read-back: ask again or type the name"
+                  : entry.readBack === "refused"
+                    ? entry.readBackRecovery === "type"
+                      ? "Yes not confirmed: type the name only if you clearly heard it"
+                      : "Not confirmed by the caller: ask for the full name again"
+                    : null}
+        </span>
+      </div>
+      <TypeHeard
+        lineKey={entry.key}
+        target="name"
+        inputRef={input}
+        note={
+          <>
+            Type the caller&rsquo;s words and press <kbd className="font-mono">Enter</kbd>. <kbd className="font-mono">N</kbd> comes back here.
+            {entry.readBack === "available" && entry.readBackRepeat && <> The caller asked to hear it again: say the same read-back once more and wait for a plain yes.</>}
+            {entry.readBack === "available" && !entry.readBackRepeat && <> Or say the full name you heard back as a question (&ldquo;That&rsquo;s &hellip;, is that right?&rdquo;) and wait for the caller&rsquo;s yes.</>}
+          </>
+        }
+      />
+    </div>
+  );
+}
+
+/**
+ * The street and city field, the same way as the name field: ready from the moment the caller's answer arrives
+ * (22 Oct call: about 20 s went on the address, typed into a card that came after both models were wrong). A moves
+ * to it and Enter uses the words. Only what the caller said is typed; the order's address is never shown.
+ */
+function AddressField({ entry }: { entry: NonNullable<CopilotView["addressEntry"]> }) {
+  const input = useFieldKey("a");
+  return (
+    <div className="rounded-lg border-2 border-cyan bg-cyan/5 p-3" aria-label="Caller's street and city">
+      <div className="flex items-center justify-between gap-2 text-xs">
+        <span className="font-medium">Caller&rsquo;s street and city</span>
+        <span className="text-muted-foreground">
+          {entry.checking
+            ? "Checking what the caller said…"
+            : entry.readBack === "waiting"
+              ? "Waiting for the caller’s yes (up to 8 s)…"
+              : entry.readBack === "expired"
+                ? "No reply to the read-back: ask again or type the street and city"
+                : entry.readBack === "refused"
+                  ? entry.readBackRecovery === "type"
+                    ? "Yes not confirmed: type the street and city only if you clearly heard them"
+                    : "Not confirmed by the caller: ask for the street and city again"
+                  : null}
+        </span>
+      </div>
+      <TypeHeard
+        lineKey={entry.key}
+        target="address"
+        inputRef={input}
+        note={
+          <>
+            Type the street and city as the caller said them and press <kbd className="font-mono">Enter</kbd>. <kbd className="font-mono">A</kbd> comes back here.
+            If you didn&rsquo;t hear it clearly, ask again instead.
+            {entry.readBack === "available" && entry.readBackRepeat && <> The caller asked to hear it again: say the same street and city once more and wait for a plain yes.</>}
+            {entry.readBack === "available" && !entry.readBackRepeat && <> Or say the street and city you heard back as one question (&ldquo;So that&rsquo;s &hellip;, is that right?&rdquo;) and wait for the caller&rsquo;s yes.</>}
+          </>
+        }
+      />
+    </div>
   );
 }
 
@@ -164,6 +269,8 @@ function Steps({ steps }: { steps: SopStep[] }) {
 }
 
 function AlertCard({ alert }: { alert: Alert }) {
+  const nameKey = useCopilot((s) => s.view.nameEntry?.key);
+  const addressKey = useCopilot((s) => s.view.addressEntry?.key);
   const danger = alert.level === "danger" && !alert.resolved;
   return (
     <motion.div
@@ -192,8 +299,9 @@ function AlertCard({ alert }: { alert: Alert }) {
           {alert.evidence.slice(-2).map((ev) => (
             <Quote key={ev.key} ev={ev} className="flex" />
           ))}
-          {/^verification-(failed|locked)/.test(alert.id) && alert.evidence[0]?.side === "caller" && (
-            <TypeHeard lineKey={alert.evidence[0].key} target={alert.id.endsWith("address") ? "address" : "name"} />
+          {/* The name and the address are typed in their own fields; this one is for an answer neither field holds. */}
+          {/^verification-(failed|locked)/.test(alert.id) && alert.evidence[0]?.side === "caller" && alert.evidence[0].key !== nameKey && alert.evidence[0].key !== addressKey && (
+            <TypeHeard lineKey={alert.evidence[0].key} target={alert.id.endsWith("name") ? "name" : "address"} />
           )}
         </div>
         <Mono className="shrink-0 text-[10px] text-muted-foreground">{alert.sopRef.replace(`${pack.sop.id} · `, "")}</Mono>
@@ -287,8 +395,11 @@ export function LiveCopilot({ className }: { className?: string }) {
         </Section>
 
         {/* Alerts and please-confirm prompts come first: they are what the agent must act on now. */}
-        {(openAlerts.length > 0 || prompts.length > 0) && (
+        {(openAlerts.length > 0 || prompts.length > 0 || view.nameEntry || view.addressEntry) && (
           <div className="space-y-2">
+            {/* First and in one place, so it never moves or remounts while the agent types. */}
+            {view.nameEntry && <NameField entry={view.nameEntry} />}
+            {view.addressEntry && <AddressField entry={view.addressEntry} />}
             <AnimatePresence initial={false}>
               {openAlerts.map((a) => (
                 <AlertCard key={a.id} alert={a} />
@@ -307,7 +418,7 @@ export function LiveCopilot({ className }: { className?: string }) {
                 <div className="min-w-0 flex-1 space-y-1">
                   <p className="text-sm font-medium">{p.askAgain ? "Ask again" : "Please confirm"}</p>
                   <p className="text-xs leading-relaxed">{p.text}</p>
-                  {typeable(p.target, p.evidence) && <TypeHeard lineKey={p.evidence!.key} target={p.target} />}
+                  {typeable(p.target, p.evidence) && p.evidence!.key !== view.nameEntry?.key && p.evidence!.key !== view.addressEntry?.key && <TypeHeard lineKey={p.evidence!.key} target={p.target} />}
                   {/* The agent says what the caller's problem is; the copilot's guess is never just confirmed. */}
                   {p.target === "issue" && (
                     <div className="flex flex-wrap gap-1.5 pt-1">
@@ -388,6 +499,11 @@ export function LiveCopilot({ className }: { className?: string }) {
                   Checking whether the customer changed their choice in &ldquo;{rec.checkingChoice.text}&rdquo;. Nothing can be approved until the check settles.
                 </p>
               )}
+              {rec.checkingIdentity && !rec.suspended && (
+                <p className="text-xs text-amber-700 dark:text-amber-500">
+                  Checking the caller&rsquo;s reply to your read-back, &ldquo;{rec.checkingIdentity.text}&rdquo;. Nothing can be approved until the check settles.
+                </p>
+              )}
               {/* Before anything is prepared, an approval that doesn't count still says why, at once (I-24). */}
               {!rec.prepared && rec.staleApproval && (
                 <p className="text-xs text-amber-700 dark:text-amber-500">
@@ -457,8 +573,12 @@ export function LiveCopilot({ className }: { className?: string }) {
                           </span>
                         )}
                         {rec.suspended
-                          ? "It stands again if the check hears the same choice."
-                          : rec.checkingChoice
+                          ? rec.checkingIdentity
+                            ? "It stands again if the caller didn't reject the read-back."
+                            : "It stands again if the check hears the same choice."
+                          : rec.checkingIdentity
+                            ? "It can be approved once the check settles, unless the caller rejected the read-back."
+                            : rec.checkingChoice
                             ? "It can be approved once the check settles."
                             : rec.approval.state === "not-ready"
                           ? "Confirm the customer's choice first."
