@@ -218,6 +218,44 @@ test("stricter rules: another name, someone else's, a different spelling or a co
   }
 });
 
+test("stricter rules: someone else's, another of the same name, the past, an email for the name, an email's marks (traps left after the first re-score)", () => {
+  const name: [string, RegExp][] = [
+    ["Hello? Yes. Sam Miller's house.", /someone else's: Miller's/],
+    ["Mrs Miller, the account is Sam's.", /someone else's: Sam's/],
+    ["Tom Baker. This number used to be Sam Miller's.", /the past: used to.*someone else's: Miller's/],
+    ["Sam Miller the Third.", /someone else: the Third/],
+    ["Sam Miller, the second one.", /someone else: the second/],
+    ["Sam Miller the younger.", /someone else: the younger/],
+    ["sam miller at example mail dot com", /an email, not a name/],
+  ];
+  for (const [t, why] of name) {
+    assert.equal(matchName(t, customer), "match", `${t}: today`);
+    assert.equal(matchName(t, customer, { strict: true }), "ambiguous", t);
+    assert.match(strictFlags("name", t, customer).join("; "), why, t);
+  }
+  const address: [string, RegExp][] = [
+    ["It used to be Hill Road in Dallas.", /the past: used to/],
+    ["My previous address was Hill Road in Dallas.", /the past: previous/],
+    ["We moved from Hill Road in Dallas.", /the past: moved from/],
+    ["s dot miller at example dot mail dot com", /another mark in the email: dot/],
+    ["s underscore miller at example mail dot com", /another mark in the email: underscore/],
+    ["s dash miller at example mail dot com", /another mark in the email: dash/],
+    ["s dot miller at example mail dot com dot", /a mark after the email: dot/],
+    ["s dot miller at example mail dot com, no, s dot miller one at example mail dot com.", /a number in the email: one/],
+  ];
+  for (const [t, why] of address) {
+    assert.equal(matchAddress(t, customer), "match", `${t}: today`);
+    assert.equal(matchAddress(t, customer, { strict: true }), "ambiguous", t);
+    assert.match(strictFlags("address", t, customer).join("; "), why, t);
+  }
+  // Still the caller's own: "'s" heard for "is" or after the name alone (10 Oct), a sentence that starts with "The second",
+  // the record's own marks however they are said or written, a mark left out, and a number before the email.
+  for (const t of ["Sam Miller's.", "My name is Sam Miller's.", "This is Sam Miller's.", "Sam Miller's my name.", "Sam Miller's speaking.", "Sam Miller's. Thank you.", "Yes, it's Sam Miller. The second time I'm calling, actually.", "Sam Miller. I used the tablet once."])
+    assert.equal(matchName(t, customer, { strict: true }), "match", t);
+  for (const t of ["s dot miller at example dash mail dot com", "It's s dot miller at example hyphen mail dot com, thanks.", "es dot miller at example dash mail dot com", "S dot Miller at example-mail dot com.", "s dot miller at example mail dot com", "One moment. s dot miller at example dash mail dot com.", "s dot miller at example dash mail dot com. Sorry, example dash mail dot com.", "We just moved to Hill Road in Dallas."])
+    assert.equal(matchAddress(t, customer, { strict: true }), "match", t);
+});
+
 test("stricter rules: a read-back never says back the record for an answer that said more", () => {
   assert.equal(readBackFits("address", "Church Hill Rode in Dallas.", customer), true, "today");
   assert.equal(readBackFits("address", "Church Hill Rode in Dallas.", customer, { strict: true }), false);

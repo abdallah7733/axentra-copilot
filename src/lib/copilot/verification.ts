@@ -227,6 +227,16 @@ const US_STATES: Record<string, string> = {
 /** Around an email: "It's s dot miller at example mail dot com, thanks." */
 const EMAIL_LEAD = /^(it's|its|it|is|my|the|email|e|mail|address|yes|yeah|sure|ok|okay|so|that's|thats)$/;
 const EMAIL_TAIL = /^(please|thanks|thank|you|yes|yeah)$/;
+/** How a caller says the marks between an email's words. */
+const EMAIL_SEPARATOR: Record<string, string> = { dot: ".", dash: "-", hyphen: "-", underscore: "_" };
+/** After the name, these make it another person of the same name: "Sam Miller the Third", "Sam Miller, the younger". */
+const GENERATION = /^(second|third|fourth|fifth|2nd|3rd|4th|5th|younger|elder|older)$/;
+/** Words that put the answer in the past: "my previous address", "formerly", "my maiden name" ("used to" and "moved from" too). */
+const PAST = /^(formerly|previously|former|previous|maiden|nee|née)$/;
+/** After a name said with "'s", these make it "is", not someone's: "Sam Miller's my name", "Sam Miller's speaking". */
+const IS_AFTER = /^(my|the|me|here|speaking|calling|it|this|right|correct|fine|ok|okay|yes|yeah|on|in|at|a|an|also|again|too|and)$/;
+/** Things a caller says belong to someone: "the account is Sam's". */
+const OWNED = /^(account|number|phone|order|line|card|house|home|place|email|address|package|tablet|item)$/;
 
 /** Every place the words of `run` are said together, in order; `fits` decides when a said word stands for a run word. */
 const runsAt = (tokens: string[], run: string[], fits = (said: string, w: string) => said === w): number[] =>
@@ -261,14 +271,16 @@ const writtenTogether = (text: string, first: string, second: string) =>
  * - Name and address: another spelling of a record word beside it ("Sam Miller, Mellor"); words that make it someone
  *   else's ("my husband", "on behalf of", "Junior"); a spelled word that isn't the record's ("M E L L O R"); a correction
  *   followed by another name or place ("Sam Miller. Sorry, Sam Baker.", sentence-initial capitals and lower-case
- *   sound-alikes included).
+ *   sound-alikes included); the past ("It used to be Hill Road", "my previous address", "moved from").
  * - Name: "for", "about" or "regarding" straight before the name; another capitalised name beside the record's
- *   ("Laura Anderson Smith", "Mary Laura Anderson", "Sam and Jane Miller").
+ *   ("Laura Anderson Smith", "Mary Laura Anderson", "Sam and Jane Miller"); "the Third", "the younger" after it; the
+ *   name as someone's ("Sam Miller's house", "the account is Sam's"); an email given for the name.
  * - Address: the street's words apart, or another word straight before or after the street ("Church Hill Road",
  *   "Hill Road Extension"; a house number, filler, the city and, after it, a flat or unit are fine); another street
  *   type; another state ("Oklahoma", or "Dallas, OK" written as a code); a place word ("near", "North Dallas",
  *   "Lake Dallas", a capitalised word beside the city).
- * - Email: anything but the record's email between the usual lead-in and thanks ("... dot com dot uk").
+ * - Email: anything but the record's email between the usual lead-in and thanks ("... dot com dot uk"); a mark said
+ *   where the order has another ("s underscore miller", "example dot mail") or after it ("dot com dot"); a number in it.
  * `readBack`: for deciding whether a read-back may repeat the answer (readBackFits). A sound-alike of the record is what a
  * read-back is for, so it isn't flagged, and the record's words are found by sound too ("Church Hil Road").
  */
@@ -301,6 +313,24 @@ export function strictFlags(which: "name" | "address", raw: string, customer: Cu
     const extra = said.filter((s) => !fine(s));
     if (extra.length) flags.add(`other words with the email: ${extra.map(shown).join(", ")}`);
     else if (!runsAt(said, email, fits).length) flags.add("the email isn't said in one run, as on the order");
+    // A mark said between two of its words must be the order's ("s dot miller", "example dash mail"). One said where the
+    // order has another, or after the last word, is another email ("s underscore miller", "example dot mail", "dot com
+    // dot"). A mark not said at all may only be how it was written ("example-mail"), so it isn't counted. Nor is a number
+    // said inside it ("s dot miller one at ...").
+    const all = answerWords(text.replace(/@/g, " at ")).filter((t) => !HESITATION.test(t));
+    const order = customer.emailFull.toLowerCase().split(/([.\-_@])/).filter(Boolean);
+    const inEmail = (s: string | undefined) => !!s && email.some((w) => fits(s, w));
+    all.forEach((s, k) => {
+      const [a, b] = [all[k - 1], all[k + 1]];
+      if (s in EMAIL_SEPARATOR && inEmail(a)) {
+        if (!inEmail(b)) flags.add(`a mark after the email: ${shown(s)}`);
+        else if (!order.some((w, p) => fits(a, w) && order[p + 1] === EMAIL_SEPARATOR[s] && order[p + 2] !== undefined && fits(b, order[p + 2])))
+          flags.add(`another mark in the email: ${shown(s)}`);
+      }
+      const number = /^\d/.test(s) || numberWord(s) !== null;
+      const beside = (x: string | undefined) => inEmail(x) || (!!x && x in EMAIL_SEPARATOR);
+      if (number && !email.includes(s) && beside(a) && (b === undefined || beside(b))) flags.add(`a number in the email: ${shown(s)}`);
+    });
     return [...flags];
   }
 
@@ -313,6 +343,12 @@ export function strictFlags(which: "name" | "address", raw: string, customer: Cu
   // A word of the record, word for word or by sound (the sound-alikes are flagged above).
   const like = (said: string, w: string) => said === w || (said.length > 1 && !isFiller(said) && !COMMON.has(said) && soundsLike(said, w));
   for (const p of tokens.filter((t) => PROXY.test(t))) flags.add(`said for someone else: ${shown(p)}`);
+  // Said as the past: "It used to be Hill Road", "my previous address", "we moved from Hill Road", "my maiden name".
+  tokens.forEach((t, i) => {
+    const next = tokens[i + 1] ?? "";
+    if (PAST.test(t) || (t === "used" && next === "to") || (t === "moved" && /^(from|out|away)$/.test(next)))
+      flags.add(`said as the past: ${t === "used" || t === "moved" ? `${shown(t)} ${next}` : shown(t)}`);
+  });
   const recordRuns = [...recordWords, nameWords.join(""), streetWords.join(""), cityWords.join(""), "usa"];
   for (const run of spelledLetters(tokens)) if (!recordRuns.includes(run)) flags.add(`spelled out: ${run.toUpperCase()}`);
 
@@ -336,6 +372,31 @@ export function strictFlags(which: "name" | "address", raw: string, customer: Cu
     const isName = (t: string) => nameWords.some((w) => like(t, w));
     const first = tokens.findIndex(isName);
     if (first > 0 && FOR_SOMEONE.test(tokens[first - 1])) flags.add(`said for someone else: ${shown(tokens[first - 1])}`);
+    // An email for the name ("sam miller at example mail dot com") is not the name.
+    if (tokens.includes("at") && (tokens.includes("com") || tokens.includes("dot") || text.includes("@"))) flags.add("an email, not a name");
+    // Another person of the same name: "Sam Miller the Third", "Sam Miller, the younger"; not "Sam Miller. The second
+    // time I've called."
+    tokens.forEach((t, i) => {
+      const suffix = tokens[i + 2] ?? "";
+      if (isName(t) && tokens[i + 1] === "the" && GENERATION.test(suffix) && new RegExp(`(?<![\\p{L}'])${escaped(t)}(?:'s)?[\\s,]+the\\s+${escaped(suffix)}(?![\\p{L}])`, "iu").test(text))
+        flags.add(`said for someone else: the ${shown(suffix)}`);
+    });
+    // Someone else's: the name said with "'s" straight before another word ("Sam Miller's house"), or after "be" or "was"
+    // ("used to be Sam Miller's"), or after "the account is" ("the account is Sam's"). Not "Sam Miller's." alone, heard
+    // for "Sam Miller." on 10 Oct, nor "Sam Miller's my name", where it means "is".
+    const asWrittenWords = words(text).filter((w) => !HESITATION.test(w.replace(/'s$/, "")));
+    tokens.forEach((t, i) => {
+      const said = asWrittenWords[i] ?? "";
+      if (!isName(t) || !said.endsWith("'s")) return;
+      let j = i - 1;
+      while (j >= 0 && isName(tokens[j])) j--;
+      const [before, after] = [tokens[j], tokens[i + 1]];
+      const owned =
+        (after !== undefined && !IS_AFTER.test(after) && writtenTogether(text, said, after)) ||
+        (before !== undefined && /^(be|been|was|were)$/.test(before)) ||
+        (before === "is" && OWNED.test(tokens[j - 1] ?? ""));
+      if (owned) flags.add(`said as someone else's: ${shown(said)}`);
+    });
     // Another name beside the record's, "and" passed over: written with a capital, not a title or an everyday word.
     const beside = (i: number, step: number) => (tokens[i + step] === "and" ? tokens[i + 2 * step] : tokens[i + step]);
     tokens.forEach((t, i) => {
