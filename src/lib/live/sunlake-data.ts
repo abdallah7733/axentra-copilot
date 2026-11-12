@@ -150,6 +150,10 @@ export const sunlake: ClientPack = {
     nameReadBack: process.env.NEXT_PUBLIC_NAME_READ_BACK === "1",
     // The address read-back, allowed in the development console on 23 Oct with the same conditions; its own build setting.
     addressReadBack: process.env.NEXT_PUBLIC_ADDRESS_READ_BACK === "1",
+    // Stricter matching, for the development console only (his "Stricter matching", 12 Nov): every spoken identity match
+    // waits for the agent's press, and a match that says more than the record is asked again. Build settings, off unless set.
+    agentConfirmsMatch: process.env.NEXT_PUBLIC_AGENT_CONFIRMS_MATCH === "1",
+    strictMatch: process.env.NEXT_PUBLIC_STRICT_MATCH === "1",
     authority: [
       { upTo: 500, approver: "Agent (Tier 1)", agentCanApprove: true, row: 0 },
       { upTo: 1500, approver: "Team Lead", agentCanApprove: false, row: 1 },

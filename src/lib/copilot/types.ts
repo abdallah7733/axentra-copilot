@@ -139,6 +139,19 @@ export type Policy = {
    * confirmed by caller", never as recognition.
    */
   addressReadBack?: boolean;
+  /**
+   * No name or address verifies from speech alone (his "Stricter matching", 12 Nov, after the 11 Nov false match calls:
+   * "Laura Anderton" was written "Laura Anderson" by both speech models). A spoken answer that matches the record word for
+   * word waits for the agent's Confirmed press, labelled "confirmed by the agent". Typing, and a read-back's checked yes,
+   * are unchanged. Off unless the build sets it.
+   */
+  agentConfirmsMatch?: boolean;
+  /**
+   * An answer that has every word of the record but says more that could change who or where it means ("Church Hill Road",
+   * "for my husband, Sam Miller", "Sam Miller, M E L L O R") is asked again, never a match (register I-54; see
+   * strictFlags). Off unless the build sets it.
+   */
+  strictMatch?: boolean;
   authority: AuthorityBand[];
   refundTiming: string;
   /** A verb phrase that follows "it": "ships the same day by expedited shipping". Say when it ships, never when it arrives. */
