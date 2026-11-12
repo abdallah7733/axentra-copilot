@@ -2,7 +2,7 @@ import { findOrderMentions, findSplitOrder, matchOrder, type MentionMethod, type
 import { agentAsksChoice, agentAsksFor, agentCommits, agentDisclosesFactor, agentOffers, escalationWords, readChoice, readIntent, safetyWords, type Choice } from "./signals";
 import { findAffirmed, normalize, repeatsItself, soundsLike, words as textWords } from "./text";
 import type { AgentAction, AuthorityBand, ClientPack, Customer, Order, Side, TranscriptEvent } from "./types";
-import { COMMON, deniesIdentity, isFiller, matchAddress, matchName, namesAnother, readBackFits, soundsLikeRecord, spelledLetters, strictFlags } from "./verification";
+import { COMMON, deniesIdentity, isFiller, matchAddress, matchName, namesAnother, readBackFits, soundsLikeRecord, spelledLetters, strictFlags, withoutExamples } from "./verification";
 
 /*
   The copilot's rules layer. `analyze` rebuilds the whole copilot view from the
@@ -1331,6 +1331,17 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       // Typed by the agent: no sound-alike leniency. Anything short of a match is a wrong answer.
       factor.state = "asking";
       pending.result = "mismatch";
+    } else if (
+      pack.policy.strictMatch &&
+      !deniesIdentity(heard) &&
+      (result === "close" || soundsLikeRecord(factor.id, heard, customer)) &&
+      strictFlags(factor.id, heard, customer, { readBack: true }).length
+    ) {
+      // With stricter matching, a sound-alike that also says more ("It's for my husband, Sam Millar.", "Church Hill Rode")
+      // is asked again, as the exact answer is: no Confirm, never a failed attempt (review of C10, 12 Nov).
+      factor.state = "confirm";
+      factor.confirmReason = "ambiguous";
+      pending.result = "ambiguous";
     } else if (!deniesIdentity(heard) && (result === "close" || soundsLikeRecord(factor.id, heard, customer))) {
       // Close to the record but not a clear match: the agent decides; never a failed attempt.
       factor.state = "confirm";
@@ -1440,11 +1451,13 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           // A later line of the same answer that corrects it withdraws the press (independent review of C7, 23 Oct).
           const answer = corrected.find((l) => l.key === factor.evidence!.key);
           if (answer?.side === "caller") lastMatch[factor.id as "name" | "address"] = { line: answer, heard: factor.heard ?? answer.text, end: answer.endedAt };
-        } else if (factor.state === "ok" && factor.held && factor.evidence && !locked) {
+        } else if (factor.state === "ok" && factor.held && factor.evidence && !locked && !answerCheckingAt(factor.id, a.at)) {
           // A spoken match held for the agent (Policy.agentConfirmsMatch): the press verifies it, recorded as the agent's
           // confirmation, never as recognition. It counts whenever the match is held, as the match itself would have
           // verified then: a refused read-back of an earlier answer doesn't stop it (the caller's own email after a "No").
           // A later line of the same answer that corrects it, or a refused read-back of this one, still withdraws it.
+          // Like the Confirm press, it waits while part of the caller's own answer is still being checked (review of C10,
+          // 12 Nov: "Sorry, that's Church Hill Road." was on the console, and the order showed until its check landed).
           if (pending?.factor === factor) pending = null;
           factor.held = undefined;
           confirmedByPress.add(factor.id);
@@ -1695,8 +1708,11 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           continue;
         }
         [m.heard, m.end] = [`${m.heard} ${line.text}`, line.endedAt];
-        if (resultFor(id, m.heard) !== "ambiguous") continue;
+        // A match still held for the agent's press is withdrawn by any later line that leaves the answer short of a match
+        // ("Sam Miller." then "Sorry, Millar."): the card would quote only the first line as matching (review of C10, 12 Nov).
         const wasHeld = !!f.held;
+        const joined = resultFor(id, m.heard);
+        if (joined !== "ambiguous" && !(wasHeld && joined !== "match")) continue;
         Object.assign(f, { state: "confirm", confirmReason: "ambiguous", heard: m.heard, heardFirst: m.heard, evidence: ev, knownAt: undefined, method: undefined, held: undefined });
         confirmedByPress.delete(id);
         verifiedAt = undefined;
@@ -1718,24 +1734,15 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       // Spelling the name ("M I L L E R.", "Miller with two Ls.", "That's Miller, double L.") after "Could you spell the last
       // name?" adds nothing to a doubtful answer, so it stays as it was. Spelled letters that make another name don't
       // count as spelling (second review of C7, 23 Oct: it was taken as a second name).
-      const spelledRuns = (w: string[]) => {
-        const runs: string[] = [];
-        let run = "";
-        for (const y of [...w, ""]) {
-          if (/^[a-z]$/.test(y)) run += y;
-          else {
-            if (run.length > 1) runs.push(run);
-            run = "";
-          }
-        }
-        return runs;
-      };
-      const spellsOther = (t: string) => spelledRuns(textWords(t)).some((r) => !nameParts.some((p) => r === p || soundsLike(r, p)));
+      // "M I double L E R", "M, I, two Ls, E, R" and "M as in Mary" spell it too (review of C10, 12 Nov: the held card asks
+      // for the spelling, and the record's own spelling read as another name).
+      const spelledRuns = (w: string[]) => spelledLetters(w, 2);
+      const spellsOther = (t: string) => spelledRuns(textWords(t)).some((r) => r !== nameParts.join("") && !nameParts.some((p) => r === p || soundsLike(r, p)));
       const spellsName = (t: string) => {
-        const w = textWords(t).map((y) => y.replace(/'s$/, ""));
+        const w = withoutExamples(textWords(t).map((y) => y.replace(/'s$/, "")));
         if (spellsOther(t)) return false;
         const rest = w.filter((y) => !/^[a-z]$/.test(y) && !nameParts.some((p) => soundsLike(y, p)));
-        return w.some((y) => /^[a-z]$/.test(y) || /^[a-z]s$/.test(y)) && rest.every((y) => isFiller(y) || /^[a-z]s$/.test(y) || /^(with|two|double|an|a|one|it|its|it's|that|that's|thats|is|spelled|spelt|and|as|in|like|letter|letters|yes|yeah)$/.test(y));
+        return w.some((y) => /^[a-z]$/.test(y) || /^[a-z]s$/.test(y)) && rest.every((y) => isFiller(y) || /^[a-z]s$/.test(y) || /^(with|two|double|three|triple|an|a|one|it|its|it's|that|that's|thats|is|spelled|spelt|and|as|in|like|letter|letters|yes|yeah)$/.test(y));
       };
       // A line about the street and city or the email is never a name ("It's Hill Road in Dallas.", the email with
       // "miller" in it); a line about the name says part of it, sounds like it, or names someone else (namesAnother).
@@ -2672,7 +2679,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     const heard = f.heard ?? f.evidence?.text ?? "";
     // The plain match, without the stricter rules: only an answer that would have matched is described this way.
     const plain = f.id === "name" ? matchName(heard, customer) : matchAddress(heard, customer);
-    return pack.policy.strictMatch && f.confirmReason === "ambiguous" && plain === "match" ? strictFlags(f.id, heard, customer) : [];
+    if (!pack.policy.strictMatch || f.confirmReason !== "ambiguous") return [];
+    return plain === "match" ? strictFlags(f.id, heard, customer) : plain === "close" || soundsLikeRecord(f.id, heard, customer) ? strictFlags(f.id, heard, customer, { readBack: true }) : [];
   };
   for (const f of [name, address]) {
     if (f.state === "ok" && f.held && f.evidence && !locked) {

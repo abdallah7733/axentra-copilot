@@ -17,9 +17,23 @@ import { sunlake } from "@/lib/live/sunlake-data";
 */
 const customer = sunlake.customers.find((c) => c.id === sunlake.callerCustomerId)!;
 const T = Date.UTC(2026, 10, 12, 12);
-type L = { side: "caller" | "agent"; text: string; s: number; e: number; checked?: boolean };
+type L = { side: "caller" | "agent"; text: string; s: number; e: number; checked?: boolean; checking?: boolean; availableAt?: number; heldAt?: number };
 const timed = (lines: L[]): TranscriptEvent[] =>
-  lines.map((l, i) => ({ callId: "CA-sm", seq: i + 1, key: `k${i + 1}`, side: l.side, text: l.text, startedAt: T + l.s, endedAt: T + l.e, final: true, confidence: 0.9, ...(l.checked ? { checked: true } : {}) }));
+  lines.map((l, i) => ({
+    callId: "CA-sm",
+    seq: i + 1,
+    key: `k${i + 1}`,
+    side: l.side,
+    text: l.text,
+    startedAt: T + l.s,
+    endedAt: T + l.e,
+    final: true,
+    confidence: 0.9,
+    ...(l.checked ? { checked: true } : {}),
+    ...(l.checking ? { checking: true } : {}),
+    ...(l.availableAt !== undefined ? { availableAt: T + l.availableAt } : {}),
+    ...(l.heldAt !== undefined ? { heldAt: T + l.heldAt } : {}),
+  }));
 type Switches = { press?: boolean; strict?: boolean; readBack?: boolean };
 const pack = (o: Switches): ClientPack => ({
   ...sunlake,
@@ -274,4 +288,106 @@ test("both switches: a spelled other surname after a held match withdraws it", (
   // Spelling the record's own name keeps the match waiting for the press.
   const own = run({ press: true, strict: true }, [...OPEN, NAME, { ...lines[5], text: "M I double L E R." }, lines[6]], 25_000);
   assert.equal(factor(own, "name").confirmReason, "match");
+});
+
+/* The one independent review of C10 (12 Nov): what it confirmed, fixed. */
+
+test("review of C10: a capital at a sentence's start names nothing; written beside the name it still does", () => {
+  for (const t of ["Sam Miller. Quick question about my order.", "Sam Miller. Listen, the screen is cracked.", "Sam Miller. Problem is the screen.", "Howdy, Sam Miller.", "Salam, Sam Miller.", "Inshallah, Sam Miller."])
+    assert.equal(matchName(t, customer, { strict: true }), "match", t);
+  assert.match(strictFlags("name", "Mary Sam Miller.", customer).join("; "), /another name beside it: Mary/);
+  assert.match(strictFlags("name", "Pam and Sam Miller.", customer).join("; "), /another name beside it: Pam/);
+  // A misheard surname is the sound-alike itself, not another name: the agent confirms it or reads it back.
+  assert.deepEqual(strictFlags("name", "Sam Millerius.", customer, { readBack: true }), []);
+});
+
+test("review of C10: the record spelled with double, two or as in is the caller's own; another spelling is asked again", () => {
+  for (const t of ["Sam Miller, M as in Mary, I, double L, E, R.", "Sam Miller, M I two L E R.", "Sam Miller, M-I-double L-E-R.", "Sam Miller, Miller with two Ls.", "Sam with one M, Miller with two L.", "Sam Miller, M as in Mother, I, L, L, E, R."])
+    assert.equal(matchName(t, customer, { strict: true }), "match", t);
+  assert.match(strictFlags("name", "Sam Miller, M I double L A R.", customer).join("; "), /spelled out: MILLAR/);
+  // Asked to spell it after a held match: the record's spelling keeps it waiting for the press, and the press verifies.
+  const spell = (text: string): L[] => [...OPEN, NAME, { side: "agent", text: "Could you spell the last name for me?", s: 16_500, e: 18_000 }, { side: "caller", text, s: 18_500, e: 19_500, checked: true }];
+  for (const t of ["M I double L E R.", "M, I, two L, E, R.", "M as in Mary, I, double L, E, R.", "Miller with two Ls."]) {
+    assert.equal(factor(run({ press: true, strict: true }, spell(t), 22_000), "name").confirmReason, "match", t);
+    assert.equal(factor(run({ press: true, strict: true }, spell(t), 22_000, [press("name", 20_500)]), "name").state, "ok", t);
+  }
+  for (const t of ["M I L L A R.", "M I double L A R."]) {
+    const v = run({ press: true, strict: true }, spell(t), 22_000, [press("name", 20_500)]);
+    assert.equal(factor(v, "name").state, "confirm", t);
+    assert.equal(factor(v, "name").confirmReason, "ambiguous", t);
+  }
+});
+
+test("review of C10: the press waits while the caller's next line is still being checked, then counts or doesn't", () => {
+  const acts = [press("name", 17_000), press("address", 25_000)];
+  const next = (text: string, checking: boolean): L =>
+    checking ? { side: "caller", text, s: 23_500, e: 24_800, checking: true } : { side: "caller", text, s: 23_500, e: 24_800, checked: true, availableAt: 27_000, heldAt: 24_800 };
+  // A correction: still waiting while it is checked, then asked again.
+  const waiting = run({ press: true, strict: true }, [...CALL, next("Sorry, that's Church Hill Road.", true)], 25_500, acts);
+  assert.equal(factor(waiting, "address").state, "confirm");
+  assert.equal(factor(waiting, "address").confirmReason, "match");
+  const landed = run({ press: true, strict: true }, [...CALL, next("Sorry, that's Church Hill Road.", false)], 28_000, acts);
+  assert.equal(factor(landed, "address").confirmReason, "ambiguous");
+  assert.equal(landed.verification.verified, false);
+  // Nothing new in it: the press counts once the check lands.
+  const fine = run({ press: true, strict: true }, [...CALL, next("That's right.", false)], 28_000, acts);
+  assert.equal(factor(fine, "address").state, "ok");
+  assert.equal(factor(fine, "address").method, "confirmed by the agent, street and city");
+});
+
+test("review of C10: a correction on the caller's next line withdraws a held name; a sound-alike that says more is asked again", () => {
+  const corrected = [...OPEN, NAME, { side: "caller" as const, text: "Sorry, Millar.", s: 16_200, e: 17_000, checked: true }, ADDR_Q];
+  for (const acts of [[], [press("name", 18_000)]]) {
+    const v = run({ press: true, strict: true }, corrected, 24_000, acts);
+    assert.equal(factor(v, "name").state, "confirm");
+    assert.equal(factor(v, "name").confirmReason, "ambiguous");
+  }
+  const more = [...OPEN, NAME, ADDR_Q, { ...ADDR, text: "Church Hill Rode, in Dallas." }];
+  const v = run({ press: true, strict: true }, more, 30_000, [press("name", 17_000), press("address", 25_000)]);
+  assert.equal(factor(v, "address").confirmReason, "ambiguous");
+  assert.equal(promptFor(v, "address")!.askAgain, true);
+  assert.equal(factor(v, "address").attempts, 0);
+  // Without stricter matching, today's sound-alike card.
+  assert.equal(factor(run({ press: true }, more, 30_000, [press("name", 17_000)]), "address").confirmReason, "sounds-like");
+  // A sound-alike alone keeps the Confirmed button.
+  assert.equal(factor(run({ press: true, strict: true }, [...OPEN, { ...NAME, text: "Sam Millerius." }, ADDR_Q], 24_000), "name").confirmReason, "sounds-like");
+});
+
+test("review of C10: ordinary extras stay matches; more ways of saying someone else's, another street or the past are asked again", () => {
+  for (const t of ["Hill Road, house number 12, Dallas.", "12 B Hill Road, Dallas.", "Hill Road, third floor, Dallas.", "Third floor, Hill Road in Dallas.", "Hill Road, Dallas, near the school.", "Hill Road, H I L L, Dallas.", "Hill Road, Dallas, D A two L A S.", "Red, Hill Road in Dallas.", "s dot miller at example mail dot com, all small letters.", "s dot miller at example mail dot com, my personal email.", "s dot miller at example mail dot com. M I L L E R.", "S for Sam, dot, Miller, at example mail dot com."])
+    assert.equal(matchAddress(t, customer, { strict: true }), "match", t);
+  for (const t of ["Sam Miller’s.", "Hello my friend, Sam Miller.", "Ya baba, Sam Miller.", "I'm a client of yours, Sam Miller.", "My family name is Miller, Sam Miller."])
+    assert.equal(matchName(t, customer, { strict: true }), "match", t);
+  const name: [string, RegExp][] = [
+    ["Sam Miller’s house.", /someone else's: Miller's/],
+    ["My friend Sam Miller.", /someone else: My friend/],
+    ["My boss, Sam Miller.", /someone else: My boss/],
+    ["I'm a friend of Sam Miller.", /someone else: friend of/],
+    ["His name is Sam Miller.", /^said for someone else: His name$/],
+    ["He is Sam Miller.", /someone else: He/],
+    ["I'm calling for Mr. Sam Miller.", /someone else: for/],
+    ["Sam Miller. It's for him.", /someone else: for him/],
+    ["My fiancé, Sam Miller.", /someone else: fiancé/],
+    ["My co-worker, Sam Miller.", /someone else: My coworker/],
+    ["My baba, Sam Miller.", /someone else: My baba/],
+    ["I'm calling instead of Sam Miller.", /someone else: instead of/],
+    ["The late Sam Miller.", /someone else: late/],
+  ];
+  for (const [t, why] of name) {
+    assert.equal(matchName(t, customer, { strict: true }), "ambiguous", t);
+    assert.match(strictFlags("name", t, customer).join("; "), why, t);
+  }
+  const address: [string, RegExp][] = [
+    ["Red Hill Road, in Dallas.", /a word before the street: Red/],
+    ["Second Hill Road in Dallas.", /a word before the street: Second/],
+    ["Tower Hill Road, Dallas.", /a word before the street: Tower/],
+    ["My old address is Hill Road in Dallas.", /the past: old address/],
+    ["Hill Road in Dallas, but we've moved.", /the past: moved/],
+    ["Hill Road, outside Dallas.", /a place word: outside/],
+  ];
+  for (const [t, why] of address) {
+    assert.equal(matchAddress(t, customer), "match", `${t}: today`);
+    assert.equal(matchAddress(t, customer, { strict: true }), "ambiguous", t);
+    assert.match(strictFlags("address", t, customer).join("; "), why, t);
+  }
 });

@@ -200,19 +200,37 @@ function matchAddressAsHeard(text: string, customer: Customer): FactorResult {
 const HESITATION = /^(um|uh|er|erm|hmm|hm|ah|eh|mm|mhm)$/;
 /** Words that make the answer about someone else: a relative, a carer, a suffix that names another person, a death. */
 const PROXY =
-  /^(husband|wife|spouse|partner|son|daughter|father|mother|dad|daddy|mum|mom|mommy|mummy|brother|sister|grandson|granddaughter|grandmother|grandfather|grandma|grandpa|grandad|granny|nephew|niece|uncle|aunt|auntie|cousin|boyfriend|girlfriend|fiance|fiancee|behalf|carer|caregiver|caretaker|nurse|assistant|secretary|attorney|lawyer|guardian|executor|landlord|landlady|tenant|roommate|flatmate|neighbour|neighbor|junior|jr|senior|sr|ii|iii|iv|deceased|passed|died|estate|widow|widower)$/;
-/** Said straight before the name, these make it someone the caller is calling about ("for Sam Miller"). */
+  /^(husband|wife|spouse|partner|son|daughter|father|mother|dad|daddy|mum|mom|mommy|mummy|brother|sister|grandson|granddaughter|grandmother|grandfather|grandma|grandpa|grandad|granny|nephew|niece|uncle|aunt|auntie|cousin|boyfriend|girlfriend|fiance|fiancee|fiancé|fiancée|stepson|stepdaughter|stepmother|stepfather|stepmom|stepmum|stepdad|stepbrother|stepsister|parents|child|children|kid|kids|godson|goddaughter|behalf|carer|caregiver|caretaker|nurse|assistant|secretary|attorney|lawyer|guardian|executor|landlord|landlady|tenant|roommate|flatmate|neighbour|neighbor|junior|jr|senior|sr|ii|iii|iv|deceased|passed|died|estate|widow|widower)$/;
+/**
+ * After "my", "our", "his", "her" or "their", someone else: "my friend, Sam Miller", "my boss", "my client", "my baba" (not
+ * "Sam Miller, mate", not "Ya baba, Sam Miller"). Not "family" ("My family name is Miller").
+ */
+const KNOWN_TO =
+  /^(friend|friends|boss|colleague|colleagues|coworker|coworkers|employer|employee|manager|client|clients|ex|buddy|mate|pal|hubby|wifey|bro|sis|mama|papa|baba|baby|inlaws|relative|relatives|patient|student|teacher)$/;
+const WHOSE = /^(my|our|his|her|their)$/;
+/** "his name", "her address", "their account": the detail is someone else's. */
+const THIRD_PERSON = /^(his|her|their)$/;
+const THEIRS = /^(name|address|place|house|home|email|account|order|number|phone|details)$/;
+/** Said straight before the name, these make it someone the caller is calling about ("for Sam Miller", "for Mr. Sam Miller"). */
 const FOR_SOMEONE = /^(for|about|regarding)$/;
 const TITLES = /^(mr|mrs|ms|miss|mister|missus|dr|doctor|prof|professor|sir|madam|ma'am|maam)$/;
 /** Street types; a different one in the answer is a different street ("Hill Road ... Main Street"). */
 const STREET_TYPE_ALL = /^(road|rd|street|st|avenue|ave|drive|dr|lane|ln|court|ct|way|place|pl|boulevard|blvd|circle|cir|parkway|pkwy|highway|hwy|trail|terrace|row|rise|crescent|close|extension|ext)$/;
-/** After the street, a flat or unit ("Hill Road, apartment 4") is part of the same address. */
-const UNIT = /^(apartment|apt|unit|suite|flat|floor|building|bldg|number|no)$/;
+/** After the street, a flat or unit ("Hill Road, apartment 4", "house number 12", "third floor") is part of the same address. */
+const UNIT = /^(apartment|apt|unit|suite|flat|floor|building|bldg|number|no|house|villa|block|tower)$/;
+const ORDINAL = /^(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|ground|top|\d+(st|nd|rd|th))$/;
 /** Words that change which street is meant, before it ("Old Hill Road", "North Hill Road") or after it ("Hill Road East"). */
 const STREET_BEFORE = /^(new|old|north|south|east|west|upper|lower|little|great|big)$/;
+/**
+ * Everyday words that also name streets: written straight before it they make another street ("Red Hill Road", "Box Hill
+ * Road", review of C10, 12 Nov), though "Red, Hill Road" or "Yes, good, Hill Road" stay everyday words.
+ */
+const STREET_NAMING = /^(red|blue|green|black|white|silver|grey|gray|brown|golden|gold|good|nice|fair|other|back|box|over|up|down|high|low|long|morning|evening|cool|lovely|true|same|day)$/;
 const STREET_AFTER = /^(north|south|east|west|extension|ext)$/;
 /** Anywhere in an address answer, these make it somewhere near the record's city, not in it. */
-const PLACE_NEAR = /^(near|outside|area|county|metro|suburb|suburbs|outskirts)$/;
+const PLACE_NEAR = /^(area|county|metro|suburb|suburbs|outskirts)$/;
+/** These do too, said before the city or another place ("near Dallas", "outside Fort Worth"), not before a landmark ("near the school"). */
+const NEAR = /^(near|outside|nearby|close)$/;
 /** Beside the city, these make it another place ("North Dallas", "Lake Dallas", "Dallas Fort Worth"). */
 const PLACE_NEXT = /^(center|centre|city|town|township|village|lake|fort|north|south|east|west|old|new|upper|lower)$/;
 const COUNTRY = /^(usa|us|america|united|states|zip|code|postcode)$/;
@@ -227,12 +245,16 @@ const US_STATES: Record<string, string> = {
 /** Around an email: "It's s dot miller at example mail dot com, thanks." */
 const EMAIL_LEAD = /^(it's|its|it|is|my|the|email|e|mail|address|yes|yeah|sure|ok|okay|so|that's|thats)$/;
 const EMAIL_TAIL = /^(please|thanks|thank|you|yes|yeah)$/;
+/** How a caller describes the email's letters or the account: "all small letters", "lower case", "my personal email". */
+const EMAIL_ABOUT = /^(all|small|lower|lowercase|upper|uppercase|capital|capitals|caps|case|letters|letter|personal|private|main|usual|primary|work)$/;
 /** How a caller says the marks between an email's words. */
 const EMAIL_SEPARATOR: Record<string, string> = { dot: ".", dash: "-", hyphen: "-", underscore: "_" };
 /** After the name, these make it another person of the same name: "Sam Miller the Third", "Sam Miller, the younger". */
 const GENERATION = /^(second|third|fourth|fifth|2nd|3rd|4th|5th|younger|elder|older)$/;
 /** Words that put the answer in the past: "my previous address", "formerly", "my maiden name" ("used to" and "moved from" too). */
 const PAST = /^(formerly|previously|former|previous|maiden|nee|née)$/;
+/** "my old address", "the old house": an old detail, not the current one ("Old Hill Road" is another street). */
+const OLD_THING = /^(address|house|place|home|apartment|flat|street|email|number|name|one)$/;
 /** After a name said with "'s", these make it "is", not someone's: "Sam Miller's my name", "Sam Miller's speaking". */
 const IS_AFTER = /^(my|the|me|here|speaking|calling|it|this|right|correct|fine|ok|okay|yes|yeah|on|in|at|a|an|also|again|too|and)$/;
 /** Things a caller says belong to someone: "the account is Sam's". */
@@ -242,21 +264,58 @@ const OWNED = /^(account|number|phone|order|line|card|house|home|place|email|add
 const runsAt = (tokens: string[], run: string[], fits = (said: string, w: string) => said === w): number[] =>
   run.length ? tokens.flatMap((_, i) => (run.every((w, j) => i + j < tokens.length && fits(tokens[i + j], w)) ? [i] : [])) : [];
 
-/** Letters spelled one by one ("M I L L E R", "M I double L E R"), three or more, run together. */
-export function spelledLetters(tokens: string[]): string[] {
-  const runs: string[] = [];
-  let run = "";
+/**
+ * How many words after a spelled letter only give its example ("M as in Mary", "S for Sam", "L like Lima"): the example
+ * starts with the letter and names nothing else. 0 when there is none.
+ */
+const exampleLength = (tokens: string[], i: number): number => {
+  const letter = tokens[i - 1] ?? "";
+  if (!/^[a-z]$/.test(letter)) return 0;
+  const [a, b, c] = [tokens[i], tokens[i + 1] ?? "", tokens[i + 2] ?? ""];
+  if (a === "as" && b === "in" && c.length > 1 && c.startsWith(letter)) return 3;
+  if ((a === "for" || a === "like") && b.length > 1 && b.startsWith(letter)) return 2;
+  return 0;
+};
+/** The words with each spelled letter's example dropped ("M as in Mary, I" is "m i"). */
+export function withoutExamples(tokens: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const skip = exampleLength(tokens, i);
+    if (skip) i += skip - 1;
+    else out.push(tokens[i]);
+  }
+  return out;
+}
+/**
+ * Letters spelled one by one, `min` or more, run together, and where each run is in `tokens`: "M I L L E R", "M I double
+ * L E R", "M, I, two Ls, E, R", "M as in Mary, I, double L, E, R". A count ("two", "3") doubles a letter only inside a
+ * run already started, so "apartment 3 C" spells nothing (review of C10, 12 Nov: "two L" and "as in Mary" broke the run,
+ * so the record's own spelling read as another name).
+ */
+export function spelledRunsAt(tokens: string[], min = 3): { from: number; to: number; run: string }[] {
+  const runs: { from: number; to: number; run: string }[] = [];
+  const letterOf = (t: string | undefined) => (!t ? null : /^[a-z]$/.test(t) ? t : /^[a-z]s$/.test(t) && !/^(is|as|us)$/.test(t) ? t[0] : null);
+  let [run, from, to] = ["", -1, -1];
   for (let i = 0; i <= tokens.length; i++) {
     const t = tokens[i] ?? "";
-    if (/^[a-z]$/.test(t)) run += t;
-    else if (/^(double|triple)$/.test(t) && /^[a-z]$/.test(tokens[i + 1] ?? "")) run += tokens[++i].repeat(t === "double" ? 2 : 3);
-    else {
-      if (run.length >= 3) runs.push(run);
+    const count = /^(double|two|2)$/.test(t) ? 2 : /^(triple|three|3)$/.test(t) ? 3 : 0;
+    const doubled = count && letterOf(tokens[i + 1]) && (run || /^(double|triple)$/.test(t)) ? letterOf(tokens[i + 1])! : null;
+    const skip = run ? exampleLength(tokens, i) : 0;
+    if (skip) i += skip - 1;
+    else if (/^[a-z]$/.test(t) || doubled) {
+      if (!run) from = i;
+      run += doubled ? doubled.repeat(count) : t;
+      if (doubled) i++;
+      to = i;
+    } else {
+      if (run.length >= min) runs.push({ from, to, run });
       run = "";
     }
   }
   return runs;
 }
+/** The spelled runs alone ("miller" for "M I double L E R"), three letters or more unless `min` says otherwise. */
+export const spelledLetters = (tokens: string[], min = 3): string[] => spelledRunsAt(tokens, min).map((r) => r.run);
 
 const escaped = (word: string) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /** A word as the answer wrote it ("Church", not "church"), for the flags' wording. */
@@ -285,8 +344,9 @@ const writtenTogether = (text: string, first: string, second: string) =>
  * read-back is for, so it isn't flagged, and the record's words are found by sound too ("Church Hil Road").
  */
 export function strictFlags(which: "name" | "address", raw: string, customer: Customer, { readBack = false } = {}): string[] {
-  // Marks in brackets ("[pause 1.0 s]", "[unclear]") are notes about the audio, not words the caller said.
-  const text = raw.replace(/\[[^\]]*\]/g, " ");
+  // Marks in brackets ("[pause 1.0 s]", "[unclear]") are notes about the audio, not words the caller said. A typographic
+  // apostrophe is the plain one ("Sam Miller’s house", review of C10, 12 Nov).
+  const text = raw.replace(/\[[^\]]*\]/g, " ").replace(/[\u2018\u2019\u02BC`]/g, "'");
   const tokens = answerWords(text).filter((t) => !HESITATION.test(t));
   const flags = new Set<string>();
   const nameWords = words(customer.name);
@@ -300,16 +360,30 @@ export function strictFlags(which: "name" | "address", raw: string, customer: Cu
     (text.match(/(?<![\p{L}'])\p{Lu}[\p{L}']*/gu) ?? []).map((w) => w.toLowerCase().replace(/'s$/, "")).filter((w) => !/^i('m|'d|'ll|'ve)?$/.test(w)),
   );
   const shown = (w: string) => asWritten(text, w);
+  // The speech models capitalise every sentence's first word, so a capital there alone names nothing ("Sam Miller. Quick
+  // question.", "Howdy, Sam Miller."); written straight beside the record's word it still does ("Mary Sam Miller."). As
+  // the plain matcher's capitalised() (review of C10, 12 Nov).
+  const midCaps = new Set(
+    text
+      .split(/[.!?]+\s*/)
+      .flatMap((x) => (x.match(/\p{L}[\p{L}']*/gu) ?? []).slice(1))
+      .filter((w) => /^\p{Lu}/u.test(w))
+      .map((w) => w.toLowerCase().replace(/'s$/, "")),
+  );
+  const namedBeside = (n: string, t: string) => caps.has(n) && (midCaps.has(n) || writtenTogether(text, n, t) || writtenTogether(text, t, n));
 
   if (which === "address" && tokens.includes("at") && (tokens.includes("com") || tokens.includes("mail") || tokens.some((t) => t.includes("@")))) {
     // An email: the record's, said in one run, word for word, with nothing else that could change it ("... dot uk").
     // A repeat of part of it ("Sorry, that's example dash mail dot com.") and everyday words around it are fine.
     const drop = (ws: string[]) => ws.filter((w) => !/^(dot|dash|hyphen|underscore)$/.test(w));
-    const said = drop(answerWords(text.replace(/@/g, " at ")).filter((t) => !HESITATION.test(t)));
     const email = drop(words(customer.emailFull.replace("@", " at ")));
+    // A letter's example ("S for Sam") and the email's own words spelled out ("dot com, M I L L E R") are the email too.
+    const plainSaid = withoutExamples(answerWords(text.replace(/@/g, " at ")).filter((t) => !HESITATION.test(t)));
+    const spelledOwn = new Set(spelledRunsAt(plainSaid).filter((r) => email.includes(r.run)).flatMap((r) => plainSaid.slice(r.from, r.to + 1).map((_, k) => r.from + k)));
+    const said = drop(plainSaid.filter((_, k) => !spelledOwn.has(k)));
     const fits = (s: string, w: string) => s === w || (w.length === 1 && (LETTER_NAMES[w] ?? []).includes(s));
     const fine = (s: string) =>
-      EMAIL_LEAD.test(s) || EMAIL_TAIL.test(s) || isFiller(s) || COMMON.has(s) || CORRECTION.test(s) || BRIDGE.test(s) || email.some((w) => fits(s, w));
+      EMAIL_LEAD.test(s) || EMAIL_TAIL.test(s) || EMAIL_ABOUT.test(s) || TITLES.test(s) || isFiller(s) || COMMON.has(s) || CORRECTION.test(s) || BRIDGE.test(s) || email.some((w) => fits(s, w));
     const extra = said.filter((s) => !fine(s));
     if (extra.length) flags.add(`other words with the email: ${extra.map(shown).join(", ")}`);
     else if (!runsAt(said, email, fits).length) flags.add("the email isn't said in one run, as on the order");
@@ -342,12 +416,31 @@ export function strictFlags(which: "name" | "address", raw: string, customer: Cu
   if (!readBack) for (const v of variants) flags.add(`another spelling: ${shown(v)}`);
   // A word of the record, word for word or by sound (the sound-alikes are flagged above).
   const like = (said: string, w: string) => said === w || (said.length > 1 && !isFiller(said) && !COMMON.has(said) && soundsLike(said, w));
-  for (const p of tokens.filter((t) => PROXY.test(t))) flags.add(`said for someone else: ${shown(p)}`);
-  // Said as the past: "It used to be Hill Road", "my previous address", "we moved from Hill Road", "my maiden name".
+  // Spelling examples are not people ("M as in Mother"); "co-worker" and "in-laws" are one word each.
+  const people = withoutExamples(tokens)
+    .join(" ")
+    .replace(/\bco worker(s?)\b/g, "coworker$1")
+    .replace(/\bin laws\b/g, "inlaws")
+    .split(" ")
+    .filter(Boolean);
+  for (const p of people.filter((t) => PROXY.test(t))) flags.add(`said for someone else: ${shown(p)}`);
+  // "my friend", "our client", "his name", "her address", "a friend of Sam Miller" (review of C10, 12 Nov).
+  people.forEach((t, i) => {
+    const before = people[i - 1] ?? "";
+    // Not said to the agent: "Hello my friend", "Thank you, my friend".
+    const toAgent = /^(hello|hi|hey|thanks|thank|you|yes|yeah|okay|ok|sure|morning|afternoon|evening|dear|oh|well)$/.test(people[i - 2] ?? "");
+    const shownAs = (w: string) => (w === "coworker" || w === "coworkers" || w === "inlaws" ? w : shown(w));
+    if ((KNOWN_TO.test(t) && WHOSE.test(before) && !toAgent) || (THEIRS.test(t) && THIRD_PERSON.test(before))) flags.add(`said for someone else: ${shown(before)} ${shownAs(t)}`);
+    // "a friend of Sam Miller", not "a client of yours".
+    else if (KNOWN_TO.test(t) && !/^clients?$/.test(t) && people[i + 1] === "of" && !/^(yours|your|you|us|ours)$/.test(people[i + 2] ?? ""))
+      flags.add(`said for someone else: ${shownAs(t)} of`);
+  });
+  // Said as the past: "It used to be Hill Road", "my previous address", "we moved from Hill Road", "my maiden name", "my
+  // old address", "but we've moved." (not "We just moved to Hill Road").
   tokens.forEach((t, i) => {
     const next = tokens[i + 1] ?? "";
-    if (PAST.test(t) || (t === "used" && next === "to") || (t === "moved" && /^(from|out|away)$/.test(next)))
-      flags.add(`said as the past: ${t === "used" || t === "moved" ? `${shown(t)} ${next}` : shown(t)}`);
+    if (PAST.test(t) || (t === "used" && next === "to") || (t === "moved" && /^(from|out|away|)$/.test(next)) || (t === "old" && OLD_THING.test(next) && !writtenTogether(text, t, streetWords[0] ?? "")))
+      flags.add(`said as the past: ${t === "used" || t === "old" || (t === "moved" && next) ? `${shown(t)} ${shown(next)}` : shown(t)}`);
   });
   const recordRuns = [...recordWords, nameWords.join(""), streetWords.join(""), cityWords.join(""), "usa"];
   for (const run of spelledLetters(tokens)) if (!recordRuns.includes(run)) flags.add(`spelled out: ${run.toUpperCase()}`);
@@ -371,7 +464,20 @@ export function strictFlags(which: "name" | "address", raw: string, customer: Cu
   if (which === "name") {
     const isName = (t: string) => nameWords.some((w) => like(t, w));
     const first = tokens.findIndex(isName);
-    if (first > 0 && FOR_SOMEONE.test(tokens[first - 1])) flags.add(`said for someone else: ${shown(tokens[first - 1])}`);
+    // Straight before the name, a title passed over: "for Sam Miller", "for Mr. Sam Miller", "the late Sam Miller", "He's
+    // Sam Miller", "His name is Sam Miller" (review of C10, 12 Nov).
+    let b = first - 1;
+    while (b >= 0 && TITLES.test(tokens[b])) b--;
+    if (b >= 0 && (FOR_SOMEONE.test(tokens[b]) || tokens[b] === "late")) flags.add(`said for someone else: ${shown(tokens[b])}`);
+    if (b >= 1 && tokens[b] === "of" && tokens[b - 1] === "instead") flags.add("said for someone else: instead of");
+    const lead = tokens.slice(Math.max(0, b - 2), b + 1);
+    const pronoun = lead.find((t) => /^(he|she|his|her)$/.test(t));
+    // Once is enough: "His name is Sam Miller" already says "his name".
+    if (first > 0 && pronoun && ![...flags].some((f) => f.startsWith(`said for someone else: ${shown(pronoun)} `)))
+      flags.add(`said for someone else: ${shown(pronoun)}`);
+    tokens.forEach((t, i) => {
+      if (t === "for" && /^(him|her|them)$/.test(tokens[i + 1] ?? "")) flags.add(`said for someone else: for ${shown(tokens[i + 1])}`);
+    });
     // An email for the name ("sam miller at example mail dot com") is not the name.
     if (tokens.includes("at") && (tokens.includes("com") || tokens.includes("dot") || text.includes("@"))) flags.add("an email, not a name");
     // Another person of the same name: "Sam Miller the Third", "Sam Miller, the younger"; not "Sam Miller. The second
@@ -397,12 +503,19 @@ export function strictFlags(which: "name" | "address", raw: string, customer: Cu
         (before === "is" && OWNED.test(tokens[j - 1] ?? ""));
       if (owned) flags.add(`said as someone else's: ${shown(said)}`);
     });
-    // Another name beside the record's, "and" passed over: written with a capital, not a title or an everyday word.
-    const beside = (i: number, step: number) => (tokens[i + step] === "and" ? tokens[i + 2 * step] : tokens[i + step]);
+    // Another name beside the record's, "and" passed over: written with a capital, not a title or an everyday word. Only
+    // when the rest already says the whole name: in "Sam Millerius." the word is the misheard surname itself, a
+    // sound-alike the agent confirms or reads back, not more (review of C10, 12 Nov).
+    // Joined to it by "and", a capital names someone even at a sentence's start ("Pam and Sam Miller.").
+    const restSaysName = (n: string) => nameWords.every((w) => tokens.some((x) => x !== n && like(x, w)));
     tokens.forEach((t, i) => {
       if (!isName(t)) return;
-      for (const n of [beside(i, -1), beside(i, 1)])
-        if (n && n.length > 1 && caps.has(n) && !everyday(n) && !isName(n) && !TITLES.test(n) && !/^\d/.test(n)) flags.add(`another name beside it: ${shown(n)}`);
+      for (const step of [-1, 1]) {
+        const viaAnd = tokens[i + step] === "and";
+        const n = viaAnd ? tokens[i + 2 * step] : tokens[i + step];
+        if (n && n.length > 1 && (namedBeside(n, t) || (viaAnd && caps.has(n))) && !everyday(n) && !isName(n) && !TITLES.test(n) && !/^\d/.test(n) && restSaysName(n))
+          flags.add(`another name beside it: ${shown(n)}`);
+      }
     });
     return [...flags];
   }
@@ -413,12 +526,22 @@ export function strictFlags(which: "name" | "address", raw: string, customer: Cu
   const streets = runsAt(tokens, streetWords, fitsStreet);
   if (!streets.length && !readBack) flags.add("the street's words are apart");
   const number = (t: string) => /^\d/.test(t) || numberWord(t) !== null || /^(hundred|thousand)$/.test(t);
-  const fineBeside = (t: string, after: boolean) =>
-    !(after ? STREET_AFTER : STREET_BEFORE).test(t) && (everyday(t) || number(t) || (after && UNIT.test(t)));
+  // The record's own words spelled out beside it are the same street or city ("Hill Road, H I L L, Dallas").
+  const spelledOwn = new Set(spelledRunsAt(tokens).filter((r) => recordRuns.includes(r.run)).flatMap((r) => tokens.slice(r.from, r.to + 1).map((_, k) => r.from + k)));
+  const fineBeside = (t: string, after: boolean, at: number, street: number) => {
+    if ((after ? STREET_AFTER : STREET_BEFORE).test(t)) return false;
+    if (!after && (STREET_NAMING.test(t) || ORDINAL.test(t)) && writtenTogether(text, t, tokens[street])) return false;
+    // "house number 12", "third floor", "Third floor, Hill Road", "12 B Hill Road", a spelled street.
+    if (after && ORDINAL.test(t) && UNIT.test(tokens[at + 1] ?? "")) return true;
+    if (!after && UNIT.test(t) && !writtenTogether(text, t, tokens[street])) return true;
+    if (!after && /^[a-z]$/.test(t) && number(tokens[at - 1] ?? "")) return true;
+    return spelledOwn.has(at) || everyday(t) || number(t) || (after && UNIT.test(t));
+  };
   for (const s of streets) {
-    const [before, after] = [tokens[s - 1], tokens[s + streetWords.length]];
-    if (before && !fineBeside(before, false)) flags.add(`a word before the street: ${shown(before)}`);
-    if (after && !fineBeside(after, true)) flags.add(`a word after the street: ${shown(after)}`);
+    const [b4, af] = [s - 1, s + streetWords.length];
+    const [before, after] = [tokens[b4], tokens[af]];
+    if (before && !fineBeside(before, false, b4, s)) flags.add(`a word before the street: ${shown(before)}`);
+    if (after && !fineBeside(after, true, af, s)) flags.add(`a word after the street: ${shown(after)}`);
   }
   const ownTypes = new Set([...typeWords, ...typeWords.flatMap((w) => STREET_TYPES[w] ?? [])]);
   tokens.forEach((t, i) => {
@@ -442,13 +565,21 @@ export function strictFlags(which: "name" | "address", raw: string, customer: Cu
     if (code && code in US_STATES && code !== stateCode && code !== "ok") flags.add(`another state: ${code.toUpperCase()}`);
   }
 
-  // Somewhere near the city, not in it.
+  // Somewhere near the city, not in it: "Dallas area", "Dallas County", or "near" or "outside" before the city or another
+  // place ("near Dallas", "outside Fort Worth"); not before a landmark ("near the school", review of C10, 12 Nov).
   for (const p of tokens.filter((t) => PLACE_NEAR.test(t))) flags.add(`a place word: ${shown(p)}`);
+  tokens.forEach((t, i) => {
+    if (!NEAR.test(t)) return;
+    let j = i + 1;
+    while (/^(the|to|by|of)$/.test(tokens[j] ?? "")) j++;
+    const n = tokens[j];
+    if (n && (cityWords.some((w) => like(n, w)) || (caps.has(n) && !everyday(n)))) flags.add(`a place word: ${shown(t)}`);
+  });
   for (const c of runsAt(tokens, cityWords, like)) {
     for (const [n, after] of [[tokens[c - 1], false], [tokens[c + cityWords.length], true]] as const) {
       if (!n) continue;
       const place = PLACE_NEXT.test(n) && (n !== "city" || after);
-      const named = caps.has(n) && n.length > 1 && !everyday(n) && !stateNameWords.has(n) && !(n in US_STATES) && !COUNTRY.test(n) && !number(n);
+      const named = namedBeside(n, tokens[after ? c + cityWords.length - 1 : c]) && n.length > 1 && !everyday(n) && !stateNameWords.has(n) && !(n in US_STATES) && !COUNTRY.test(n) && !number(n);
       if (place || named) flags.add(`a word beside the city: ${shown(n)}`);
     }
   }
