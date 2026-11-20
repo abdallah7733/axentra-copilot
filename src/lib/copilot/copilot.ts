@@ -1115,6 +1115,12 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     markVerified(ev);
   }
 
+  /** The agent has asked for this detail again since the caller's answer that is held for the press (C11, 20 Nov). */
+  const reasked = (f: Factor) => {
+    const ask = f.id === "name" ? nameAsk : addressAsk;
+    return !!f.held && !!f.evidence && !!ask && ask.at > f.evidence.at;
+  };
+
   /**
    * A Confirm press can only vouch for an answer that matches the record or sounds like it. Text that
    * doesn't match ("10 million" for the name on call 9) is asked again, or the agent types what the
@@ -1756,6 +1762,25 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       // Miller with two Ls.") leaves it as it was; only a match, or a line naming someone else, changes it.
       const addsNothing = (f: Factor, t: string) =>
         f.state === "confirm" && (f.id === "name" ? !["match", "ambiguous"].includes(nameResult(t)) && !namesAnother(t, customer) : addressResult(t) === "partial");
+      // The card for a match held for the press says "If in doubt, ask again", but hear() never reopens a held match, so
+      // the caller's answer to that question was ignored and the card kept quoting the first answer (C11, 20 Nov). Once the
+      // agent has asked for the detail again, the new answer is judged here: a new match moves the hold, and the card's
+      // quote, to this line; an answer naming something else is asked again, never a failed attempt, as for an unasked
+      // line below; anything else (part of it, a sound-alike, "Sorry?") leaves the hold as it was.
+      const reanswerHeld = (f: Factor, about: (t: string) => boolean) => {
+        const id = f.id as "name" | "address";
+        const result = resultFor(id, line.text);
+        const heardIt = { heard: line.text, heardFirst: ev.typedFrom === undefined ? line.firstHeard ?? line.text : line.text };
+        if (result === "match" && !spokenAfterRecordSaid(f, [ev], id === "address" && addressMethod(line.text) === "email") && !moreBeingChecked(line, ev.knownAt)) {
+          Object.assign(f, { held: undefined, ...heardIt });
+          matched(f, ev, doubt([ev], line.text), id === "address" ? addressMethod(line.text) : undefined);
+          if ((f.state as Factor["state"]) === "ok") lastMatch[id] = { line, heard: line.text, end: line.endedAt };
+          else delete lastMatch[id];
+        } else if ((result === "mismatch" || result === "ambiguous") && about(line.text)) {
+          Object.assign(f, { state: "confirm", confirmReason: "ambiguous", held: undefined, knownAt: undefined, method: undefined, evidence: ev, ...heardIt });
+          delete lastMatch[id];
+        }
+      };
       // A typed correction over the caller's reply to a read-back is the agent's words, not the caller's, unless that
       // reply said the detail (independent review of C7, 23 Oct: the record name typed over "Yes." verified).
       const typedOverReply = (backedOrOpen: boolean, says: (t: string) => boolean) => backedOrOpen && ev.typedFrom !== undefined && !says(ev.typedFrom);
@@ -1784,6 +1809,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
             Object.assign(name, { state: "confirm", confirmReason: "ambiguous", held: undefined, knownAt: undefined, method: undefined, heard: `${name.heard ?? name.evidence?.text ?? ""} ${line.text}`.trim(), evidence: ev });
             delete lastMatch.name;
           }
+        } else if (expecting === "name" && reasked(name)) {
+          heardName = true;
+          reanswerHeld(name, aboutName);
         } else if (expecting === "name" && (lingering || nameExpiredOpen)) {
           heardName = aboutName(line.text);
           if (heardName && !addsNothing(name, line.text)) hearLingering(name);
@@ -1792,6 +1820,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           hear(name, line, ev);
         }
         else if (name.state !== "ok" && nameResult(line.text) === "match" && !spokenAfterRecordSaid(name, [ev]) && !moreBeingChecked(line, ev.knownAt)) {
+          // The card quotes the line that matched, not an earlier answer (C11, 20 Nov; see the address below).
+          Object.assign(name, { heard: line.text, heardFirst: ev.typedFrom === undefined ? line.firstHeard ?? line.text : line.text });
           matched(name, ev, doubt([ev], line.text));
           if ((name.state as Factor["state"]) === "ok") lastMatch.name = { line, heard: line.text, end: line.endedAt };
         }
@@ -1807,6 +1837,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           // The same for the address read-back.
         } else if (expecting === "address" && confirmsOnly(line.text)) {
           // The same for the address.
+        } else if (expecting === "address" && reasked(address)) {
+          heardAddress = true;
+          reanswerHeld(address, aboutAddress);
         } else if (expecting === "address" && (lingering || addrExpiredOpen)) {
           heardAddress = aboutAddress(line.text);
           if (heardAddress && !addsNothing(address, line.text)) hearLingering(address);
@@ -1820,6 +1853,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           !spokenAfterRecordSaid(address, [ev], addressMethod(line.text) === "email") &&
           !moreBeingChecked(line, ev.knownAt)
         ) {
+          // The card quotes this line: on the 20 Nov C10 call, an unasked "Hill Road in Dallas." would have been held under
+          // "Heard "Church Hillwood in Dallas.", which matches the street and city on the order" (offline what-if, C11).
+          Object.assign(address, { heard: line.text, heardFirst: ev.typedFrom === undefined ? line.firstHeard ?? line.text : line.text });
           matched(address, ev, doubt([ev], line.text), addressMethod(line.text));
           if ((address.state as Factor["state"]) === "ok") lastMatch.address = { line, heard: line.text, end: line.endedAt };
         }
@@ -2260,7 +2296,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   const awaiting: CopilotView["awaiting"] =
     locked || escalate
       ? null
-      : identityFactor && identityFactor.state !== "ok"
+      : // Asked again about a match held for the press, the new answer is awaited too: it waits for its check (C11).
+        identityFactor && (identityFactor.state !== "ok" || reasked(identityFactor))
         ? identityFactor.id
         : // The caller's next line may be the reply to a read-back: it waits for its check from the start, so a line that
           // already counted is never hidden later, when the line heard again (or said before the name answer's check

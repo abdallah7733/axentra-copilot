@@ -101,6 +101,38 @@ test("a bare request for a detail counts only while the identity check is under 
   }
 });
 
+// 20 Nov C10 call: "Sorry, could you repeat the street and city." lost its question mark, so the caller's answer got no check.
+test("a re-ask is a question with or without its question mark (C11)", () => {
+  for (const underway of [true, false]) {
+    for (const text of [
+      "Sorry, could you repeat the street and city.",
+      "Can you repeat the street and city.",
+      "Could you say the street and city again.",
+      "Sorry, could you repeat your street and city.",
+      "Could you repeat the street and city again for me.",
+      "Would you repeat the email on the order.",
+    ])
+      assert.equal(agentAsksFor(text, underway), "address", `${text} (identity check under way: ${underway})`);
+    assert.equal(agentAsksFor("Could you repeat your full name.", underway), "name");
+    assert.equal(agentAsksFor("Can you say the order number again.", underway), "order");
+  }
+  // Said as a bare re-ask: only while the identity check is under way, as for any bare request.
+  for (const text of ["Repeat the street and city.", "Again, the street and city.", "Sorry, one more time, the street and city.", "Say your full name once more."]) {
+    assert.equal(agentAsksFor(text, true), text.includes("name") ? "name" : "address", text);
+    assert.equal(agentAsksFor(text, false), null, text);
+  }
+  // Not a request for a detail: a re-ask of nothing in particular, a statement, an offer, a spelling request.
+  for (const text of [
+    "Sorry, could you repeat that.",
+    "I can repeat the street and city for you.",
+    "You can say the street and city if you like.",
+    "Again, sorry about the address mix-up.",
+    "Again, the city doesn't match.",
+    "Could you spell the last name.",
+  ])
+    assert.equal(agentAsksFor(text, true), null, text);
+});
+
 test("agent asks the customer to choose", () => {
   assert.ok(agentAsksChoice("Which do you prefer?"));
   assert.ok(agentAsksChoice("You can have either a new tablet ships today at no cost or a full refund in 3 to 5 business days."));

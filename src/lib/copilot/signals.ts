@@ -137,10 +137,11 @@ const ADDRESS_WORDS = /\b(street|city|address|zip|postcode|post code|email|e mai
 
 /**
  * A detail asked for as a bare phrase, with no question word: "Thank you and the street and
- * city for the delivery." (the 10 Oct call; recognition dropped the question mark).
+ * city for the delivery." (the 10 Oct call; recognition dropped the question mark). Asked again the
+ * same way too: "Repeat the street and city.", "Sorry, one more time, the street and city." (C11).
  */
 const BARE_REQUEST =
-  /^((thank you|thanks|okay|ok|great|perfect|right|alright|sorry|so)( \w+)? )?((and|now|next|also|then|first|lastly|finally) )*(the|your) (\w+ ){0,2}(full name|name|street|city|address|zip|postcode|post code|email|e mail)\b/;
+  /^((thank you|thanks|okay|ok|great|perfect|right|alright|sorry|so)( \w+)? )?((and|now|next|also|then|first|lastly|finally|again|repeat|say|once more|one more time) )*(the|your) (\w+ ){0,2}(full name|name|street|city|address|zip|postcode|post code|email|e mail)\b/;
 /** Words that make a line a statement about a detail ("the city doesn't match", "you'll get an email"). */
 const STATEMENT =
   /\b(i|we|you|i'll|we'll|you'll|i've|we've|i'm|it's|that's|is|are|was|were|has|have|had|does|doesn't|don't|didn't|isn't|aren't|wasn't|can't|won't|will|would|match|matches|matched|send|sent|ship|ships|update|updated|change|changed|see|got|get)\b/;
@@ -148,10 +149,12 @@ const STATEMENT =
 /**
  * Which verification factor the agent is asking for, if any. While the identity check is under
  * way, a bare request for a detail counts too: recognition often drops the question mark.
+ * A re-ask is a question with or without its mark: "Sorry, could you repeat the street and city."
+ * was taken as no question on the 20 Nov C10 call, so the caller's answer got no check (C11).
  */
 export function agentAsksFor(text: string, identityUnderway = false): "name" | "address" | "order" | null {
   const norm = normalize(text);
-  const asking = /\b(can i have|may i have|could i have|can you (give|tell|confirm)|could you (give|tell|confirm)|what('s| is)|please|confirm)\b|\?/.test(text.toLowerCase()) || /\b(can i have|may i have|what is|whats)\b/.test(norm);
+  const asking = /\b(can i have|may i have|could i have|(can|could|would) you (give|tell|confirm|repeat|say)|what('s| is)|please|confirm)\b|\?/.test(text.toLowerCase()) || /\b(can i have|may i have|what is|whats)\b/.test(norm);
   if (!asking) {
     if (!identityUnderway || !BARE_REQUEST.test(norm) || STATEMENT.test(norm.replace(/^thank you\b/, ""))) return null;
     return NAME_WORDS.test(norm) ? "name" : ADDRESS_WORDS.test(norm) ? "address" : null;
