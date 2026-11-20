@@ -1245,7 +1245,10 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   const readBackOpen = (f: Factor) => {
     const id = f.id as "name" | "address";
     const match = (t: string) => resultFor(id, t);
-    if ([f.heard, f.heardFirst].some((t) => t !== undefined && match(t) === "match")) return true;
+    // An email that matches never opens a read-back of the street and city, as readBackFits says: the agent would say
+    // words the caller never gave (independent check of C11, 20 Nov: a doubtful email then "Yes." verified the address).
+    const said = (t: string) => match(t) === "match" && (id === "name" || addressMethod(t) === "street and city");
+    if ([f.heard, f.heardFirst].some((t) => t !== undefined && said(t))) return true;
     const log = answerLog[id];
     const readings = log.length ? [log.map((a) => a.text).join(" "), log.map((a) => a.first).join(" ")] : [f.heard ?? f.evidence?.text ?? ""];
     if (readings.some((t) => exactPart(id, t) && !readBackFits(id, t, customer, strict))) return false;
@@ -1765,20 +1768,27 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       // The card for a match held for the press says "If in doubt, ask again", but hear() never reopens a held match, so
       // the caller's answer to that question was ignored and the card kept quoting the first answer (C11, 20 Nov). Once the
       // agent has asked for the detail again, the new answer is judged here: a new match moves the hold, and the card's
-      // quote, to this line; an answer naming something else is asked again, never a failed attempt, as for an unasked
-      // line below; anything else (part of it, a sound-alike, "Sorry?") leaves the hold as it was.
-      const reanswerHeld = (f: Factor, about: (t: string) => boolean) => {
+      // quote, to this line; any other answer to the question ("In Boston.", "Tom Baker.") is asked again, never a failed
+      // attempt; part of it, a sound-alike or "Sorry?" leaves the hold as it was.
+      // Independent check of C11 (20 Nov): the rest of a conflicting answer is read with it, as for any answer, so "Lake
+      // Road." then "In Boston." is asked again, not a failed attempt; a doubtful new match doesn't keep the earlier
+      // answer's method; and the answer is logged for the read-back like any other.
+      const reanswerHeld = (f: Factor) => {
         const id = f.id as "name" | "address";
         const result = resultFor(id, line.text);
-        const heardIt = { heard: line.text, heardFirst: ev.typedFrom === undefined ? line.firstHeard ?? line.text : line.text };
+        const first = ev.typedFrom === undefined ? line.firstHeard ?? line.text : line.text;
+        const heardIt = { heard: line.text, heardFirst: first };
         if (result === "match" && !spokenAfterRecordSaid(f, [ev], id === "address" && addressMethod(line.text) === "email") && !moreBeingChecked(line, ev.knownAt)) {
-          Object.assign(f, { held: undefined, ...heardIt });
+          answerLog[id].push({ text: line.text, first });
+          Object.assign(f, { held: undefined, method: undefined, confirmReason: undefined, ...heardIt });
           matched(f, ev, doubt([ev], line.text), id === "address" ? addressMethod(line.text) : undefined);
           if ((f.state as Factor["state"]) === "ok") lastMatch[id] = { line, heard: line.text, end: line.endedAt };
           else delete lastMatch[id];
-        } else if ((result === "mismatch" || result === "ambiguous") && about(line.text)) {
+        } else if (result === "mismatch" || result === "ambiguous") {
+          answerLog[id].push({ text: line.text, first });
           Object.assign(f, { state: "confirm", confirmReason: "ambiguous", held: undefined, knownAt: undefined, method: undefined, evidence: ev, ...heardIt });
           delete lastMatch[id];
+          pending = { factor: f, evs: [ev], texts: [line.text], endedAt: line.endedAt, result: "ambiguous", noAttempt: true };
         }
       };
       // A typed correction over the caller's reply to a read-back is the agent's words, not the caller's, unless that
@@ -1811,7 +1821,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           }
         } else if (expecting === "name" && reasked(name)) {
           heardName = true;
-          reanswerHeld(name, aboutName);
+          reanswerHeld(name);
         } else if (expecting === "name" && (lingering || nameExpiredOpen)) {
           heardName = aboutName(line.text);
           if (heardName && !addsNothing(name, line.text)) hearLingering(name);
@@ -1839,7 +1849,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           // The same for the address.
         } else if (expecting === "address" && reasked(address)) {
           heardAddress = true;
-          reanswerHeld(address, aboutAddress);
+          reanswerHeld(address);
         } else if (expecting === "address" && (lingering || addrExpiredOpen)) {
           heardAddress = aboutAddress(line.text);
           if (heardAddress && !addsNothing(address, line.text)) hearLingering(address);

@@ -15,7 +15,7 @@ import { sunlake } from "@/lib/live/sunlake-data";
     never reopened. With the re-ask now taken as a question, that second gap would have hidden a conflicting answer.
 */
 const T = Date.UTC(2026, 10, 20, 12);
-type L = { side: "caller" | "agent"; text: string; s: number; e: number; checked?: boolean; checking?: boolean };
+type L = { side: "caller" | "agent"; text: string; s: number; e: number; checked?: boolean; checking?: boolean; confidence?: number };
 const timed = (lines: L[]): TranscriptEvent[] =>
   lines.map((l, i) => ({
     callId: "CA-c11",
@@ -26,7 +26,7 @@ const timed = (lines: L[]): TranscriptEvent[] =>
     startedAt: T + l.s,
     endedAt: T + l.e,
     final: true,
-    confidence: 0.9,
+    confidence: l.confidence ?? 0.9,
     ...(l.checked ? { checked: true } : {}),
     ...(l.checking ? { checking: true } : {}),
   }));
@@ -142,4 +142,71 @@ test("with the press switch off, a verified match stays verified when the agent 
   const v = run({ strict: true, readBack: true }, [...OPEN, ADDR, REASK, reply("Lake Road, in Boston.")], 33_000);
   assert.equal(factor(v, "address").state, "ok");
   assert.equal(factor(v, "address").evidence?.text, "Hill Road, in Dallas.");
+});
+
+/*
+  The independent check of C11 (20 Nov) found that the answer to a re-ask was judged one line at a time: "Lake Road."
+  released the hold, then "In Boston." counted as a failed attempt, and two such re-asks locked the call. "In Boston."
+  alone, or after "Hill Road.", left the hold, so a press verified over a different city.
+*/
+const said = (text: string, s: number, e: number, extra: Partial<L> = {}): L => ({ side: "caller", text, s, e, checked: true, ...extra });
+const THANKS: L = { side: "agent", text: "Thank you.", s: 34_000, e: 35_000 };
+
+test("the answer to a re-ask is read whole: any other address is asked again, never a failed attempt (C11 check)", () => {
+  const held = [...OPEN, ADDR];
+  for (const answer of [
+    [said("Lake Road.", 28_000, 29_000), said("In Boston.", 29_500, 30_500)],
+    [said("Lake Road, in Boston.", 28_000, 30_000), said("Yes, Boston.", 30_500, 31_500)],
+    [said("In Boston.", 28_000, 29_000)],
+    [said("Hill Road.", 28_000, 29_000), said("In Boston.", 29_500, 30_500)],
+  ]) {
+    const label = answer.map((l) => l.text).join(" ");
+    const v = run(C11, [...held, REASK, ...answer, THANKS], 37_000, [press("name", 32_000), press("address", 36_000)]);
+    const a = factor(v, "address");
+    assert.equal(a.state, "confirm", label);
+    assert.equal(a.confirmReason, "ambiguous", label);
+    assert.equal(a.attempts, 0, label);
+    assert.equal(card(v, "address")!.askAgain, true, label);
+    assert.equal(v.verification.verified, false, `${label}: no press verifies the address`);
+  }
+  // The same for the name.
+  const name = run(
+    C11,
+    [...OPEN.slice(0, 5), { side: "agent", text: "Sorry, could you repeat your full name.", s: 18_000, e: 20_000 }, said("Tom Baker.", 21_000, 22_000), said("Tom Baker, yes.", 22_500, 23_500), { ...THANKS, s: 27_000, e: 28_000 }],
+    30_000,
+  );
+  assert.equal(factor(name, "name").confirmReason, "ambiguous");
+  assert.equal(factor(name, "name").attempts, 0);
+  // Once asked again, the next answer is judged like any answer: a clear wrong one counts, once, and the call isn't locked.
+  const twice = run(
+    C11,
+    [...held, REASK, said("Lake Road.", 28_000, 29_000), said("In Boston.", 29_500, 30_500), { ...REASK, s: 34_000, e: 36_000 }, said("Lake Road.", 37_000, 38_000), said("In Boston.", 38_500, 39_500), { ...THANKS, s: 43_000, e: 44_000 }],
+    46_000,
+  );
+  assert.equal(factor(twice, "address").attempts, 1);
+  assert.equal(twice.verification.locked, false);
+});
+
+test("a doubtful new answer to a re-ask, once pressed, is recorded as the agent's confirmation (C11 check)", () => {
+  const v = run(C11, [...OPEN, ADDR, REASK, reply("Hill Road in Dallas.", { confidence: 0.3 })], 35_000, [press("name", 31_000), press("address", 32_000)]);
+  const a = factor(v, "address");
+  assert.equal(a.state, "ok");
+  assert.equal(a.evidence?.text, "Hill Road in Dallas.");
+  assert.equal(a.method, "confirmed by the agent", "not the earlier answer's \"street and city\"");
+});
+
+test("a doubtful email never opens a read-back of the street and city (C11 check)", () => {
+  const email = said("s dot miller at example mail dot com", 21_000, 23_000, { confidence: 0.3 });
+  const back: L[] = [{ side: "agent", text: "So that's Hill Road in Dallas, right?", s: 25_000, e: 27_000 }, said("Yes.", 27_500, 28_000)];
+  // Given as the answer to the street and city question (the same on C10), and given unasked.
+  const unasked: L[] = [...OPEN.slice(0, 5), { side: "agent", text: "Thank you, one moment.", s: 17_000, e: 18_000 }, { side: "agent", text: "Let me pull that up.", s: 19_000, e: 20_000 }, email];
+  for (const [label, lines, switches] of [
+    ["asked", [...OPEN, email], { strict: true, readBack: true }],
+    ["unasked", unasked, { strict: true, readBack: true }],
+    ["unasked, all switches", unasked, C11],
+  ] as [string, L[], Switches][]) {
+    const v = run(switches, [...lines, ...back], 30_000);
+    assert.notEqual(factor(v, "address").state, "ok", label);
+    assert.equal(v.verification.verified, false, label);
+  }
 });

@@ -133,6 +133,28 @@ test("a re-ask is a question with or without its question mark (C11)", () => {
     assert.equal(agentAsksFor(text, true), null, text);
 });
 
+// Independent check of C11 (20 Nov): "the name of the street" was taken as a name question, and two answers to it locked
+// the call with stricter matching on; "Can you just repeat…" and "Would you mind repeating…" were no questions.
+test("the name of the street is the address; the name of something else is no question for a detail (C11 check)", () => {
+  for (const underway of [true, false]) {
+    for (const [text, want] of [
+      ["Could you repeat the name of the street.", "address"],
+      ["Sorry, what's the name of the street?", "address"],
+      ["Can you just repeat the street and city.", "address"],
+      ["Could you please say the street and city again.", "address"],
+      ["Would you mind repeating the street and city.", "address"],
+      ["Would you mind repeating your full name.", "name"],
+      ["Can I have your full name and the name of the street?", "name"],
+    ] as const)
+      assert.equal(agentAsksFor(text, underway), want, `${text} (identity check under way: ${underway})`);
+  }
+  assert.equal(agentAsksFor("Again, the name of the street.", true), "address");
+  assert.equal(agentAsksFor("Again, the address of the delivery.", true), "address");
+  assert.equal(agentAsksFor("Thank you and your email for the confirmation.", true), "address");
+  for (const text of ["Say the name of the product.", "Again, your email confirmation shortly.", "Again, the name of the courier."])
+    assert.equal(agentAsksFor(text, true), null, text);
+});
+
 test("agent asks the customer to choose", () => {
   assert.ok(agentAsksChoice("Which do you prefer?"));
   assert.ok(agentAsksChoice("You can have either a new tablet ships today at no cost or a full refund in 3 to 5 business days."));
