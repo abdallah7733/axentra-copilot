@@ -152,6 +152,13 @@ export type Policy = {
    * strictFlags). Off unless the build sets it.
    */
   strictMatch?: boolean;
+  /**
+   * C12 (his "Build C12", 23 Nov 2026): a name or address answer is checked with the agent's question in front of it, when
+   * the question is one of his usual ones (usual-questions.ts) and the engine sends word scores; the answer is cut back
+   * out of what the check model wrote and judged on its own words' scores (question-check.ts). Works only with
+   * agentConfirmsMatch, so every spoken match still waits for the agent's press. Off unless the build sets it.
+   */
+  questionInCheck?: boolean;
   authority: AuthorityBand[];
   refundTiming: string;
   /** A verb phrase that follows "it": "ships the same day by expedited shipping". Say when it ships, never when it arrives. */

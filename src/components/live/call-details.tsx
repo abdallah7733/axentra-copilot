@@ -111,6 +111,9 @@ export function CallDetails({ className }: { className?: string }) {
   const checked = lines.filter((l) => l.checkSeconds !== undefined && !l.checkFailed && !l.probe).map((l) => (l.availableAtEpoch - l.endedAtEpoch) / 1000);
   const notChecked = lines.filter((l) => !l.probe && (l.checkFailed || l.checkSkipped)).length;
   const checkedMid = median(checked);
+  // C12: how the answers checked with the agent's question in front went (LiveLine.withQuestion).
+  const questionInCheck = !!pack.policy.questionInCheck && !!pack.policy.agentConfirmsMatch;
+  const withQuestion = (outcome: string) => lines.filter((l) => l.withQuestion?.outcome === outcome).length;
   const running = phase === "active" || replaying;
   const elapsed = startedAt === null ? null : (running ? Math.max(now, startedAt) : endedAt ?? startedAt) - startedAt;
   const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
@@ -175,6 +178,25 @@ export function CallDetails({ className }: { className?: string }) {
           {/* A build setting (NEXT_PUBLIC_NAME_READ_BACK), so a recording shows which rules it ran. */}
           <Row label="Name read-back">{pack.policy.nameReadBack ? "On (this build)" : "Off"}</Row>
           <Row label="Address read-back">{pack.policy.addressReadBack ? "On (this build)" : "Off"}</Row>
+          {/* A build setting (NEXT_PUBLIC_QUESTION_IN_CHECK); it needs the engine copy with word scores. */}
+          {questionInCheck && (
+            <Row label="Question in the check">
+              {health && !health.wordScores ? (
+                "Off: this engine has no word scores"
+              ) : (
+                <Mono>
+                  On (this build) · used {withQuestion("used")}
+                  {(
+                    [
+                      ["alone", "heard on its own"],
+                      ["not-sent", "not sent"],
+                      ["failed", "failed"],
+                    ] as const
+                  ).map(([outcome, label]) => (withQuestion(outcome) ? ` · ${label} ${withQuestion(outcome)}` : ""))}
+                </Mono>
+              )}
+            </Row>
+          )}
           {health?.assist === "local" && (
             <>
               <Row label="Local model">

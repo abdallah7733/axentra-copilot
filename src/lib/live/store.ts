@@ -16,6 +16,7 @@ import {
   type TwilioCall,
   type TwilioDevice,
 } from "./engine";
+import { checkWithQuestion, planQuestion, type AloneWhy, type Heard, type QuestionNotSent } from "./question-check";
 import { isShortReply, sendShortReply } from "./short-reply";
 
 /*
@@ -62,6 +63,17 @@ export type LiveLine = {
   probe?: boolean;
   /** What the second model heard on that line (text null: the check failed), and when (epoch ms). */
   reheard?: { text: string | null; confidence: number | null; at: number };
+  /**
+   * C12: how this key answer's check went when the copilot named the agent's question to put in front (`question`: that
+   * line's key). "used": the check heard the question, `pause` seconds of silence and the answer, and the answer was cut
+   * back out (`whole`: what the check wrote for all of it). "alone": that came back unusable (`why`), so the answer was
+   * heard again on its own, as today. "not-sent": the question wasn't put in front (`why`). "failed": a request failed.
+   */
+  withQuestion?:
+    | { outcome: "used"; question: string; pause: number; whole: string; wholeConfidence: number | null; ratio: number }
+    | { outcome: "alone"; question: string; pause: number; why: AloneWhy; whole: string }
+    | { outcome: "not-sent"; question: string; why: QuestionNotSent }
+    | { outcome: "failed"; question: string; pause: number };
 };
 
 export type EngineState = "checking" | "offline" | "online";
@@ -111,8 +123,9 @@ type LiveState = {
    * A key answer that can't be checked is marked on screen (not in a replay, which has no audio).
    * `probe`: an agent line heard again in case it was the name read-back; its text stays as first heard
    * and the second model's hearing is kept beside it (LiveLine.reheard).
+   * `question` (C12): the key of the agent's question to put in front of this answer (LiveLine.withQuestion).
    */
-  checkLine: (key: string, probe?: boolean) => "started" | "no-audio" | "no-model";
+  checkLine: (key: string, probe?: boolean, question?: string) => "started" | "no-audio" | "no-model";
 };
 
 const MIC_KEY = "axentra-mic-label";
@@ -334,7 +347,7 @@ export const useLive = create<LiveState>((set, get) => {
     replaying: false,
     sopOpen: false,
 
-    checkLine: (key, probe = false) => {
+    checkLine: (key, probe = false, question) => {
       const samples = recentAudio.get(key);
       const skipped = !get().health?.check ? "no-model" : !samples ? "no-audio" : null;
       if (skipped || !samples) {
@@ -346,16 +359,36 @@ export const useLive = create<LiveState>((set, get) => {
       const began = performance.now();
       const heard = get().lines.find((l) => l.key === key);
       const fast = heard?.text ?? "";
+      const side = heard?.side ?? "caller";
+      // C12: the agent's question goes in front only with the engine copy that returns word scores, while the question's
+      // audio is still held (it stays held for later checks), and when the answer began after the question ended.
+      const plan =
+        !probe && question && heard
+          ? planQuestion({ question: get().lines.find((l) => l.key === question), audio: recentAudio.get(question), answer: heard, wordScores: !!get().health?.wordScores })
+          : null;
+      const asked = plan && question && "send" in plan ? { key: question, ...plan.send } : null;
+      const notSent: LiveLine["withQuestion"] = plan && question && "notSent" in plan ? { outcome: "not-sent", question, why: plan.notSent } : undefined;
       // The copilot asked for this check and already holds the line back (or, for a probe, counts it as heard); only
       // the screen needs to know.
       updateLine(key, probe ? { checking: true, probe: true } : { checking: true }, false);
-      const failed = (checkSeconds: number) =>
-        updateLine(key, probe ? { checking: false, checkSeconds, reheard: { text: null, confidence: null, at: epochNow() } } : { checking: false, checkFailed: true, checkSeconds, availableAtEpoch: epochNow() });
-      recognize(heard?.side ?? "caller", samples, true).then(
-        (result) => {
+      const failed = (checkSeconds: number, change: Partial<LiveLine> = {}) =>
+        updateLine(key, probe ? { checking: false, checkSeconds, reheard: { text: null, confidence: null, at: epochNow() } } : { checking: false, checkFailed: true, checkSeconds, availableAtEpoch: epochNow(), ...change });
+      const check: Promise<{ result: Heard; withQuestion?: LiveLine["withQuestion"] }> = asked
+        ? checkWithQuestion({ answer: samples, question: asked.audio, questionText: asked.text, pause: asked.pause, hear: (clip, words) => recognize(side, clip, true, words) }).then(
+            ({ heard: result, outcome }) => ({
+              result,
+              withQuestion:
+                outcome.kind === "used"
+                  ? { outcome: "used", question: asked.key, pause: outcome.pause, whole: outcome.whole, wholeConfidence: outcome.wholeConfidence, ratio: outcome.ratio }
+                  : { outcome: "alone", question: asked.key, pause: outcome.pause, why: outcome.why, whole: outcome.whole },
+            })
+          )
+        : recognize(side, samples, true).then((result) => ({ result, ...(notSent ? { withQuestion: notSent } : {}) }));
+      check.then(
+        ({ result, withQuestion }) => {
           if (callEpoch !== epoch) return;
           const checkSeconds = (performance.now() - began) / 1000;
-          if (!result.text) return failed(checkSeconds);
+          if (!result.text) return failed(checkSeconds, withQuestion ? { withQuestion } : {});
           if (probe) return updateLine(key, { checking: false, checkSeconds, reheard: { text: result.text, confidence: result.confidence, at: epochNow() } });
           updateLine(key, {
             checking: false,
@@ -364,10 +397,11 @@ export const useLive = create<LiveState>((set, get) => {
             firstHeard: result.text === fast ? undefined : fast,
             checkSeconds,
             availableAtEpoch: epochNow(),
+            ...(withQuestion ? { withQuestion } : {}),
           });
         },
         () => {
-          if (callEpoch === epoch) failed((performance.now() - began) / 1000);
+          if (callEpoch === epoch) failed((performance.now() - began) / 1000, asked ? { withQuestion: { outcome: "failed", question: asked.key, pause: asked.pause } } : {});
         }
       );
       return "started";

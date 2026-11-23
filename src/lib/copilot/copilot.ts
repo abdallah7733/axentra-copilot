@@ -2,6 +2,7 @@ import { findOrderMentions, findSplitOrder, matchOrder, type MentionMethod, type
 import { agentAsksChoice, agentAsksFor, agentCommits, agentDisclosesFactor, agentOffers, escalationWords, readChoice, readIntent, safetyWords, type Choice } from "./signals";
 import { findAffirmed, normalize, repeatsItself, soundsLike, words as textWords } from "./text";
 import type { AgentAction, AuthorityBand, ClientPack, Customer, Order, Side, TranscriptEvent } from "./types";
+import { usualQuestion } from "./usual-questions";
 import { COMMON, deniesIdentity, isFiller, matchAddress, matchName, namesAnother, readBackFits, soundsLikeRecord, spelledLetters, strictFlags, withoutExamples } from "./verification";
 
 /*
@@ -197,6 +198,18 @@ export type CopilotView = {
   awaiting: "issue" | "name" | "address" | "choice" | null;
   /** `awaiting` comes from a name or address question lingering over hold lines ("One moment."), and lapses at this time. */
   awaitingUntil?: number;
+  /**
+   * C12 (Policy.questionInCheck): the agent's question behind `awaiting` (its line's key), when `awaiting` is the name or
+   * address, a question asked it (not a read-back), it is one of his usual questions (usual-questions.ts), and nothing
+   * has been said since on either side. The caller's next line is checked with it in front.
+   */
+  awaitingAsk?: string;
+  /**
+   * C12: key answers (see keyAnswers) that are the caller's first line after one of his usual name or address questions,
+   * each with that question's line key: each is checked with the question in front. Absent unless the build sets
+   * questionInCheck and such an answer was said.
+   */
+  checkContext?: Record<string, string>;
   /**
    * Caller lines that answer a key question, judged in speech order: the problem (until one is heard),
    * the name, the address and the choice. Each gets the second model's check once, even when the
@@ -750,6 +763,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   let verifiedAt: Evidence | undefined;
   let locked = false;
   let expecting: "name" | "address" | "order" | null = null;
+  // C12: the agent's question that set `expecting` to the name or address; null when a read-back set it.
+  let expectingAsk: Evidence | null = null;
   // The name or address question carried over agent lines that only held or acknowledged, until this time.
   let lingerUntil: number | null = null;
   // The agent's latest question for the name, and their read-back of it still waiting for the caller's answer.
@@ -1026,6 +1041,26 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   const refused: RefusedApproval[] = [];
   let unheardApproval: { ev: Evidence; value: "replacement" | "refund" } | null = null;
   const keyAnswers: string[] = [];
+  // C12 (Policy.questionInCheck, only with agentConfirmsMatch, so every spoken match still waits for the press): an answer
+  // to his usual name or address question is checked with that question in front. Never a question with a word from the
+  // customer records in it, even an ordinary word ("May"), and never a read-back: those keep today's check.
+  const checkContext: Record<string, string> = {};
+  const questionInCheck = !!pack.policy.questionInCheck && !!pack.policy.agentConfirmsMatch;
+  const recordWords = new Set(
+    [...pack.customers.flatMap((c) => [c.name, c.address.street, c.address.city, c.address.state]), ...pack.orders.map((o) => o.customerName)].flatMap((t) => textWords(t))
+  );
+  // Every reading of his line must be one of his usual questions: as the fast model heard it, as typed over, and as the
+  // second model heard it again, when it was.
+  const usualAsk = (ask: Evidence, detail: "name" | "address") => {
+    const again = corrected.find((l) => l.key === ask.key)?.reheard?.text;
+    return [ask.text, ask.typedFrom, ask.firstHeard, again].every((t) => t === undefined || t === null || usualQuestion(t, detail, recordWords));
+  };
+  // Only the caller's first line after his question hears it in front: nothing else began in between on either side,
+  // lines still being checked included (the re-score tested the question, the real pause, then the answer).
+  const firstAfter = (ask: Evidence, at: number) => !corrected.some((l) => l.key !== ask.key && l.startedAt > ask.at && l.startedAt < at);
+  /** His question to put in front of a caller line said at `at` (Infinity: the next one) while `detail` is awaited. */
+  const withQuestion = (detail: typeof expecting, at: number): string | undefined =>
+    questionInCheck && (detail === "name" || detail === "address") && expectingAsk && firstAfter(expectingAsk, at) && usualAsk(expectingAsk, detail) ? expectingAsk.key : undefined;
   const readBackChecks: string[] = [];
   const agentChecks: CopilotView["agentChecks"] = [];
 
@@ -1506,6 +1541,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       const changesChoice = !!choice && !!heardChoice && heardChoice !== "both" && heardChoice !== choice.value;
       if (!locked && (!intent || expecting === "name" || expecting === "address" || lowConfidenceChoice || (!choice && (choiceAsked || unreadChoice)) || (choice && (choiceAsked || changesChoice)))) {
         keyAnswers.push(line.key);
+        // C12: an answer to his usual name or address question is checked with that question in front.
+        const asked = withQuestion(expecting, line.startedAt);
+        if (asked) checkContext[line.key] = asked;
       }
       // A reply to the agent's read-back of a detail already verified when it reached the console: it may reject it, so it
       // is checked too. Verified only later (typed after a refused read-back), it is no reply to a verified detail.
@@ -2057,11 +2095,13 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       if (asks || readBack || addrBack) [earlySaid.name, earlySaid.address] = [null, null];
       if (readBack) {
         expecting = "name";
+        expectingAsk = null;
         readBacksUsed.name++;
         lastReadBack = { ...readBack, line };
         readBacksSeen.push(line);
       } else if (addrBack) {
         expecting = "address";
+        expectingAsk = null;
         readBacksUsed.address++;
         lastAddrBack = { ...addrBack, line };
         addrBacksSeen.push(line);
@@ -2081,6 +2121,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       if (asks === "address") [addressAsk, addressAskEnds] = [ev, Infinity];
       if (asks) {
         expecting = asks;
+        expectingAsk = asks === "name" || asks === "address" ? ev : null;
         const factor = asks === "name" ? name : asks === "address" ? address : null;
         if (factor && (factor.state === "idle" || factor.state === "failed" || factor.state === "partial")) factor.state = "asking";
       }
@@ -2321,6 +2362,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           : !intent
             ? "issue"
             : null;
+  // C12: the caller's next line, when it is the answer awaited to his usual question, is checked with it in front.
+  const awaitingAsk = (awaiting === "name" || awaiting === "address") && awaiting === expecting ? withQuestion(awaiting, Infinity) : undefined;
 
   // A caller line after the choice that the second speech model is still checking, and that reads (as first
   // heard) as a different choice.
@@ -3350,7 +3393,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     documentation,
     awaiting,
     ...(lingerUntil !== null && !lingerOver && identityFactor && awaiting === identityFactor.id ? { awaitingUntil: lingerUntil } : {}),
+    ...(awaitingAsk ? { awaitingAsk } : {}),
     keyAnswers,
+    ...(Object.keys(checkContext).length ? { checkContext } : {}),
     readBackChecks,
     agentChecks,
     undoable: [

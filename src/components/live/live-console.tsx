@@ -57,10 +57,13 @@ function LiveTopBar() {
  * A build setting (NEXT_PUBLIC_CONSOLE_CHANNEL=development); the pitch console and the public site don't set it.
  */
 function DevelopmentBand() {
+  // C12: the question goes in front only with the engine copy that returns word scores; any other engine is named here.
+  const noScores = useLive((s) => !!s.health && !s.health.wordScores);
   if (process.env.NEXT_PUBLIC_CONSOLE_CHANNEL !== "development") return null;
+  const questionInCheck = !!pack.policy.questionInCheck && !!pack.policy.agentConfirmsMatch;
   return (
     <div role="status" className="flex min-h-7 items-center justify-center gap-2 border-b border-amber-500/40 bg-amber-500/15 px-4 py-1 text-xs font-medium text-amber-700 dark:text-amber-500">
-      Development console {process.env.NEXT_PUBLIC_BUILD_COMMIT || "(no build id)"}, not the pitch console · Name read-back {pack.policy.nameReadBack ? "on" : "off"} · Address read-back {pack.policy.addressReadBack ? "on" : "off"} · Agent confirms every match {pack.policy.agentConfirmsMatch ? "on" : "off"} · Stricter matching {pack.policy.strictMatch ? "on" : "off"}
+      Development console {process.env.NEXT_PUBLIC_BUILD_COMMIT || "(no build id)"}, not the pitch console · Name read-back {pack.policy.nameReadBack ? "on" : "off"} · Address read-back {pack.policy.addressReadBack ? "on" : "off"} · Agent confirms every match {pack.policy.agentConfirmsMatch ? "on" : "off"} · Stricter matching {pack.policy.strictMatch ? "on" : "off"} · Question in the check {!questionInCheck ? "off" : noScores ? "off: this engine has no word scores" : "on"}
     </div>
   );
 }

@@ -22,11 +22,26 @@ export type EngineHealth = {
   /** The second speech model (large-v3-turbo) that re-checks key caller answers is ready. */
   check?: boolean;
   checkModel?: string;
+  /**
+   * C12: the engine copy with word scores (server-word-scores.js, his "Engine copy with word scores", 23 Nov 2026) runs:
+   * a check asked with words=1 also returns each word's score. The pitch engine never sends this.
+   */
+  wordScores?: boolean;
 };
 
 export type Side = "caller" | "agent";
 
-export type Recognition = { side: Side; model: string; text: string; confidence: number | null; elapsedMs: number };
+export type Recognition = {
+  side: Side;
+  model: string;
+  text: string;
+  confidence: number | null;
+  elapsedMs: number;
+  /** Only from the engine copy with word scores, only when asked: each word the check model wrote, with its score. */
+  words?: [string, number][];
+  /** Only with `words`: the engine's repeat guard fired, and its confidence was capped at 0.5. */
+  looped?: boolean;
+};
 
 /** Engine endpoints live at the site root, outside the /console base path. */
 export async function readEngineHealth(): Promise<EngineHealth | null> {
@@ -58,9 +73,10 @@ export const CHECK_TIMEOUT_MS = 9000;
 /**
  * Recognises one phrase. With `check`, the engine uses its second, slower model with the
  * full audio window: short answers heard on their own are where the fast model fails.
+ * With `words` (C12, a check only), the engine copy with word scores also returns each word's score.
  */
-export async function recognize(side: Side, samples: Float32Array, check = false): Promise<Recognition> {
-  const response = await fetch(`/transcribe?${new URLSearchParams({ side, lang: "en", ...(check ? { check: "1" } : {}) })}`, {
+export async function recognize(side: Side, samples: Float32Array, check = false, words = false): Promise<Recognition> {
+  const response = await fetch(`/transcribe?${new URLSearchParams({ side, lang: "en", ...(check ? { check: "1" } : {}), ...(check && words ? { words: "1" } : {}) })}`, {
     method: "POST",
     headers: { "Content-Type": "audio/wav" },
     body: wav(samples, 16000),

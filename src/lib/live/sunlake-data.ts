@@ -154,6 +154,9 @@ export const sunlake: ClientPack = {
     // waits for the agent's press, and a match that says more than the record is asked again. Build settings, off unless set.
     agentConfirmsMatch: process.env.NEXT_PUBLIC_AGENT_CONFIRMS_MATCH === "1",
     strictMatch: process.env.NEXT_PUBLIC_STRICT_MATCH === "1",
+    // C12 (his "Build C12", 23 Nov): the agent's usual question goes in front of a name or address answer for the check.
+    // A build setting, off unless set, and only with agentConfirmsMatch (see Policy.questionInCheck).
+    questionInCheck: process.env.NEXT_PUBLIC_QUESTION_IN_CHECK === "1",
     authority: [
       { upTo: 500, approver: "Agent (Tier 1)", agentCanApprove: true, row: 0 },
       { upTo: 1500, approver: "Team Lead", agentCanApprove: false, row: 1 },
