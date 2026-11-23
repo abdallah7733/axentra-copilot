@@ -11,7 +11,7 @@ import { sunlake } from "@/lib/live/sunlake-data";
   It changes nothing else the copilot decides: the store sends the audio.
 */
 const T = Date.UTC(2026, 10, 23, 12);
-type L = { side: "caller" | "agent"; text: string; s: number; e: number; checked?: boolean; checking?: boolean; reheard?: string };
+type L = { side: "caller" | "agent"; text: string; s: number; e: number; checked?: boolean; checking?: boolean; reheard?: string; firstHeard?: string };
 const timed = (lines: L[]): TranscriptEvent[] =>
   lines.map((l, i) => ({
     callId: "CA-c12",
@@ -26,6 +26,7 @@ const timed = (lines: L[]): TranscriptEvent[] =>
     ...(l.checked ? { checked: true } : {}),
     ...(l.checking ? { checking: true } : {}),
     ...(l.reheard ? { reheard: { text: l.reheard, confidence: 0.9, at: T + l.e + 2000 } } : {}),
+    ...(l.firstHeard ? { firstHeard: l.firstHeard } : {}),
   }));
 type Switches = { press?: boolean; question?: boolean };
 const C12: Switches = { press: true, question: true };
@@ -34,7 +35,7 @@ const pack = (o: Switches): ClientPack => ({
   ...sunlake,
   policy: { ...sunlake.policy, agentConfirmsMatch: !!o.press, strictMatch: true, nameReadBack: true, addressReadBack: true, questionInCheck: !!o.question },
 });
-const run = (o: Switches, lines: L[], now: number, actions: AgentAction[] = []) => analyze(pack(o), timed(lines), actions, T + now);
+const run = (o: Switches, lines: L[], now: number, actions: AgentAction[] = [], p: ClientPack = pack(o)) => analyze(p, timed(lines), actions, T + now);
 
 const START: L[] = [
   { side: "agent", text: "Thank you for calling Sunlake. How can I help you today?", s: 0, e: 2000 },
@@ -124,4 +125,37 @@ test("only the caller's first line after the question, with nothing said in betw
   const after = run(C12, [...START, NAME_Q, checking, { ...second, checked: false }], 17_500);
   assert.ok(after.keyAnswers.includes("k6"));
   assert.equal(after.checkContext, undefined);
+});
+
+test("a word of the records keeps his question out even when it is one of his questions' words", () => {
+  // Independent check of C12, finding 5: Sunlake's record words are outside his questions' words, so test a record with
+  // one inside them: a second customer named May.
+  const may: L = { side: "agent", text: "May I have your full name, please?", s: 12_500, e: 14_500 };
+  assert.deepEqual(run(C12, [...START, may, NAME_A], 16_500).checkContext, { k5: "k4" }, "not a record word at Sunlake");
+  const withMay: ClientPack = { ...pack(C12), customers: [...sunlake.customers, { ...sunlake.customers[0], id: "cust-may", name: "May Brook" }] };
+  assert.equal(run(C12, [...START, may, NAME_A], 16_500, [], withMay).checkContext, undefined);
+  assert.equal(run(C12, [...START, may], 14_600, [], withMay).awaitingAsk, undefined);
+  assert.deepEqual(run(C12, [...START, NAME_Q, NAME_A], 16_500, [], withMay).checkContext, { k5: "k4" }, "his other usual question still goes in front");
+});
+
+test("what the fast model first heard on his line counts too, when the check replaced it", () => {
+  const replaced: L = { ...NAME_Q, checked: true, firstHeard: "First, can I have your phone number, please?" };
+  assert.equal(run(C12, [...START, replaced, NAME_A], 16_500).checkContext, undefined);
+  const same: L = { ...NAME_Q, checked: true, firstHeard: "First, can I have your full name?" };
+  assert.deepEqual(run(C12, [...START, same, NAME_A], 16_500).checkContext, { k5: "k4" });
+});
+
+test("a caller line said over the end of his question counts as said in between", () => {
+  // Independent check of C12, finding 2: the caller began before his question and was still talking when it ended.
+  // Lines in speech order, as the store sends them.
+  const over: L = { side: "caller", text: "Yes, it was yesterday.", s: 12_200, e: 15_000, checked: true };
+  const answer: L = { ...NAME_A, s: 15_500, e: 16_500 };
+  assert.equal(run(C12, [...START, over, NAME_Q], 15_100).awaiting, "name");
+  assert.equal(run(C12, [...START, over, NAME_Q], 15_100).awaitingAsk, undefined);
+  const v = run(C12, [...START, over, NAME_Q, answer], 17_000);
+  assert.ok(v.keyAnswers.includes("k6"));
+  assert.equal(v.checkContext, undefined);
+  // Ended before his question did: the answer still hears it in front.
+  const before: L = { ...over, e: 14_000 };
+  assert.deepEqual(run(C12, [...START, before, NAME_Q, answer], 17_000).checkContext, { k6: "k5" });
 });

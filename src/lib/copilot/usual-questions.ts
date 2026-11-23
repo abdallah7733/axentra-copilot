@@ -107,14 +107,9 @@ function within(a: readonly string[], b: readonly string[]): boolean {
   return true;
 }
 
-/**
- * The fast model's words for an agent line closely match one of his usual questions for this detail. `avoid`: words of
- * the customer records (names, streets, cities); a line with any of them never matches, even where the word is also an
- * ordinary one ("May").
- */
-export function usualQuestion(text: string, detail: IdentityDetail, avoid: ReadonlySet<string> = new Set()): boolean {
+/** A line's words without articles and "please", and without the lead-ins said before the question itself. */
+function questionWords(text: string): string[] {
   let w = core(text);
-  if (w.some((word) => avoid.has(word))) return false;
   for (let found = true; found; ) {
     found = false;
     for (const lead of LEAD_INS)
@@ -124,7 +119,30 @@ export function usualQuestion(text: string, detail: IdentityDetail, avoid: Reado
         break;
       }
   }
+  return w;
+}
+
+/**
+ * The fast model's words for an agent line closely match one of his usual questions for this detail. `avoid`: words of
+ * the customer records (names, streets, cities); a line with any of them never matches, even where the word is also an
+ * ordinary one ("May"), or one of the words dropped before comparing ("An").
+ */
+export function usualQuestion(text: string, detail: IdentityDetail, avoid: ReadonlySet<string> = new Set()): boolean {
+  if (words(text).some((word) => avoid.has(word))) return false;
+  const w = questionWords(text);
   if (w.length < 2 || w.some((word) => !QUESTION_WORDS.has(word))) return false;
   if (detail === "name" ? !NAMES_IT(w) || PLACES_IT(w) : !PLACES_IT(w) || NAMES_IT(w)) return false;
   return TEMPLATES[detail].some((t) => distance(w, t) <= 1 || (within(w, t) && t.length - w.length <= 2));
 }
+
+/** The detail a line asks for, when it is one of his usual questions. */
+export const usualDetail = (text: string): IdentityDetail | null => (usualQuestion(text, "name") ? "name" : usualQuestion(text, "address") ? "address" : null);
+
+/** How many words a line is from the closest of his usual questions for this detail (articles and "please" aside). */
+export const questionGap = (text: string, detail: IdentityDetail): number => {
+  const w = questionWords(text);
+  return Math.min(...TEMPLATES[detail].map((t) => distance(w, t)));
+};
+
+/** A word of his usual questions, articles and "please" included. */
+export const isQuestionWord = (word: string): boolean => QUESTION_WORDS.has(word) || IGNORED.has(word);

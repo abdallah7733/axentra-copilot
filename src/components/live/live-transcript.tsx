@@ -26,6 +26,7 @@ const NOT_SENT_WHY: Record<QuestionNotSent, string> = {
   "no-scores": "this engine has no word scores",
   "no-audio": "your question's audio was no longer held",
   overlap: "the caller began before your question ended",
+  unsettled: "something said between them wasn't written down yet",
 };
 const questionNote = (q: LiveLine["withQuestion"]) =>
   !q

@@ -8,6 +8,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { SopSheet } from "@/components/workspace/sop-sheet";
 import { pack, useCopilot } from "@/lib/live/copilot-store";
+import { questionInCheckState } from "@/lib/live/question-check";
 import { useLive } from "@/lib/live/store";
 import { CallDetails } from "./call-details";
 import { LiveControls } from "./live-controls";
@@ -56,14 +57,21 @@ function LiveTopBar() {
  * the 22 Oct call ran the pitch console when a development one was meant, with only a small build id to tell.
  * A build setting (NEXT_PUBLIC_CONSOLE_CHANNEL=development); the pitch console and the public site don't set it.
  */
+const BAND_STATE = {
+  waiting: "waiting for the engine",
+  "no-model": "off: no check model running",
+  "no-scores": "off: this engine has no word scores",
+  on: "on",
+} as const;
+
 function DevelopmentBand() {
-  // C12: the question goes in front only with the engine copy that returns word scores; any other engine is named here.
-  const noScores = useLive((s) => !!s.health && !s.health.wordScores);
+  // C12: the question goes in front only with a check model that returns word scores (the engine copy with word scores).
+  const engineState = useLive((s) => questionInCheckState(s.health));
   if (process.env.NEXT_PUBLIC_CONSOLE_CHANNEL !== "development") return null;
   const questionInCheck = !!pack.policy.questionInCheck && !!pack.policy.agentConfirmsMatch;
   return (
     <div role="status" className="flex min-h-7 items-center justify-center gap-2 border-b border-amber-500/40 bg-amber-500/15 px-4 py-1 text-xs font-medium text-amber-700 dark:text-amber-500">
-      Development console {process.env.NEXT_PUBLIC_BUILD_COMMIT || "(no build id)"}, not the pitch console · Name read-back {pack.policy.nameReadBack ? "on" : "off"} · Address read-back {pack.policy.addressReadBack ? "on" : "off"} · Agent confirms every match {pack.policy.agentConfirmsMatch ? "on" : "off"} · Stricter matching {pack.policy.strictMatch ? "on" : "off"} · Question in the check {!questionInCheck ? "off" : noScores ? "off: this engine has no word scores" : "on"}
+      Development console {process.env.NEXT_PUBLIC_BUILD_COMMIT || "(no build id)"}, not the pitch console · Name read-back {pack.policy.nameReadBack ? "on" : "off"} · Address read-back {pack.policy.addressReadBack ? "on" : "off"} · Agent confirms every match {pack.policy.agentConfirmsMatch ? "on" : "off"} · Stricter matching {pack.policy.strictMatch ? "on" : "off"} · Question in the check {!questionInCheck ? "off" : BAND_STATE[engineState]}
     </div>
   );
 }

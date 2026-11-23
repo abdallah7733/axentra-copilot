@@ -9,6 +9,9 @@
   audio (store.ts checkLine).
 */
 
+import { words } from "@/lib/copilot/text";
+import { isQuestionWord, questionGap, usualDetail } from "@/lib/copilot/usual-questions";
+
 /** One word as the check model wrote it, with its score (0 to 1). Punctuation comes as words of its own. */
 export type WordScore = readonly [string, number];
 
@@ -84,9 +87,10 @@ export function cutAnswer(text: string, question: string): { question: string; a
 }
 
 /**
- * A sum the way Python 3.12 and later add floats (Neumaier's compensated sum), so a mean that falls exactly on a half
- * rounds as the re-score's did: its scores 0.7267, 0.9846, 0.9749, 0.4858 and 0.903 add to 4.075 there, and to
- * 4.074999999999999 with plain addition, which would round the answer's score down to 0.81 instead of 0.82.
+ * A sum the way Python 3.12 and later add floats (Neumaier's compensated sum), so a mean near a half rounds as the
+ * re-score's did: the scores 0.9297, 0.564 and 0.9813, added from the last word back as answerConfidence adds them,
+ * come to 2.4749999999999996 there and to 2.475 with plain addition, which would round the answer's score up to 0.83
+ * instead of 0.82.
  */
 function pythonSum(values: readonly number[]): number {
   let sum = 0;
@@ -97,6 +101,26 @@ function pythonSum(values: readonly number[]): number {
     sum = next;
   }
   return sum + lost;
+}
+
+/**
+ * Words of his question that the fast model left off its end ("please?", "on the account?", "for the delivery?") come
+ * back at the start of the answer, because the cut follows the fast model's words for his line (the re-score cut
+ * against the check model's own). They go back to his part only when they are all words of his usual questions, end a
+ * sentence, and leave his line at least as close to one of his usual questions: an echo of his question ("Name?") or
+ * any word of the caller's own takes it further, and stays with the answer.
+ */
+export function moveHisTail(cut: { question: string; answer: string }, questionText: string): { question: string; answer: string } {
+  const detail = usualDetail(questionText);
+  if (!detail) return cut;
+  const said = cut.answer.split(/\s+/).filter(Boolean);
+  for (let k = 1; k <= said.length; k++) {
+    if (!words(said[k - 1]).every(isQuestionWord)) return cut;
+    if (!/[.?!]$/.test(said[k - 1])) continue;
+    const question = [cut.question, ...said.slice(0, k)].join(" ");
+    return questionGap(question, detail) <= questionGap(cut.question, detail) ? { question, answer: said.slice(k).join(" ") } : cut;
+  }
+  return cut;
 }
 
 /**
@@ -139,23 +163,33 @@ export function questionPause(question: { endedAtEpoch: number }, answer: { star
   return Math.min(PAUSE_MAX_S, Math.max(PAUSE_MIN_S, real));
 }
 
-/** Why the question wasn't put in front: the engine has no word scores, its audio is gone, or the answer began over it. */
-export type QuestionNotSent = "no-scores" | "no-audio" | "overlap";
+/**
+ * Why the question wasn't put in front: the engine has no word scores, its audio is gone, the answer began over it, or
+ * something else began between them that isn't on the console yet (still being said or still being written down).
+ */
+export type QuestionNotSent = "no-scores" | "no-audio" | "overlap" | "unsettled";
 
 /**
  * Whether the question can go in front of this answer's check: only with the engine copy that returns word scores,
- * while the question's line and audio are still held, and when the answer began after the question ended.
+ * while the question's line and audio are still held, when the answer began after the question ended, and when nothing
+ * else that began between them is still being heard. `heard`: when each phrase still being said or still with the fast
+ * model began (epoch ms), on either side. The copilot named the question from the lines on the console; a phrase that
+ * hasn't landed yet could be something said in between, so the answer keeps today's check (the two sides are written
+ * down separately, so the question and the answer can land before a line said between them).
  */
 export function planQuestion(input: {
-  question: { text: string; endedAtEpoch: number } | undefined;
+  question: { text: string; startedAtEpoch: number; endedAtEpoch: number } | undefined;
   audio: Float32Array | undefined;
   answer: { startedAtEpoch: number };
   wordScores: boolean;
+  heard?: readonly number[];
 }): { send: { audio: Float32Array; text: string; pause: number } } | { notSent: QuestionNotSent } {
   if (!input.wordScores) return { notSent: "no-scores" };
   if (!input.question || !input.audio) return { notSent: "no-audio" };
   const pause = questionPause(input.question, input.answer);
   if (pause === null) return { notSent: "overlap" };
+  const { startedAtEpoch: asked } = input.question;
+  if (input.heard?.some((began) => began >= asked && began < input.answer.startedAtEpoch)) return { notSent: "unsettled" };
   return { send: { audio: input.audio, text: input.question.text, pause } };
 }
 
@@ -168,6 +202,13 @@ export function joinClip(question: Float32Array, pause: number, answer: Float32A
   return clip;
 }
 
+/**
+ * Whether the question can go in front on this engine, for the screen: not before the engine has answered, and only with
+ * a check model that returns word scores (the engine copy with word scores); otherwise every answer keeps today's check.
+ */
+export const questionInCheckState = (health: { check?: boolean; wordScores?: boolean } | null): "waiting" | "no-model" | "no-scores" | "on" =>
+  !health ? "waiting" : !health.check ? "no-model" : !health.wordScores ? "no-scores" : "on";
+
 /** Why an answer sent with the question in front was heard again on its own. */
 export type AloneWhy = "empty" | "only-question" | "weak-cut" | "no-scores" | "no-own-score";
 export type QuestionOutcome =
@@ -178,6 +219,7 @@ export type QuestionOutcome =
  * Checks an answer with the question in front, and falls back to today's check, the answer heard on its own, when the
  * check comes back empty or with only the question, when the question can't be cut out cleanly, or when there are no
  * word scores to judge the answer by. A failed request rejects, as today's check does: nothing is heard again then.
+ * Words of his question that the fast model had left off are his, not the caller's (moveHisTail).
  */
 export async function checkWithQuestion(input: {
   answer: Float32Array;
@@ -195,12 +237,13 @@ export async function checkWithQuestion(input: {
   if (!both.words) return alone("no-scores");
   const cut = cutAnswer(both.text, input.questionText);
   if (cut.ratio < CUT_FLOOR) return alone("weak-cut");
-  if (!plain(cut.answer)) return alone("only-question");
-  const own = answerConfidence(both.words, cut.answer);
+  const { answer } = moveHisTail(cut, input.questionText);
+  if (!plain(answer)) return alone("only-question");
+  const own = answerConfidence(both.words, answer);
   if (own === null) return alone("no-own-score");
   return {
     // The engine caps a looping hearing's figure at 0.5; the answer's own score keeps that cap.
-    heard: { text: cut.answer, confidence: both.looped ? Math.min(own, 0.5) : own },
+    heard: { text: answer, confidence: both.looped ? Math.min(own, 0.5) : own },
     outcome: { kind: "used", whole: both.text, wholeConfidence: both.confidence, ratio: Math.round(cut.ratio * 1000) / 1000, pause: input.pause },
   };
 }

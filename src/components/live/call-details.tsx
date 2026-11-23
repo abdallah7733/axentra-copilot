@@ -4,6 +4,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { CpuIcon, LockSimpleIcon, LockSimpleOpenIcon, ShieldCheckIcon } from "@phosphor-icons/react";
 import { Mono, PanelHeader } from "@/components/workspace/bits";
 import { pack, useCopilot } from "@/lib/live/copilot-store";
+import { questionInCheckState } from "@/lib/live/question-check";
 import { median, useLive } from "@/lib/live/store";
 import { cn } from "@/lib/utils";
 
@@ -15,6 +16,9 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
     </div>
   );
 }
+
+/** C12 on an engine that can't put the question in front (questionInCheckState). */
+const ENGINE_STATE = { waiting: "Waiting for the engine", "no-model": "Off: no check model running", "no-scores": "Off: this engine has no word scores" } as const;
 
 const duration = (ms: number) => {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -114,6 +118,7 @@ export function CallDetails({ className }: { className?: string }) {
   // C12: how the answers checked with the agent's question in front went (LiveLine.withQuestion).
   const questionInCheck = !!pack.policy.questionInCheck && !!pack.policy.agentConfirmsMatch;
   const withQuestion = (outcome: string) => lines.filter((l) => l.withQuestion?.outcome === outcome).length;
+  const engineState = questionInCheckState(health);
   const running = phase === "active" || replaying;
   const elapsed = startedAt === null ? null : (running ? Math.max(now, startedAt) : endedAt ?? startedAt) - startedAt;
   const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
@@ -181,8 +186,8 @@ export function CallDetails({ className }: { className?: string }) {
           {/* A build setting (NEXT_PUBLIC_QUESTION_IN_CHECK); it needs the engine copy with word scores. */}
           {questionInCheck && (
             <Row label="Question in the check">
-              {health && !health.wordScores ? (
-                "Off: this engine has no word scores"
+              {engineState !== "on" ? (
+                ENGINE_STATE[engineState]
               ) : (
                 <Mono>
                   On (this build) · used {withQuestion("used")}
@@ -224,7 +229,10 @@ export function CallDetails({ className }: { className?: string }) {
         </dl>
         <p className="flex items-start gap-2 px-4 pb-4 pt-2 text-xs text-muted-foreground leading-relaxed">
           <ShieldCheckIcon className="size-3.5 shrink-0 mt-0.5" />
-          Call audio is processed in memory and discarded. The transcript and copilot notes live only in this tab.
+          {/* The engine copies made for test calls save each phrase; the pitch engine never does (EngineHealth.saveAudio). */}
+          {health?.saveAudio
+            ? "This engine copy saves each phrase's audio on this Mac for review. The transcript and copilot notes live only in this tab."
+            : "Call audio is processed in memory and discarded. The transcript and copilot notes live only in this tab."}
         </p>
       </section>
     </div>

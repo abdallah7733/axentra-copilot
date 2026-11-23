@@ -5,7 +5,9 @@
   exist, the health check fails, and live mode stays off.
 
   Speech recognition happens on the Mac. Audio goes only to the engine on
-  127.0.0.1, is processed in memory, and is never stored.
+  127.0.0.1 and is processed in memory. The pitch engine never stores it; the
+  engine copies made for test calls save each phrase on the Mac for review, and
+  say so in their health reply (saveAudio).
 */
 
 export type EngineHealth = {
@@ -27,6 +29,8 @@ export type EngineHealth = {
    * a check asked with words=1 also returns each word's score. The pitch engine never sends this.
    */
   wordScores?: boolean;
+  /** An engine copy made for test calls saves each phrase's audio on the Mac for review; the pitch engine never does. */
+  saveAudio?: boolean;
 };
 
 export type Side = "caller" | "agent";
@@ -67,7 +71,11 @@ export async function fetchPhoneToken(accessCode: string): Promise<string> {
   return body.token;
 }
 
-/** The engine gives up on a check after 8 s; the console waits a little longer, then keeps the fast text. */
+/**
+ * The engine gives up on a check after 8 s; the console waits a little longer, then keeps the fast text. Per request:
+ * a C12 check with the agent's question in front that comes back unusable is asked again for the answer alone, so it
+ * can hold an answer for up to twice this (question-check.ts checkWithQuestion).
+ */
 export const CHECK_TIMEOUT_MS = 9000;
 
 /**
@@ -248,10 +256,13 @@ export function createSegmenter(rate: number, onFinal: (p: Phrase) => void) {
       emit(s, s.frames.slice(0, s.frames.length - Math.max(0, s.silence - TAIL)), performance.now() - s.silence * FRAME_MS);
     },
     peak: () => peak,
+    /** When the phrase being said now began (performance.now()), or null between phrases. */
+    speakingSince: () => (seg ? seg.startedAt : null),
   };
 }
 
-export type CaptureHandle = { close: () => Promise<{ peak: number }> };
+/** `speakingSince`: when the phrase being said now began (performance.now()), or null between phrases. */
+export type CaptureHandle = { close: () => Promise<{ peak: number }>; speakingSince: () => number | null };
 
 /** Captures one audio stream at 16 kHz and hands finished phrases to `onPhrase`. */
 export async function captureStream(stream: MediaStream, onPhrase: (p: Phrase) => void): Promise<CaptureHandle> {
@@ -290,6 +301,7 @@ export async function captureStream(stream: MediaStream, onPhrase: (p: Phrase) =
       }
       return { peak: segmenter.peak() };
     },
+    speakingSince: () => (stopped ? null : segmenter.speakingSince()),
   };
 }
 

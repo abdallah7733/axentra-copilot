@@ -1056,8 +1056,13 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     return [ask.text, ask.typedFrom, ask.firstHeard, again].every((t) => t === undefined || t === null || usualQuestion(t, detail, recordWords));
   };
   // Only the caller's first line after his question hears it in front: nothing else began in between on either side,
-  // lines still being checked included (the re-score tested the question, the real pause, then the answer).
-  const firstAfter = (ask: Evidence, at: number) => !corrected.some((l) => l.key !== ask.key && l.startedAt > ask.at && l.startedAt < at);
+  // lines still being checked included, and nothing that began before his question was still being said when it ended
+  // (the re-score tested the question, the real pause, then the answer). The store also waits for phrases not yet on the
+  // console (question-check.ts planQuestion).
+  const firstAfter = (ask: Evidence, at: number) => {
+    const askEnd = corrected.find((l) => l.key === ask.key)?.endedAt ?? ask.at;
+    return !corrected.some((l) => l.key !== ask.key && l.startedAt < at && (l.startedAt >= ask.at || l.endedAt > askEnd));
+  };
   /** His question to put in front of a caller line said at `at` (Infinity: the next one) while `detail` is awaited. */
   const withQuestion = (detail: typeof expecting, at: number): string | undefined =>
     questionInCheck && (detail === "name" || detail === "address") && expectingAsk && firstAfter(expectingAsk, at) && usualAsk(expectingAsk, detail) ? expectingAsk.key : undefined;
