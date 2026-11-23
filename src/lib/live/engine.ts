@@ -29,7 +29,10 @@ export type EngineHealth = {
    * a check asked with words=1 also returns each word's score. The pitch engine never sends this.
    */
   wordScores?: boolean;
-  /** An engine copy made for test calls saves each phrase's audio on the Mac for review; the pitch engine never does. */
+  /**
+   * An engine copy made for test calls saves each phrase's audio, with what each model heard, on the Mac for review;
+   * the pitch engine never does.
+   */
   saveAudio?: boolean;
 };
 

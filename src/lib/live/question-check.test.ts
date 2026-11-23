@@ -108,6 +108,15 @@ test("moveHisTail: words of his question the fast model left off go back to his 
   assert.equal(cut("Can I have your full name? May. Miller.", "Can I have your full name?").answer, "May. Miller.");
   // A word that isn't one of his questions' never moves, even where it would stand in for a word of his the check missed.
   assert.equal(cut("Can I have your full, Sam. Miller.", "Can I have your full name?").answer, "Sam. Miller.");
+  // Check of the C12 fixes, 23 Nov: after a line one word short of his question ("… again?"), a word of the caller's
+  // that is one of his question words only stands in for the missing word, and stays the caller's; so does an article.
+  const short = "Could you say your full name?";
+  assert.equal(cut(`${short} Again? Sam Miller.`, short).answer, "Sam Miller.", "his own missing word moves");
+  assert.equal(cut(`${short} Name? Sam Miller.`, short).answer, "Name? Sam Miller.");
+  assert.equal(cut(`${short} May. Brook.`, short).answer, "May. Brook.");
+  assert.equal(cut(`${short} What? Sam Miller.`, short).answer, "What? Sam Miller.");
+  assert.equal(cut("Can I have your full name? A. Miller.", "Can I have your full name?").answer, "A. Miller.");
+  assert.equal(cut("Can I have your full name? Please? Sam Miller.", "Can I have your full name?").answer, "Sam Miller.");
 });
 
 test("questionPause keeps the real pause between 0.3 and 1.5 s, and refuses an answer that began over the question", () => {
@@ -189,6 +198,29 @@ test("checkWithQuestion: his words the fast model left off are neither the calle
   const back = await checkWithQuestion({ ...input(only.hear), questionText: "Can I have your full name?" });
   assert.deepEqual(back.outcome, { kind: "alone", why: "only-question", whole: "Can I have your full name, please?", pause: 0.3 });
   assert.deepEqual(back.heard, { text: "Sam Miller.", confidence: 0.81 });
+});
+
+test("checkWithQuestion: a word of the caller's that only stands in for a missing word of his stays in the answer and its score", async () => {
+  // Check of the C12 fixes, 23 Nov: his line one word short of "… again?", the caller's own "Name?" before the name.
+  const text = "Could you say your full name? Name? Sam Miller.";
+  const words: WordScore[] = [
+    [" Could", 0.9],
+    [" you", 0.9],
+    [" say", 0.9],
+    [" your", 0.9],
+    [" full", 0.9],
+    [" name", 0.9],
+    ["?", 0.7],
+    [" Name", 0.9],
+    ["?", 0.9],
+    [" Sam", 0.35],
+    [" Miller", 0.4],
+    [".", 0.9],
+  ];
+  const e = engine({ text, confidence: 0.8, words, looped: false });
+  const { heard, outcome } = await checkWithQuestion({ ...input(e.hear), questionText: "Could you say your full name?" });
+  assert.deepEqual(heard, { text: "Name? Sam Miller.", confidence: 0.69 });
+  assert.equal(outcome.kind, "used");
 });
 
 test("checkWithQuestion: a looping hearing keeps the engine's 0.5 cap on the answer's own score", async () => {

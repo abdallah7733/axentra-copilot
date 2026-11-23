@@ -229,9 +229,10 @@ export function CallDetails({ className }: { className?: string }) {
         </dl>
         <p className="flex items-start gap-2 px-4 pb-4 pt-2 text-xs text-muted-foreground leading-relaxed">
           <ShieldCheckIcon className="size-3.5 shrink-0 mt-0.5" />
-          {/* The engine copies made for test calls save each phrase; the pitch engine never does (EngineHealth.saveAudio). */}
+          {/* The engine copies made for test calls save each phrase, with what each model heard (EngineHealth.saveAudio); the
+              pitch engine never does. */}
           {health?.saveAudio
-            ? "This engine copy saves each phrase's audio on this Mac for review. The transcript and copilot notes live only in this tab."
+            ? "This engine copy saves each phrase's audio, with what each speech model heard, on this Mac for review. The copilot notes live only in this tab."
             : "Call audio is processed in memory and discarded. The transcript and copilot notes live only in this tab."}
         </p>
       </section>

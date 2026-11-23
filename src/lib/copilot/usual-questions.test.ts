@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { QUESTION_WORDS, USUAL_QUESTIONS, isQuestionWord, questionGap, usualDetail, usualQuestion } from "./usual-questions";
+import { QUESTION_WORDS, USUAL_QUESTIONS, fillsGap, isQuestionWord, usualDetail, usualQuestion } from "./usual-questions";
 import { words } from "./text";
 import { sunlake } from "@/lib/live/sunlake-data";
 
@@ -78,15 +78,24 @@ test("a word of the records keeps a usual question out, even an ordinary word", 
   assert.ok(!usualQuestion("An, could you repeat your full name?", "name", new Set(["an"])), "a customer named An");
 });
 
-test("the detail a line asks for, and how far a line is from his usual questions", () => {
+test("the detail a line asks for, and which words after a line fill the gap it left", () => {
   assert.equal(usualDetail("First, can I have your full name?"), "name");
   assert.equal(usualDetail("And the street and city?"), "address");
   assert.equal(usualDetail("So it's Sam Miller, right?"), null);
-  assert.equal(questionGap("First, can I have your full name, please?", "name"), 0);
-  assert.equal(questionGap("Can I have the full name", "name"), 1);
-  assert.equal(questionGap("Can I have the full name on the account?", "name"), 0);
-  assert.equal(questionGap("Can I have your full name? Name?", "name"), 1, "an echo takes it further");
-  assert.equal(questionGap("And the street and city for the delivery?", "address"), 0);
+  assert.ok(fillsGap("First, can I have your full name", "please?", "name"), "\"please\" on its own is his");
+  assert.ok(fillsGap("Can I have the full name", "on the account?", "name"));
+  assert.ok(fillsGap("Could you say your full name", "again?", "name"));
+  assert.ok(fillsGap("And the street and city", "for the delivery?", "address"));
+  // Check of the C12 fixes, 23 Nov: words that only stand in for a missing word, or add one, are the caller's.
+  assert.ok(!fillsGap("Can I have your full name?", "Name?", "name"), "an echo adds a word");
+  assert.ok(!fillsGap("Could you say your full name?", "Name?", "name"), "an echo only stands in for \"again\"");
+  assert.ok(!fillsGap("Could you say your full name?", "May.", "name"), "a word of the caller's that is also one of his");
+  assert.ok(!fillsGap("Can I have your full name?", "A.", "name"), "an article on its own");
+  assert.ok(!fillsGap("And the street and city?", "City.", "address"));
+  // Words that make his line one of his longer questions still don't count when the line ends further from his usual
+  // questions than it was: "What's your full name?" is one of them exactly, "... on the account?" one word off.
+  assert.ok(!fillsGap("What's your full name?", "On the account?", "name"), "the line was one of his questions already");
+  assert.ok(!fillsGap("Could you say your full name?", "On the account?", "name"), "one word off before, two after");
   assert.ok(isQuestionWord("please") && isQuestionWord("delivery") && isQuestionWord("the"));
   assert.ok(!isQuestionWord("sam") && !isQuestionWord("my") && !isQuestionWord("it's"));
 });

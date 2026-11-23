@@ -138,11 +138,21 @@ export function usualQuestion(text: string, detail: IdentityDetail, avoid: Reado
 /** The detail a line asks for, when it is one of his usual questions. */
 export const usualDetail = (text: string): IdentityDetail | null => (usualQuestion(text, "name") ? "name" : usualQuestion(text, "address") ? "address" : null);
 
-/** How many words a line is from the closest of his usual questions for this detail (articles and "please" aside). */
-export const questionGap = (text: string, detail: IdentityDetail): number => {
-  const w = questionWords(text);
-  return Math.min(...TEMPLATES[detail].map((t) => distance(w, t)));
-};
+/**
+ * Words found after a line are the rest of one of his usual questions for this detail: for one of them, each of those
+ * words takes away exactly one word of the line's distance to it, and the line ends no further from his usual questions
+ * than it was. An echo of his question ("Name?") or a word of the caller's that is also one of his ("May.") only stands
+ * in for a missing word, or adds one, so it never counts (check of the C12 fixes, 23 Nov). Articles and "please" don't
+ * count as words here; on their own, only "please" is his.
+ */
+export function fillsGap(text: string, added: string, detail: IdentityDetail): boolean {
+  const own = core(added);
+  if (!own.length) return words(added).includes("please");
+  const before = questionWords(text);
+  const after = questionWords(`${text} ${added}`);
+  const closest = Math.min(...TEMPLATES[detail].map((t) => distance(before, t)));
+  return TEMPLATES[detail].some((t) => distance(after, t) <= closest && distance(before, t) - distance(after, t) === own.length);
+}
 
 /** A word of his usual questions, articles and "please" included. */
 export const isQuestionWord = (word: string): boolean => QUESTION_WORDS.has(word) || IGNORED.has(word);

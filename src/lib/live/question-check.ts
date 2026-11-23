@@ -10,7 +10,7 @@
 */
 
 import { words } from "@/lib/copilot/text";
-import { isQuestionWord, questionGap, usualDetail } from "@/lib/copilot/usual-questions";
+import { fillsGap, isQuestionWord, usualDetail } from "@/lib/copilot/usual-questions";
 
 /** One word as the check model wrote it, with its score (0 to 1). Punctuation comes as words of its own. */
 export type WordScore = readonly [string, number];
@@ -107,8 +107,9 @@ function pythonSum(values: readonly number[]): number {
  * Words of his question that the fast model left off its end ("please?", "on the account?", "for the delivery?") come
  * back at the start of the answer, because the cut follows the fast model's words for his line (the re-score cut
  * against the check model's own). They go back to his part only when they are all words of his usual questions, end a
- * sentence, and leave his line at least as close to one of his usual questions: an echo of his question ("Name?") or
- * any word of the caller's own takes it further, and stays with the answer.
+ * sentence, and fill the gap they left: each brings his line one word closer to one of his usual questions. An echo of
+ * his question ("Name?"), an article on its own ("A."), or a word of the caller's that is also one of his ("May.")
+ * fills no gap, and stays with the answer (check of the C12 fixes, 23 Nov).
  */
 export function moveHisTail(cut: { question: string; answer: string }, questionText: string): { question: string; answer: string } {
   const detail = usualDetail(questionText);
@@ -117,8 +118,8 @@ export function moveHisTail(cut: { question: string; answer: string }, questionT
   for (let k = 1; k <= said.length; k++) {
     if (!words(said[k - 1]).every(isQuestionWord)) return cut;
     if (!/[.?!]$/.test(said[k - 1])) continue;
-    const question = [cut.question, ...said.slice(0, k)].join(" ");
-    return questionGap(question, detail) <= questionGap(cut.question, detail) ? { question, answer: said.slice(k).join(" ") } : cut;
+    const tail = said.slice(0, k).join(" ");
+    return fillsGap(cut.question, tail, detail) ? { question: [cut.question, tail].join(" "), answer: said.slice(k).join(" ") } : cut;
   }
   return cut;
 }
