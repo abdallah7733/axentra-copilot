@@ -3,7 +3,7 @@ import { agentAsksChoice, agentAsksFor, agentCommits, agentDisclosesFactor, agen
 import { findAffirmed, normalize, repeatsItself, soundsLike, words as textWords } from "./text";
 import type { AgentAction, AuthorityBand, ClientPack, Customer, Order, Side, TranscriptEvent } from "./types";
 import { usualQuestion } from "./usual-questions";
-import { COMMON, deniesIdentity, isFiller, matchAddress, matchName, namesAnother, readBackFits, soundsLikeRecord, spelledLetters, strictFlags, withoutExamples } from "./verification";
+import { COMMON, deniesIdentity, isFiller, matchAddress, matchName, namesAnother, readBackFits, saysNoName, soundsLikeRecord, spelledLetters, strictFlags, withoutExamples } from "./verification";
 
 /*
   The copilot's rules layer. `analyze` rebuilds the whole copilot view from the
@@ -64,7 +64,7 @@ export type Factor = {
    * asks again or types the caller's words, and can't just confirm it. "ambiguous": the answer names
    * two candidates or denies something else; asked again, never confirmed.
    */
-  confirmReason?: "low-confidence" | "garbled" | "sounds-like" | "disagree" | "ambiguous" | "after-read-back" | "match";
+  confirmReason?: "low-confidence" | "garbled" | "sounds-like" | "disagree" | "ambiguous" | "no-name" | "after-read-back" | "match";
   /**
    * The caller's spoken answer matched the record word for word, and waits for the agent's Confirmed press before it
    * verifies anything (Policy.agentConfirmsMatch). Internal: the view shows such a factor as "confirm" with confirmReason
@@ -1329,6 +1329,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
 
   function hear(factor: Factor, line: TranscriptEvent, ev: Evidence) {
     if (factor.state === "ok" || locked) return;
+    // A new answer after one with no name in it: that reason doesn't stay behind once the name is heard (closeAnswer).
+    if (factor.confirmReason === "no-name") factor.confirmReason = undefined;
     if (pending?.factor !== factor) pending = { factor, evs: [], texts: [], endedAt: 0, result: "none" };
     // The end of the first answer, all of its lines: the start point for "Name accepted" in Call details.
     if (factor.answeredAt === undefined) firstAnswer.set(factor.id, pending);
@@ -1414,6 +1416,14 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     if (reason) {
       factor.state = "confirm";
       factor.confirmReason = reason;
+      return;
+    }
+    // No word in the answer could be part of a name ("It's for my husband."): asked again, not a failed attempt, and it
+    // verifies nothing (his "No-name fix in C12", 24 Nov; Policy.noNameNotCounted). Spoken answers only: a typed answer
+    // that isn't the record's name is a wrong answer, as before.
+    if (pack.policy.noNameNotCounted && factor.id === "name" && evs.every((e) => e.typedFrom === undefined) && saysNoName(texts.join(" "))) {
+      factor.state = "confirm";
+      factor.confirmReason = "no-name";
       return;
     }
     // Said while the question only lingered: a genuinely different answer, so it is asked again (no read-back, no
@@ -1922,7 +1932,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           [address, heardAddress, !!backedA || continuesA, aboutAddress, name, heardName],
         ] as const) {
           // A match still held for the agent's press is the agent's call too (Policy.agentConfirmsMatch).
-          if (heardIt || reply || rejectedBack.has(f.id as "name" | "address") || (f.state !== "confirm" && !f.held) || f.confirmReason === "ambiguous" || !f.evidence || line.startedAt <= f.evidence.at) continue;
+          if (heardIt || reply || rejectedBack.has(f.id as "name" | "address") || (f.state !== "confirm" && !f.held) || f.confirmReason === "ambiguous" || (f.state === "confirm" && f.confirmReason === "no-name") || !f.evidence || line.startedAt <= f.evidence.at) continue;
           if (otherHeard || expecting === other.id || other.evidence?.key === line.key) continue;
           // Nor once the agent has asked about something else since the answer ("Is the damage only on the screen?"):
           // the caller is answering that. A question about this detail ("And the last name?") keeps it open.
@@ -2858,6 +2868,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         text:
           !confirmable(f) && (f.confirmReason === "low-confidence" || f.confirmReason === "garbled")
             ? `Name not recognised. ${nameAction} Heard "${heard}"${f.confirmReason === "garbled" ? ", which looks garbled (the same words repeated)" : " with low confidence"}, and it doesn't match the name on the order. Typed words are checked against the order.`
+            : f.confirmReason === "no-name"
+            ? `Ask for the full name once more. Heard "${f.heard}": there's no name in it, so it isn't counted as a wrong answer, and it can't verify anyone.`
             : f.confirmReason === "disagree"
             ? `Name not recognised. ${nameAction} Heard "${f.heard}", first heard as "${f.evidence.firstHeard}": the two speech models disagree, so it isn't counted as a wrong answer.`
             : f.confirmReason === "ambiguous" && saysMore(f).length

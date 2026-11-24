@@ -157,6 +157,8 @@ export const sunlake: ClientPack = {
     // C12 (his "Build C12", 23 Nov): the agent's usual question goes in front of a name or address answer for the check.
     // A build setting, off unless set, and only with agentConfirmsMatch (see Policy.questionInCheck).
     questionInCheck: process.env.NEXT_PUBLIC_QUESTION_IN_CHECK === "1",
+    // The no-name fix (his "No-name fix in C12", 24 Nov): an answer with no name in it isn't a failed attempt. Off unless set.
+    noNameNotCounted: process.env.NEXT_PUBLIC_NO_NAME_NOT_COUNTED === "1",
     authority: [
       { upTo: 500, approver: "Agent (Tier 1)", agentCanApprove: true, row: 0 },
       { upTo: 1500, approver: "Team Lead", agentCanApprove: false, row: 1 },

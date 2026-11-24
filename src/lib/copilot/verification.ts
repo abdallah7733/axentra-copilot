@@ -19,6 +19,41 @@ const NOT_AN_ANSWER = /^(sorry|what|pardon|hello|hi|yes|yeah|no|okay|ok|sure|one
 /** A word that carries no identity on its own ("my", "name", "is", "the"). */
 export const isFiller = (word: string) => NOT_AN_ANSWER.test(word);
 
+/*
+  The no-name fix (his "No-name fix in C12", 24 Nov 2026; Policy.noNameNotCounted). An answer to the name question with no
+  word that could be part of a name ("It's for my husband.") is asked again and never counted as a wrong name; it can't
+  verify anyone either. The words that count are NOT_AN_ANSWER's above and NO_NAME_WORDS below, plus numbers, and nothing
+  else: any other word in the answer leaves it a wrong name, as before. A word is on the list only if it isn't commonly a
+  first name or a surname on its own, so "will", "may", "son", "child", "friend", "boss", "nan", "mama", "papa", "baby",
+  "junior", "oh", "do", "go" and "so" are left off.
+*/
+const NO_NAME_WORDS = new Set(
+  (
+    // Someone else the order or account may be for, or whose it is.
+    "husband wife spouse partner mother mom mum mommy mummy father dad daddy parent parents brother sister daughter " +
+    "children kids grandmother grandma grandfather grandpa grandparents granny grandson granddaughter uncle aunt auntie " +
+    "nephew niece fiance fiancee fiancé fiancée boyfriend girlfriend stepmother stepfather stepmom stepmum stepdad stepson " +
+    "stepdaughter stepbrother stepsister family household roommate flatmate housemate neighbour neighbor colleague coworker " +
+    "employer landlord landlady tenant carer caregiver behalf mr mrs ms miss mister sir madam ma'am " +
+    // Pronouns, and everyday words about whose name or account it is.
+    "he she they them him his her hers their theirs we us our ours me mine your yours who whose " +
+    "i'll i'd i've he'll she'll they'll we'll you'll you're they're we're he'd she'd " +
+    "that this these those was were be been are has have had does did not isn't wasn't don't dont doesn't didn't " +
+    "account accounts order orders purchase under by with about but or registered listed placed ordered bought booked made " +
+    "put set up get got let check see think know need just actually really right well like excuse " +
+    // Hesitation, and numbers said as words.
+    "er erm hm eh mm mhm ah yep yup zero two three four five six seven eight nine ten"
+  ).split(" "),
+);
+/**
+ * No word in the answer could be part of a name (see NO_NAME_WORDS): "It's for my husband.", "It's under my wife's
+ * account.", "Order 427." are; "It's for my husband, Tom.", "Sam Miller's." and "Miller." aren't.
+ */
+export const saysNoName = (text: string) => {
+  const tokens = answerWords(text);
+  return tokens.length > 0 && tokens.every((t) => NOT_AN_ANSWER.test(t) || NO_NAME_WORDS.has(t) || /^\d+$/.test(t));
+};
+
 /** How one part of the record was heard: word for word, only by sound, or not at all. */
 type Heard = "exact" | "close" | null;
 const heardAs = (tokens: string[], expected: string): Heard =>

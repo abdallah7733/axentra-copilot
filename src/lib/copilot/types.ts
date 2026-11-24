@@ -159,6 +159,12 @@ export type Policy = {
    * agentConfirmsMatch, so every spoken match still waits for the agent's press. Off unless the build sets it.
    */
   questionInCheck?: boolean;
+  /**
+   * The no-name fix (his "No-name fix in C12", 24 Nov 2026): a spoken answer to the name question with no word that could
+   * be part of a name ("It's for my husband."; the words are written down in verification.ts, NO_NAME_WORDS) is asked
+   * again without counting an attempt. It still can't verify anyone. Off unless the build sets it.
+   */
+  noNameNotCounted?: boolean;
   authority: AuthorityBand[];
   refundTiming: string;
   /** A verb phrase that follows "it": "ships the same day by expedited shipping". Say when it ships, never when it arrives. */
