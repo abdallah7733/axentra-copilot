@@ -1131,6 +1131,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     evs.some((e) => e.lowConfidence) ? "low-confidence" : repeatsItself(text) ? "garbled" : null;
 
   function matched(factor: Factor, ev: Evidence, reason: "low-confidence" | "garbled" | null, method?: string, knownAt = ev.knownAt, evs: Evidence[] = [ev]) {
+    // A match judged outside hear() (volunteered, or a re-answer to a held match) replaces an answer with no name in it too
+    // (independent check of the no-name fix, 24 Nov: the reason stayed on a matched name).
+    if (factor.confirmReason === "no-name") factor.confirmReason = undefined;
     factor.evidence = ev;
     factor.knownAt = knownAt;
     if (reason) {
@@ -1329,7 +1332,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
 
   function hear(factor: Factor, line: TranscriptEvent, ev: Evidence) {
     if (factor.state === "ok" || locked) return;
-    // A new answer after one with no name in it: that reason doesn't stay behind once the name is heard (closeAnswer).
+    // A new answer replaces one with no name in it: its reason is cleared as soon as the caller answers again (the reason
+    // is set in closeAnswer).
     if (factor.confirmReason === "no-name") factor.confirmReason = undefined;
     if (pending?.factor !== factor) pending = { factor, evs: [], texts: [], endedAt: 0, result: "none" };
     // The end of the first answer, all of its lines: the start point for "Name accepted" in Call details.
@@ -1421,7 +1425,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     // No word in the answer could be part of a name ("It's for my husband."): asked again, not a failed attempt, and it
     // verifies nothing (his "No-name fix in C12", 24 Nov; Policy.noNameNotCounted). Spoken answers only: a typed answer
     // that isn't the record's name is a wrong answer, as before.
-    if (pack.policy.noNameNotCounted && factor.id === "name" && evs.every((e) => e.typedFrom === undefined) && saysNoName(texts.join(" "))) {
+    if (pack.policy.noNameNotCounted && factor.id === "name" && evs.every((e) => e.typedFrom === undefined) && saysNoName(texts.join(" "), nameParts)) {
       factor.state = "confirm";
       factor.confirmReason = "no-name";
       return;
@@ -1735,7 +1739,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         else [addrRefused, lastAddrBack] = [refusal, null];
         // A match still held for the agent's press had verified nothing, so nothing falls with it.
         const wasHeld = !!f.held;
-        Object.assign(f, { state: "confirm", confirmReason: wasHeld ? "ambiguous" : f.confirmReason ?? "ambiguous", knownAt: undefined, method: undefined, confirmedBy: undefined, held: undefined });
+        // An answer with no name in it before the refused read-back is "ambiguous" from here on, as a failed attempt is with
+        // the no-name fix off (independent check of the no-name fix, 24 Nov).
+        Object.assign(f, { state: "confirm", confirmReason: wasHeld || f.confirmReason === "no-name" ? "ambiguous" : f.confirmReason ?? "ambiguous", knownAt: undefined, method: undefined, confirmedBy: undefined, held: undefined });
         confirmedByPress.delete(id);
         verifiedAt = undefined;
         if (!wasHeld)
@@ -1816,8 +1822,12 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         saysAddressPart(t) || soundsLikeRecord("address", t, customer) || addressMethod(t) === "email" || /\b(road|street|avenue|drive|lane)\b/i.test(t);
       // While the question only lingers, a line that adds nothing new to a doubtful answer ("Miller, M I L L E R.", "It's
       // Miller with two Ls.") leaves it as it was; only a match, or a line naming someone else, changes it.
+      // An answer with no name in it isn't a doubtful answer on the table: whatever comes next is heard as with the no-name
+      // fix off (independent check of the no-name fix, 24 Nov: a sound-alike or part of the name was dropped).
       const addsNothing = (f: Factor, t: string) =>
-        f.state === "confirm" && (f.id === "name" ? !["match", "ambiguous"].includes(nameResult(t)) && !namesAnother(t, customer) : addressResult(t) === "partial");
+        f.state === "confirm" &&
+        f.confirmReason !== "no-name" &&
+        (f.id === "name" ? !["match", "ambiguous"].includes(nameResult(t)) && !namesAnother(t, customer) : addressResult(t) === "partial");
       // The card for a match held for the press says "If in doubt, ask again", but hear() never reopens a held match, so
       // the caller's answer to that question was ignored and the card kept quoting the first answer (C11, 20 Nov). Once the
       // agent has asked for the detail again, the new answer is judged here: a new match moves the hold, and the card's
@@ -1839,7 +1849,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           else delete lastMatch[id];
         } else if (result === "mismatch" || result === "ambiguous") {
           answerLog[id].push({ text: line.text, first });
-          Object.assign(f, { state: "confirm", confirmReason: "ambiguous", held: undefined, knownAt: undefined, method: undefined, evidence: ev, ...heardIt });
+          // With the no-name fix, a spoken answer with no name in it says so on its card (independent check, 24 Nov).
+          const noName = pack.policy.noNameNotCounted && id === "name" && result === "mismatch" && ev.typedFrom === undefined && saysNoName(line.text, nameParts);
+          Object.assign(f, { state: "confirm", confirmReason: noName ? "no-name" : "ambiguous", held: undefined, knownAt: undefined, method: undefined, evidence: ev, ...heardIt });
           delete lastMatch[id];
           pending = { factor: f, evs: [ev], texts: [line.text], endedAt: line.endedAt, result: "ambiguous", noAttempt: true };
         }
@@ -1864,7 +1876,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         } else if (expecting === "name" && confirmsOnly(line.text)) {
           // A plain yes answers no name question ("Yes, that's right." to a read-back the fast model misheard as a
           // question): nothing changes, and it is never a failed attempt.
-        } else if ((name.state === "confirm" || name.held) && spellsName(line.text)) {
+        } else if (((name.state === "confirm" && name.confirmReason !== "no-name") || name.held) && spellsName(line.text)) {
+          // (An answer with no name in it isn't a doubtful answer that spelling adds nothing to: the spelled answer is heard
+          // as with the no-name fix off; independent check of the no-name fix, 24 Nov.)
           heardName = true;
           // With stricter matching, a held match spelled out as another name ("M E L L O R" for Miller) is the caller's
           // own answer conflicting: asked again, never confirmed.
@@ -2139,6 +2153,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         expectingAsk = asks === "name" || asks === "address" ? ev : null;
         const factor = asks === "name" ? name : asks === "address" ? address : null;
         if (factor && (factor.state === "idle" || factor.state === "failed" || factor.state === "partial")) factor.state = "asking";
+        // An answer with no name in it ends as a failed attempt does once the agent asks again: no card, and no typing over
+        // that earlier answer (independent check of the no-name fix, 24 Nov).
+        if (factor && factor.state === "confirm" && factor.confirmReason === "no-name") [factor.state, factor.confirmReason] = ["asking", undefined];
       }
 
       if (verified()) for (const mention of findOrderMentions(line.text, idLengths)) agentMentionsAfterVerify.push({ mention, ev });
@@ -2838,7 +2855,22 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       });
       continue;
     }
-    if (f.state === "confirm" && f.evidence && f.id === "name" && readBackRefused) {
+    if (f.state === "confirm" && f.evidence && f.id === "name" && f.confirmReason === "no-name" && (!readBackRefused || f.evidence.at > readBackRefused.ev.at)) {
+      // An answer with no name in it, whatever the read-back's state: never "type what the caller said", because typing
+      // those words would make a wrong answer that counts (independent check of the no-name fix, 24 Nov).
+      prompts.push({
+        target: "name",
+        askAgain: true,
+        text: `Ask for the full name once more. Heard "${f.heard ?? f.evidence.text}": there's no name in it, so it isn't counted as a wrong answer, and it can't verify anyone.${
+          readBackRefused
+            ? " The read-back wasn't confirmed earlier, so reading it back or pressing Confirm won't count on this call."
+            : recordSaidAt.name !== null
+              ? " You've said the name on the call, so the caller repeating it can't verify it: type the name they give (N)."
+              : ""
+        }`,
+        evidence: f.evidence,
+      });
+    } else if (f.state === "confirm" && f.evidence && f.id === "name" && readBackRefused) {
       // After a refused read-back, typing is the way on: neither another read-back nor the Confirm button counts.
       const newer = f.evidence.at > readBackRefused.ev.at;
       prompts.push({
@@ -2868,8 +2900,6 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         text:
           !confirmable(f) && (f.confirmReason === "low-confidence" || f.confirmReason === "garbled")
             ? `Name not recognised. ${nameAction} Heard "${heard}"${f.confirmReason === "garbled" ? ", which looks garbled (the same words repeated)" : " with low confidence"}, and it doesn't match the name on the order. Typed words are checked against the order.`
-            : f.confirmReason === "no-name"
-            ? `Ask for the full name once more. Heard "${f.heard}": there's no name in it, so it isn't counted as a wrong answer, and it can't verify anyone.`
             : f.confirmReason === "disagree"
             ? `Name not recognised. ${nameAction} Heard "${f.heard}", first heard as "${f.evidence.firstHeard}": the two speech models disagree, so it isn't counted as a wrong answer.`
             : f.confirmReason === "ambiguous" && saysMore(f).length
@@ -3020,7 +3050,15 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
             ? "active"
             : "pending";
   const factorDetail = (f: Factor) =>
-    f.state === "failed" ? `Not matched (${f.attempts})` : f.state === "confirm" || f.held ? "Please confirm" : f.state === "asking" && f.heard ? "Listening…" : undefined;
+    f.state === "failed"
+      ? `Not matched (${f.attempts})`
+      : f.state === "confirm" && f.confirmReason === "no-name"
+        ? "Ask again"
+        : f.state === "confirm" || f.held
+          ? "Please confirm"
+          : f.state === "asking" && f.heard
+            ? "Listening…"
+            : undefined;
   const approved = recommendation?.approval.state === "approved";
   const steps: SopStep[] = [
     {

@@ -22,36 +22,51 @@ export const isFiller = (word: string) => NOT_AN_ANSWER.test(word);
 /*
   The no-name fix (his "No-name fix in C12", 24 Nov 2026; Policy.noNameNotCounted). An answer to the name question with no
   word that could be part of a name ("It's for my husband.") is asked again and never counted as a wrong name; it can't
-  verify anyone either. The words that count are NOT_AN_ANSWER's above and NO_NAME_WORDS below, plus numbers, and nothing
-  else: any other word in the answer leaves it a wrong name, as before. A word is on the list only if it isn't commonly a
-  first name or a surname on its own, so "will", "may", "son", "child", "friend", "boss", "nan", "mama", "papa", "baby",
-  "junior", "oh", "do", "go" and "so" are left off.
+  verify anyone either. The words that count are NOT_AN_ANSWER's above and NO_NAME_WORDS below, plus numbers written in
+  digits, and nothing else: any other word in the answer leaves it a wrong name, as before.
+  On the list: everyday words for someone else the order may be for, pronouns, everyday words about the account or the
+  question, hesitation, and numbers said as words. Left off, because each is commonly a first name or a surname on its
+  own: "will", "may", "son", "nan", "mama", "papa", "baby", "junior", "law", "co", "holder", "hang", "huh", "oh", "do",
+  "go", "so", "im" and "ive". So "It's for my son.", "It's for my mother-in-law.", "I'm not the account holder.",
+  "It's for my co-worker.", "Hang on.", "Huh?", "Oh, um.", "Why do you need it?" and "Order four oh seven." still count
+  as a wrong name.
+  Kept although they are names somewhere: "my", "he", "her", "can", "to", "made" and "or" (an answer made only of listed
+  words is only asked again, and never verifies anyone). For the same reason a name written as an everyday word on the
+  list reads as no name: "right" for Wright, "who" for Hu, "wait" for Waite, "kid" for Kidd. A word of the record's own
+  name never counts as a no-name word, so "Not Husband." against a record named Husband stays a wrong answer.
 */
 const NO_NAME_WORDS = new Set(
   (
     // Someone else the order or account may be for, or whose it is.
-    "husband wife spouse partner mother mom mum mommy mummy father dad daddy parent parents brother sister daughter " +
-    "children kids grandmother grandma grandfather grandpa grandparents granny grandson granddaughter uncle aunt auntie " +
-    "nephew niece fiance fiancee fiancé fiancée boyfriend girlfriend stepmother stepfather stepmom stepmum stepdad stepson " +
-    "stepdaughter stepbrother stepsister family household roommate flatmate housemate neighbour neighbor colleague coworker " +
-    "employer landlord landlady tenant carer caregiver behalf mr mrs ms miss mister sir madam ma'am " +
-    // Pronouns, and everyday words about whose name or account it is.
+    "husband wife spouse partner mother mom mum mommy mummy father dad daddy parents brother sister daughter " +
+    "child children kid kids grandchild grandchildren grandkids grandmother grandma grandfather grandpa grandad granddad " +
+    "grandparent grandparents granny grandson granddaughter uncle aunt auntie cousin nephew niece hubby wifey missus " +
+    "fiance fiancee fiancé fiancée boyfriend girlfriend ex late step great stepmother stepfather stepmom stepmum stepdad " +
+    "stepson stepdaughter stepbrother stepsister family household roommate flatmate housemate neighbour neighbor friend " +
+    "colleague coworker boss employer business company client customer landlord landlady tenant carer caregiver behalf " +
+    "mr mrs ms miss mister sir madam ma'am " +
+    // Pronouns, and everyday words about whose name or account it is, or about the question.
     "he she they them him his her hers their theirs we us our ours me mine your yours who whose " +
-    "i'll i'd i've he'll she'll they'll we'll you'll you're they're we're he'd she'd " +
-    "that this these those was were be been are has have had does did not isn't wasn't don't dont doesn't didn't " +
-    "account accounts order orders purchase under by with about but or registered listed placed ordered bought booked made " +
-    "put set up get got let check see think know need just actually really right well like excuse " +
+    "i'll i'd i've he'll she'll they'll we'll you'll you're they're we're he'd she'd you've we've they've you'd we'd " +
+    "they'd that this these those there was were be been are has have had does did would should could not isn't wasn't " +
+    "aren't weren't haven't hasn't hadn't won't wouldn't couldn't shouldn't can't don't doesn't didn't dont doesnt didnt " +
+    "isnt wasnt account accounts order orders number id purchase under by with about but or registered listed placed " +
+    "ordered bought booked made put set up get got let give check see think know need ask asking question hear catch come " +
+    "which why wait just actually really right well like excuse sec " +
     // Hesitation, and numbers said as words.
-    "er erm hm eh mm mhm ah yep yup zero two three four five six seven eight nine ten"
+    "er erm hm hmmm umm ummm uhh uhm eh mm mmm mhm mhmm ah yep yup zero two three four five six seven eight nine ten " +
+    "eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty thirty forty fifty sixty seventy " +
+    "eighty ninety hundred thousand double triple"
   ).split(" "),
 );
 /**
  * No word in the answer could be part of a name (see NO_NAME_WORDS): "It's for my husband.", "It's under my wife's
- * account.", "Order 427." are; "It's for my husband, Tom.", "Sam Miller's." and "Miller." aren't.
+ * account.", "My order number is 427." are; "It's for my husband, Tom.", "Sam Miller's." and "Miller." aren't. A word of
+ * the record's own name (recordWords, as textWords gives them) is never a no-name word.
  */
-export const saysNoName = (text: string) => {
+export const saysNoName = (text: string, recordWords: readonly string[] = []) => {
   const tokens = answerWords(text);
-  return tokens.length > 0 && tokens.every((t) => NOT_AN_ANSWER.test(t) || NO_NAME_WORDS.has(t) || /^\d+$/.test(t));
+  return tokens.length > 0 && tokens.every((t) => !recordWords.includes(t) && (NOT_AN_ANSWER.test(t) || NO_NAME_WORDS.has(t) || /^\d+$/.test(t)));
 };
 
 /** How one part of the record was heard: word for word, only by sound, or not at all. */

@@ -161,8 +161,10 @@ export type Policy = {
   questionInCheck?: boolean;
   /**
    * The no-name fix (his "No-name fix in C12", 24 Nov 2026): a spoken answer to the name question with no word that could
-   * be part of a name ("It's for my husband."; the words are written down in verification.ts, NO_NAME_WORDS) is asked
-   * again without counting an attempt. It still can't verify anyone. Off unless the build sets it.
+   * be part of a name ("It's for my husband.") is asked again without counting an attempt. It still can't verify anyone.
+   * The words that count are written down in verification.ts: the not-an-answer words, NO_NAME_WORDS, and numbers in
+   * digits; words that are commonly names are left off, so "It's for my son." still counts as a wrong name. Off unless
+   * the build sets it.
    */
   noNameNotCounted?: boolean;
   authority: AuthorityBand[];
