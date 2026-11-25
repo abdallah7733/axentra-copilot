@@ -56,7 +56,7 @@ type CopilotState = {
   /** Every rewording request this call, including rejected, late and failed ones. */
   assistLog: AssistRecord[];
   /** For the issue, `issue` is what the agent heard the problem is. */
-  confirm: (target: "issue" | "name" | "address" | "order" | "choice", issue?: "damaged" | "other") => void;
+  confirm: (target: "issue" | "name" | "address" | "order" | "choice" | "photo", issue?: "damaged" | "other") => void;
   /** The agent types what the caller said on a line recognition got wrong. */
   correct: (key: string, text: string) => void;
   approve: () => void;

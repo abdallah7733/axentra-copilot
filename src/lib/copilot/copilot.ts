@@ -146,6 +146,8 @@ export type Recommendation = {
    * read-back (his decision, 23 Oct 12:35), so nothing can be approved until it settles.
    */
   checkingIdentity?: Evidence;
+  /** Policy.photoBeforeResolution: the order needs the photo of the damage before any resolution, and it hasn't arrived. */
+  photoPending?: true;
   /** Every approval given for this call, in order: whether it counted, and why not. */
   history?: { at: number; via: "call" | "panel"; evidence?: Evidence; counted: boolean; reason?: string }[];
 };
@@ -661,6 +663,7 @@ function notCovered(then: CopilotView, kind: "replacement" | "refund", orderId: 
   if (!(then.intent?.id === "damaged" && then.intent.certainty === "high")) return "the damage wasn't established yet";
   if (!then.choice || then.choice.value === "both") return "the customer's choice wasn't known yet";
   if (r?.prepared && r.prepared.kind !== kind) return `it was for a ${r.prepared.kind}`;
+  if (!r?.prepared && r?.photoPending && then.order.match.confirmed) return "the photo of the damage hadn't arrived yet";
   if (!r?.prepared) return then.order.match.confirmed ? "the customer's choice wasn't known yet" : "the item wasn't confirmed with the caller yet";
   return "the outcome has changed since";
 }
@@ -1026,6 +1029,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   let unreadChoice: Evidence | null = null;
   // When the agent pressed Confirm on the item; each press counts only for the order shown at that moment.
   const orderPresses: number[] = [];
+  /** Policy.photoBeforeResolution: when the agent recorded that the photo of the damage arrived. */
+  let photoAt: number | null = null;
   // Identity factors the agent's Confirm press verified (each can be undone).
   const confirmedByPress = new Set<Factor["id"]>();
   let issueConfirmedInPanel = false;
@@ -1534,6 +1539,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         else issueConfirmedInPanel = true;
       } else if (a.type === "confirm" && a.target === "order") {
         orderPresses.push(a.at);
+      } else if (a.type === "confirm" && a.target === "photo") {
+        if (photoAt === null) photoAt = a.at;
       } else if (a.type === "confirm" && a.target === "choice" && lowConfidenceChoice) {
         const found = readChoice(lowConfidenceChoice.text);
         if (found) setChoice(found.choice, lowConfidenceChoice, a.at);
@@ -2360,8 +2367,13 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       {
         id: "photo",
         label: "Can resolve before the photo arrives",
-        pass: o.price < p.photoRequiredFrom,
-        detail: o.price < p.photoRequiredFrom ? `Under ${money(p.photoRequiredFrom)}: photo within ${p.photoDays} days` : `${money(p.photoRequiredFrom)} or more: photo first`,
+        pass: o.price < p.photoRequiredFrom || (!!p.photoBeforeResolution && photoAt !== null),
+        detail:
+          o.price < p.photoRequiredFrom
+            ? `Under ${money(p.photoRequiredFrom)}: photo within ${p.photoDays} days`
+            : p.photoBeforeResolution && photoAt !== null
+              ? `${money(p.photoRequiredFrom)} or more: photo received (recorded by the agent)`
+              : `${money(p.photoRequiredFrom)} or more: photo first`,
         sopRef: ref("Claim rules"),
       }
     );
@@ -2450,7 +2462,10 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       ...(scenario === "A" ? [choice?.value === "replacement" ? "The customer chose a replacement." : "No preference stated, so replacement is the default."] : []),
     ];
     let prepared: Recommendation["prepared"];
-    if (choice && choice.value !== "both" && itemConfirmed) {
+    // "Orders of $500 or more need the photo before any resolution": nothing is prepared, so nothing can be approved,
+    // until the agent records the photo (Policy.photoBeforeResolution).
+    const photoPending = !!pack.policy.photoBeforeResolution && o.price >= pack.policy.photoRequiredFrom && photoAt === null;
+    if (choice && choice.value !== "both" && itemConfirmed && !photoPending) {
       prepared =
         choice.value === "refund" || refund
           ? {
@@ -2488,6 +2503,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       authorityRow: band.row,
       prepared,
       approval: { state: prepared ? "awaiting" : "not-ready" },
+      ...(photoPending ? { photoPending: true as const } : {}),
     };
     if (prepared && !past) {
       const history: NonNullable<Recommendation["history"]> = [];
@@ -2605,7 +2621,11 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     } else if (!past && (given.length || refused.length)) {
       // Nothing is prepared, so nothing can be approved: say why at once, rather than only once the item
       // is read back (Call 11 review, I-24). "Done." before the read-back used to show no reason at all.
-      const missing = !itemConfirmed ? "the item wasn't confirmed with the caller yet" : "the customer's choice wasn't known yet";
+      const missing = !itemConfirmed
+        ? "the item wasn't confirmed with the caller yet"
+        : photoPending && choice && choice.value !== "both"
+          ? "the photo of the damage hadn't arrived yet"
+          : "the customer's choice wasn't known yet";
       // Given while a Confirm press stood that is now undone: say so, as the history does once the item is confirmed again.
       const reasonFor = (a: GivenApproval) => (undone.some((u) => u.confirmedAt <= a.at && u.undoneAt > a.at) ? "a confirmation it relied on was undone" : missing);
       const history = [...given.map((a) => ({ ...a, reason: reasonFor(a) })), ...refused].sort((x, y) => x.at - y.at).map((a) => ({ ...a, counted: false }));
@@ -3487,6 +3507,8 @@ export function approvalReadiness(view: CopilotView): string | null {
           ? "Not ready: checking a possible change of choice."
           : !view.choice
             ? "Not ready: the customer hasn't chosen yet."
+            : rec.photoPending
+              ? "Not ready: the photo of the damage is needed first (order of $500 or more)."
             : view.order.match && !view.order.match.confirmed
               ? "Not ready: read back the order first."
               : "Not ready.";

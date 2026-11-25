@@ -159,6 +159,8 @@ export const sunlake: ClientPack = {
     questionInCheck: process.env.NEXT_PUBLIC_QUESTION_IN_CHECK === "1",
     // The no-name fix (his "No-name fix in C12", 24 Nov): an answer with no name in it isn't a failed attempt. Off unless set.
     noNameNotCounted: process.env.NEXT_PUBLIC_NO_NAME_NOT_COUNTED === "1",
+    // The photo rule (his "Approved, Option A", 25 Nov): $500 or more, nothing is approved until the agent records the photo. Off unless set.
+    photoBeforeResolution: process.env.NEXT_PUBLIC_PHOTO_BEFORE_RESOLUTION === "1",
     authority: [
       { upTo: 500, approver: "Agent (Tier 1)", agentCanApprove: true, row: 0 },
       { upTo: 1500, approver: "Team Lead", agentCanApprove: false, row: 1 },

@@ -62,7 +62,8 @@ export type TranscriptEvent = {
 export type AgentAction =
   | {
       type: "confirm";
-      target: "issue" | "name" | "address" | "order" | "choice";
+      /** "photo": the agent has the customer's photo of the damage (Policy.photoBeforeResolution). */
+      target: "issue" | "name" | "address" | "order" | "choice" | "photo";
       at: number;
       /** For the issue: what the agent heard the problem is. Without it, the copilot's reading is confirmed as it stands. */
       issue?: "damaged" | "other";
@@ -167,6 +168,13 @@ export type Policy = {
    * the build sets it.
    */
   noNameNotCounted?: boolean;
+  /**
+   * The photo rule (his "Approved, Option A", 25 Nov 2026, after the Sunlake evaluation scenarios): "Orders of $500 or
+   * more need the photo before any resolution" (CS-SOP-3.1, Claim rules). Nothing is prepared or approved for such an
+   * order until the agent records that the photo arrived (a "photo" Confirm press); an approval given before that doesn't
+   * count. Before, the panel showed "photo first" but let a $500.00 order be approved. Off unless the build sets it.
+   */
+  photoBeforeResolution?: boolean;
   authority: AuthorityBand[];
   refundTiming: string;
   /** A verb phrase that follows "it": "ships the same day by expedited shipping". Say when it ships, never when it arrives. */

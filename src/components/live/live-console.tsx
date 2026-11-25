@@ -71,7 +71,7 @@ function DevelopmentBand() {
   const questionInCheck = !!pack.policy.questionInCheck && !!pack.policy.agentConfirmsMatch;
   return (
     <div role="status" className="flex min-h-7 items-center justify-center gap-2 border-b border-amber-500/40 bg-amber-500/15 px-4 py-1 text-xs font-medium text-amber-700 dark:text-amber-500">
-      Development console {process.env.NEXT_PUBLIC_BUILD_COMMIT || "(no build id)"}, not the pitch console · Name read-back {pack.policy.nameReadBack ? "on" : "off"} · Address read-back {pack.policy.addressReadBack ? "on" : "off"} · Agent confirms every match {pack.policy.agentConfirmsMatch ? "on" : "off"} · Stricter matching {pack.policy.strictMatch ? "on" : "off"} · Question in the check {!questionInCheck ? "off" : BAND_STATE[engineState]} · No-name answer not counted {pack.policy.noNameNotCounted ? "on" : "off"}
+      Development console {process.env.NEXT_PUBLIC_BUILD_COMMIT || "(no build id)"}, not the pitch console · Name read-back {pack.policy.nameReadBack ? "on" : "off"} · Address read-back {pack.policy.addressReadBack ? "on" : "off"} · Agent confirms every match {pack.policy.agentConfirmsMatch ? "on" : "off"} · Stricter matching {pack.policy.strictMatch ? "on" : "off"} · Question in the check {!questionInCheck ? "off" : BAND_STATE[engineState]} · No-name answer not counted {pack.policy.noNameNotCounted ? "on" : "off"} · Photo before resolution {pack.policy.photoBeforeResolution ? "on" : "off"}
     </div>
   );
 }
