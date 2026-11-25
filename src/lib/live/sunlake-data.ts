@@ -128,7 +128,7 @@ export const sunlakeOrders: Order[] = [
   { id: "472", customerId: "CU-decoy-3", customerName: "Nora Hill", item: "Phone case", shortName: "Phone case", noun: "phone case", price: 19, placedDaysAgo: 12, deliveredDaysAgo: 8, status: "Delivered", inStock: true },
 ];
 
-export const sunlake: ClientPack = {
+const sunlakeBase: ClientPack = {
   company: {
     name: "Sunlake Electronics",
     spokenName: "Sunlake",
@@ -174,6 +174,76 @@ export const sunlake: ClientPack = {
   orders: sunlakeOrders,
   callerCustomerId: samMiller.id,
 };
+
+/*
+  The varied live call (his "Varied live call", 25 Nov 2026): a test call with a caller whose voice has never been on a
+  call, and a customer, address and order number that have never been used on one. A build setting, off unless the
+  build sets NEXT_PUBLIC_VARIED_CALL=1, so the stage console, the pitch console and the public site keep Sam Miller.
+  With it on, every call is treated as Helen Foster's (caller ID match simulated, as for Sam Miller). Sam Miller and his
+  orders stay in the records as another customer's. The SOP, the policy, the product and the order number format (three
+  digits) are Sunlake's as before; only the customer, her orders, the decoys and the case differ. Invented, like
+  everything here. Nothing from these records is sent to the speech models (engine.ts recognize sends audio only).
+*/
+export const helenFoster: Customer = {
+  id: "CU-418736",
+  name: "Helen Foster",
+  emailMasked: "h.fo•••@example-mail.com",
+  emailFull: "h.foster@example-mail.com",
+  phoneMasked: "+1 (•••) •••-2391",
+  address: { street: "Lincoln Avenue", city: "Denver", state: "CO" },
+  customerSince: "March 2024",
+  status: "Active, no open cases",
+  damageClaimsLast90Days: 0,
+};
+
+const helenOrder = { customerId: helenFoster.id, customerName: helenFoster.name, payment: "Mastercard ending 5530", shipping: "Standard ground" } as const;
+
+export const variedCallOrders: Order[] = [
+  {
+    ...helenOrder,
+    id: "615",
+    item: "Sunlake Tab 11 tablet, 256 GB, blue",
+    shortName: "Sunlake Tab 11",
+    noun: "tablet",
+    price: 389,
+    placedDaysAgo: 5,
+    deliveredDaysAgo: 2,
+    status: "Delivered",
+    inStock: true,
+    stockUnits: 18,
+  },
+  {
+    ...helenOrder,
+    id: "283",
+    item: "Sunlake Buds wireless earbuds",
+    shortName: "Sunlake Buds",
+    noun: "earbuds",
+    price: 59,
+    placedDaysAgo: 48,
+    deliveredDaysAgo: 45,
+    status: "Delivered",
+    inStock: true,
+  },
+  // Decoys, as for order 427: other customers' orders one digit away or with the digits swapped. They never appear on
+  // screen, and the order matcher only searches the verified customer's orders.
+  { id: "715", customerId: "CU-decoy-4", customerName: "Mark Ellis", item: "Bluetooth speaker", shortName: "Bluetooth speaker", noun: "speaker", price: 79, placedDaysAgo: 7, deliveredDaysAgo: 3, status: "Delivered", inStock: true },
+  { id: "156", customerId: "CU-decoy-5", customerName: "Diane Cole", item: "USB-C hub", shortName: "USB-C hub", noun: "hub", price: 39, placedDaysAgo: 10, deliveredDaysAgo: 6, status: "Delivered", inStock: true },
+  { id: "561", customerId: "CU-decoy-6", customerName: "Victor Shaw", item: "27-inch monitor", shortName: "27-inch monitor", noun: "monitor", price: 279, placedDaysAgo: 14, deliveredDaysAgo: 9, status: "Delivered", inStock: true },
+];
+
+/** The same client pack, with every call treated as Helen Foster's (see above). Applied twice, it changes nothing more. */
+export function withVariedCall(pack: ClientPack): ClientPack {
+  return {
+    ...pack,
+    caseId: "SL-2026-112501",
+    references: { replacement: "RP-2026-112501-01", refund: "RF-2026-112501-01" },
+    customers: [helenFoster, ...pack.customers.filter((c) => c.id !== helenFoster.id)],
+    orders: [...variedCallOrders, ...pack.orders.filter((o) => !variedCallOrders.some((v) => v.id === o.id))],
+    callerCustomerId: helenFoster.id,
+  };
+}
+
+export const sunlake: ClientPack = process.env.NEXT_PUBLIC_VARIED_CALL === "1" ? withVariedCall(sunlakeBase) : sunlakeBase;
 
 /** Live call script v2 (content doc §5). C = Caller on a mobile phone, A = Agent on the MacBook. */
 export const scriptV2: { n: number; side: "caller" | "agent"; text: string }[] = [
