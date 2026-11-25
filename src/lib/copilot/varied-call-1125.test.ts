@@ -35,7 +35,7 @@ const prompt = (v: CopilotView, id: string) => v.prompts.find((p) => p.target ==
 const step = (v: CopilotView, id: string) => v.steps.find((s) => s.id === id)!;
 
 const OPENING = "Hi. I'm calling about order 615. My tablet arrived two days ago, and the screen is smashed.";
-/** The script's call, rows 1 to 16, with the times the agent presses Confirmed (name, street and city) and Approve. */
+/** The script's call, rows 1 to 13 (rows 7 and 11 are said in parts, one line each), with the times the agent presses Confirmed (name, street and city) and Approve. */
 const call = (opening = OPENING, name = "Helen Foster.", address = "Lincoln Avenue, in Denver."): { lines: L[]; presses: AgentAction[] } => ({
   lines: [
     { side: "agent", text: "Thank you for calling Sunlake. How can I help you today?", s: 0, e: 2500 },
@@ -117,18 +117,18 @@ test("expected results, heard word for word: each key moment of the script", () 
   assert.equal(v.order.match?.order.id, "615");
   assert.equal(v.order.match?.method, "exact");
   assert.equal(step(v, "order").detail, "#615");
-  // Row 11 (his second sentence) reads the order back; row 12 asks about both, so A or B.
+  // Row 7's second sentence reads the order back; row 8 asks about both, so A or B.
   v = analyze(pack, upTo(lines, 10), presses.slice(0, 2), T + 53_000);
   assert.equal(v.order.match?.confirmed, true);
   assert.equal(step(v, "confirm").detail, "Order read back; damage described by the caller");
   assert.equal(v.recommendation?.scenario, "A");
   assert.equal(v.recommendation?.alsoAllowed, "B");
-  // Row 14: "A replacement, please." is the choice; Approve is his.
+  // Row 12: "A replacement, please." is the choice; Approve is his.
   v = analyze(pack, upTo(lines, 15), presses.slice(0, 2), T + 81_000);
   assert.equal(v.choice?.value, "replacement");
   assert.equal(v.recommendation?.approval.state, "awaiting");
   assert.equal(v.recommendation?.prepared?.reference, "RP-2026-112501-01");
-  // His Approve, then the terms line: documentation complete.
+  // His Approve, then row 13's terms line: documentation complete.
   v = analyze(pack, upTo(lines, 16), presses, T + 97_000);
   assert.equal(v.recommendation?.approval.state, "approved");
   assert.equal(step(v, "docs").status, "done");
