@@ -580,6 +580,8 @@ export function LiveCopilot({ className }: { className?: string }) {
                             ? "It can be approved once the check settles, unless the caller rejected the read-back."
                             : rec.checkingChoice
                             ? "It can be approved once the check settles."
+                            : rec.approval.state === "not-ready" && rec.photoPending && view.choice
+                          ? "The photo of the damage is needed before any resolution ($500 or more). Record it when it has arrived."
                             : rec.approval.state === "not-ready"
                           ? "Confirm the customer's choice first."
                           : rec.staleApproval && !rec.staleApproval.refused
@@ -590,6 +592,12 @@ export function LiveCopilot({ className }: { className?: string }) {
                       {rec.approval.state === "awaiting" && (
                         <Button size="xs" className="rounded-full" onClick={approve}>
                           Approve
+                        </Button>
+                      )}
+                      {/* The agent's own record that the photo arrived; it approves nothing (Policy.photoBeforeResolution). */}
+                      {rec.approval.state === "not-ready" && rec.photoPending && view.choice && (
+                        <Button size="xs" variant="outline" className="rounded-full" onClick={() => confirm("photo")}>
+                          Photo received
                         </Button>
                       )}
                     </div>

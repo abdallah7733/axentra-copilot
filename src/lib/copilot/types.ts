@@ -62,7 +62,8 @@ export type TranscriptEvent = {
 export type AgentAction =
   | {
       type: "confirm";
-      target: "issue" | "name" | "address" | "order" | "choice";
+      /** "photo": the agent has the customer's photo of the damage (Policy.photoBeforeResolution). */
+      target: "issue" | "name" | "address" | "order" | "choice" | "photo";
       at: number;
       /** For the issue: what the agent heard the problem is. Without it, the copilot's reading is confirmed as it stands. */
       issue?: "damaged" | "other";
@@ -139,6 +140,41 @@ export type Policy = {
    * confirmed by caller", never as recognition.
    */
   addressReadBack?: boolean;
+  /**
+   * No name or address verifies from speech alone (his "Stricter matching", 12 Nov, after the 11 Nov false match calls:
+   * "Laura Anderton" was written "Laura Anderson" by both speech models). A spoken answer that matches the record word for
+   * word waits for the agent's Confirmed press, labelled "confirmed by the agent". Typing, and a read-back's checked yes,
+   * are unchanged. Off unless the build sets it.
+   */
+  agentConfirmsMatch?: boolean;
+  /**
+   * An answer that has every word of the record but says more that could change who or where it means ("Church Hill Road",
+   * "for my husband, Sam Miller", "Sam Miller, M E L L O R") is asked again, never a match (register I-54; see
+   * strictFlags). Off unless the build sets it.
+   */
+  strictMatch?: boolean;
+  /**
+   * C12 (his "Build C12", 23 Nov 2026): a name or address answer is checked with the agent's question in front of it, when
+   * the question is one of his usual ones (usual-questions.ts) and the engine sends word scores; the answer is cut back
+   * out of what the check model wrote and judged on its own words' scores (question-check.ts). Works only with
+   * agentConfirmsMatch, so every spoken match still waits for the agent's press. Off unless the build sets it.
+   */
+  questionInCheck?: boolean;
+  /**
+   * The no-name fix (his "No-name fix in C12", 24 Nov 2026): a spoken answer to the name question with no word that could
+   * be part of a name ("It's for my husband.") is asked again without counting an attempt. It still can't verify anyone.
+   * The words that count are written down in verification.ts: the not-an-answer words, NO_NAME_WORDS, and numbers in
+   * digits; words that are commonly names are left off, so "It's for my son." still counts as a wrong name. Off unless
+   * the build sets it.
+   */
+  noNameNotCounted?: boolean;
+  /**
+   * The photo rule (his "Approved, Option A", 25 Nov 2026, after the Sunlake evaluation scenarios): "Orders of $500 or
+   * more need the photo before any resolution" (CS-SOP-3.1, Claim rules). Nothing is prepared or approved for such an
+   * order until the agent records that the photo arrived (a "photo" Confirm press); an approval given before that doesn't
+   * count. Before, the panel showed "photo first" but let a $500.00 order be approved. Off unless the build sets it.
+   */
+  photoBeforeResolution?: boolean;
   authority: AuthorityBand[];
   refundTiming: string;
   /** A verb phrase that follows "it": "ships the same day by expedited shipping". Say when it ships, never when it arrives. */

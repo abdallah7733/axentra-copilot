@@ -101,6 +101,60 @@ test("a bare request for a detail counts only while the identity check is under 
   }
 });
 
+// 20 Nov C10 call: "Sorry, could you repeat the street and city." lost its question mark, so the caller's answer got no check.
+test("a re-ask is a question with or without its question mark (C11)", () => {
+  for (const underway of [true, false]) {
+    for (const text of [
+      "Sorry, could you repeat the street and city.",
+      "Can you repeat the street and city.",
+      "Could you say the street and city again.",
+      "Sorry, could you repeat your street and city.",
+      "Could you repeat the street and city again for me.",
+      "Would you repeat the email on the order.",
+    ])
+      assert.equal(agentAsksFor(text, underway), "address", `${text} (identity check under way: ${underway})`);
+    assert.equal(agentAsksFor("Could you repeat your full name.", underway), "name");
+    assert.equal(agentAsksFor("Can you say the order number again.", underway), "order");
+  }
+  // Said as a bare re-ask: only while the identity check is under way, as for any bare request.
+  for (const text of ["Repeat the street and city.", "Again, the street and city.", "Sorry, one more time, the street and city.", "Say your full name once more."]) {
+    assert.equal(agentAsksFor(text, true), text.includes("name") ? "name" : "address", text);
+    assert.equal(agentAsksFor(text, false), null, text);
+  }
+  // Not a request for a detail: a re-ask of nothing in particular, a statement, an offer, a spelling request.
+  for (const text of [
+    "Sorry, could you repeat that.",
+    "I can repeat the street and city for you.",
+    "You can say the street and city if you like.",
+    "Again, sorry about the address mix-up.",
+    "Again, the city doesn't match.",
+    "Could you spell the last name.",
+  ])
+    assert.equal(agentAsksFor(text, true), null, text);
+});
+
+// Independent check of C11 (20 Nov): "the name of the street" was taken as a name question, and two answers to it locked
+// the call with stricter matching on; "Can you just repeat…" and "Would you mind repeating…" were no questions.
+test("the name of the street is the address; the name of something else is no question for a detail (C11 check)", () => {
+  for (const underway of [true, false]) {
+    for (const [text, want] of [
+      ["Could you repeat the name of the street.", "address"],
+      ["Sorry, what's the name of the street?", "address"],
+      ["Can you just repeat the street and city.", "address"],
+      ["Could you please say the street and city again.", "address"],
+      ["Would you mind repeating the street and city.", "address"],
+      ["Would you mind repeating your full name.", "name"],
+      ["Can I have your full name and the name of the street?", "name"],
+    ] as const)
+      assert.equal(agentAsksFor(text, underway), want, `${text} (identity check under way: ${underway})`);
+  }
+  assert.equal(agentAsksFor("Again, the name of the street.", true), "address");
+  assert.equal(agentAsksFor("Again, the address of the delivery.", true), "address");
+  assert.equal(agentAsksFor("Thank you and your email for the confirmation.", true), "address");
+  for (const text of ["Say the name of the product.", "Again, your email confirmation shortly.", "Again, the name of the courier."])
+    assert.equal(agentAsksFor(text, true), null, text);
+});
+
 test("agent asks the customer to choose", () => {
   assert.ok(agentAsksChoice("Which do you prefer?"));
   assert.ok(agentAsksChoice("You can have either a new tablet ships today at no cost or a full refund in 3 to 5 business days."));

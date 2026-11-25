@@ -56,7 +56,7 @@ type CopilotState = {
   /** Every rewording request this call, including rejected, late and failed ones. */
   assistLog: AssistRecord[];
   /** For the issue, `issue` is what the agent heard the problem is. */
-  confirm: (target: "issue" | "name" | "address" | "order" | "choice", issue?: "damaged" | "other") => void;
+  confirm: (target: "issue" | "name" | "address" | "order" | "choice" | "photo", issue?: "damaged" | "other") => void;
   /** The agent types what the caller said on a line recognition got wrong. */
   correct: (key: string, text: string) => void;
   approve: () => void;
@@ -99,10 +99,11 @@ export const useCopilot = create<CopilotState>((set, get) => {
    * agent lines the rules name (an approval or terms that may have been misheard). Not held: an agent line that may be
    * the name read-back misheard (CopilotView.readBackChecks), which counts as heard meanwhile.
    */
-  const requestCheck = (line: TranscriptEvent, named = false, hold = true): TranscriptEvent => {
+  const requestCheck = (line: TranscriptEvent, named = false, hold = true, question?: string): TranscriptEvent => {
     if (requested.has(line.key) || (line.side !== "caller" && !named) || line.firstHeard !== undefined || line.checkFailed) return line;
     requested.add(line.key);
-    if (useLive.getState().checkLine(line.key, !hold) !== "started") return line;
+    // C12: a key answer to his usual name or address question is checked with that question in front (CopilotView.checkContext).
+    if (useLive.getState().checkLine(line.key, !hold, hold ? question : undefined) !== "started") return line;
     if (hold) return { ...line, checking: true, heldAt: epochNow() };
     probed.add(line.key);
     return { ...line, probing: true, probedAt: epochNow() };
@@ -115,7 +116,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
    * one that would only reopen a name already accepted (third review: a reply that had counted was then held again).
    */
   const withChecks = (lines: TranscriptEvent[], actions: AgentAction[], hints: ModelHints) => {
-    const { keyAnswers, readBackChecks, verification } = run(lines, actions, hints).view;
+    const { keyAnswers, readBackChecks, verification, checkContext } = run(lines, actions, hints).view;
     const late = keyAnswers.filter((key) => !requested.has(key));
     // Pressing Confirm on the problem has nothing to do with the name or an approval.
     const pressedSince = (key: string) => {
@@ -125,7 +126,7 @@ export const useCopilot = create<CopilotState>((set, get) => {
     const nameAccepted = verification.factors.some((f) => f.id === "name" && f.state === "ok");
     const probes = nameAccepted ? [] : readBackChecks.filter((key) => !requested.has(key) && !late.includes(key) && !pressedSince(key));
     if (!late.length && !probes.length) return lines;
-    return lines.map((l) => (late.includes(l.key) ? requestCheck(l, true) : probes.includes(l.key) ? requestCheck(l, true, false) : l));
+    return lines.map((l) => (late.includes(l.key) ? requestCheck(l, true, true, checkContext?.[l.key]) : probes.includes(l.key) ? requestCheck(l, true, false) : l));
   };
 
   const assistOn = () => useLive.getState().health?.assist === "local";
@@ -267,8 +268,9 @@ export const useCopilot = create<CopilotState>((set, get) => {
       // short answers heard on their own are where the fast model goes wrong.
       // A lingering question that lapsed since the last pass no longer holds the line, timer or not.
       const v = get().view;
-      const awaitingNow = v.awaitingUntil !== undefined && epochNow() > v.awaitingUntil ? run(get().lines, get().actions, get().hints).view.awaiting : v.awaiting;
-      if (!known && awaitingNow) line = requestCheck(line);
+      const now = v.awaitingUntil !== undefined && epochNow() > v.awaitingUntil ? run(get().lines, get().actions, get().hints).view : v;
+      // C12: the answer awaited to his usual question is checked with that question in front.
+      if (!known && now.awaiting) line = requestCheck(line, false, true, line.side === "caller" ? now.awaitingAsk : undefined);
       // A checked line replaces the one it re-checked.
       // The two sides are transcribed separately, so an answer can arrive before the agent's question.
       // Once the conversation in speech order shows a line is a key answer, it gets its check too.

@@ -2,7 +2,8 @@ import { findOrderMentions, findSplitOrder, matchOrder, type MentionMethod, type
 import { agentAsksChoice, agentAsksFor, agentCommits, agentDisclosesFactor, agentOffers, escalationWords, readChoice, readIntent, safetyWords, type Choice } from "./signals";
 import { findAffirmed, normalize, repeatsItself, soundsLike, words as textWords } from "./text";
 import type { AgentAction, AuthorityBand, ClientPack, Customer, Order, Side, TranscriptEvent } from "./types";
-import { COMMON, deniesIdentity, isFiller, matchAddress, matchName, namesAnother, readBackFits, soundsLikeRecord } from "./verification";
+import { usualQuestion } from "./usual-questions";
+import { COMMON, deniesIdentity, isFiller, matchAddress, matchName, namesAnother, readBackFits, saysNoName, soundsLikeRecord, spelledLetters, strictFlags, withoutExamples } from "./verification";
 
 /*
   The copilot's rules layer. `analyze` rebuilds the whole copilot view from the
@@ -63,7 +64,13 @@ export type Factor = {
    * asks again or types the caller's words, and can't just confirm it. "ambiguous": the answer names
    * two candidates or denies something else; asked again, never confirmed.
    */
-  confirmReason?: "low-confidence" | "garbled" | "sounds-like" | "disagree" | "ambiguous" | "after-read-back";
+  confirmReason?: "low-confidence" | "garbled" | "sounds-like" | "disagree" | "ambiguous" | "no-name" | "after-read-back" | "match";
+  /**
+   * The caller's spoken answer matched the record word for word, and waits for the agent's Confirmed press before it
+   * verifies anything (Policy.agentConfirmsMatch). Internal: the view shows such a factor as "confirm" with confirmReason
+   * "match".
+   */
+  held?: boolean;
   /** The caller's yes to the agent's read-back of the name (see Policy.nameReadBack). */
   confirmedBy?: Evidence;
   /** When the caller finished their first answer for this factor (all its lines): with knownAt, how long accepting it took. */
@@ -139,6 +146,8 @@ export type Recommendation = {
    * read-back (his decision, 23 Oct 12:35), so nothing can be approved until it settles.
    */
   checkingIdentity?: Evidence;
+  /** Policy.photoBeforeResolution: the order needs the photo of the damage before any resolution, and it hasn't arrived. */
+  photoPending?: true;
   /** Every approval given for this call, in order: whether it counted, and why not. */
   history?: { at: number; via: "call" | "panel"; evidence?: Evidence; counted: boolean; reason?: string }[];
 };
@@ -191,6 +200,18 @@ export type CopilotView = {
   awaiting: "issue" | "name" | "address" | "choice" | null;
   /** `awaiting` comes from a name or address question lingering over hold lines ("One moment."), and lapses at this time. */
   awaitingUntil?: number;
+  /**
+   * C12 (Policy.questionInCheck): the agent's question behind `awaiting` (its line's key), when `awaiting` is the name or
+   * address, a question asked it (not a read-back), it is one of his usual questions (usual-questions.ts), and nothing
+   * has been said since on either side. The caller's next line is checked with it in front.
+   */
+  awaitingAsk?: string;
+  /**
+   * C12: key answers (see keyAnswers) that are the caller's first line after one of his usual name or address questions,
+   * each with that question's line key: each is checked with the question in front. Absent unless the build sets
+   * questionInCheck and such an answer was said.
+   */
+  checkContext?: Record<string, string>;
   /**
    * Caller lines that answer a key question, judged in speech order: the problem (until one is heard),
    * the name, the address and the choice. Each gets the second model's check once, even when the
@@ -642,6 +663,7 @@ function notCovered(then: CopilotView, kind: "replacement" | "refund", orderId: 
   if (!(then.intent?.id === "damaged" && then.intent.certainty === "high")) return "the damage wasn't established yet";
   if (!then.choice || then.choice.value === "both") return "the customer's choice wasn't known yet";
   if (r?.prepared && r.prepared.kind !== kind) return `it was for a ${r.prepared.kind}`;
+  if (!r?.prepared && r?.photoPending && then.order.match.confirmed) return "the photo of the damage hadn't arrived yet";
   if (!r?.prepared) return then.order.match.confirmed ? "the customer's choice wasn't known yet" : "the item wasn't confirmed with the caller yet";
   return "the outcome has changed since";
 }
@@ -695,6 +717,12 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   const customerOrders = pack.orders.filter((o) => o.customerId === customer.id);
   const idLengths = [...new Set(pack.orders.map((o) => o.id.length))];
   const firstName = customer.name.split(" ")[0];
+  // Stricter matching (Policy.strictMatch, his "Stricter matching", 12 Nov): a match that says more than the record
+  // ("Church Hill Road in Dallas") is asked again, everywhere a caller's words are matched.
+  const strict = { strict: !!pack.policy.strictMatch };
+  const nameResult = (t: string) => matchName(t, customer, strict);
+  const addressResult = (t: string) => matchAddress(t, customer, strict);
+  const resultFor = (id: Factor["id"], t: string) => (id === "name" ? nameResult(t) : addressResult(t));
   // A reply to a refused read-back is heard as a name answer only when it says part of the name, even by sound
   // ("No, it's Sam Millar."). A no, a "yes, but…" or a question back is never a failed attempt.
   const nameParts = textWords(customer.name);
@@ -738,6 +766,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   let verifiedAt: Evidence | undefined;
   let locked = false;
   let expecting: "name" | "address" | "order" | null = null;
+  // C12: the agent's question that set `expecting` to the name or address; null when a read-back set it.
+  let expectingAsk: Evidence | null = null;
   // The name or address question carried over agent lines that only held or acknowledged, until this time.
   let lingerUntil: number | null = null;
   // The agent's latest question for the name, and their read-back of it still waiting for the caller's answer.
@@ -975,7 +1005,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   const callerMentions: { mention: OrderMention; ev: Evidence; differ?: { first: string; checked: string }; several?: string[] }[] = [];
   // The caller's previous line, while no agent line has come since: a pause can split one order number (I-43).
   let lastCaller: { line: TranscriptEvent; ev: Evidence; expecting: "name" | "address" | "order" | null } | null = null;
-  const agentMentionsAfterVerify: { mention: OrderMention; ev: Evidence }[] = [];
+  const agentMentionsAfterVerify: { mention: OrderMention; ev: Evidence; heldOn?: string }[] = [];
+  /** The answers a spoken match rests on, while it waits for the agent's press (Policy.agentConfirmsMatch). */
+  const heldAnswers = () => `${name.evidence?.key}|${address.evidence?.key}`;
   // Assigned through setChoice too, so declared wide: TypeScript doesn't follow assignments in closures.
   let choice = null as CopilotView["choice"];
   // When a different choice became known. An approval given before a change never comes back, even if
@@ -997,6 +1029,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   let unreadChoice: Evidence | null = null;
   // When the agent pressed Confirm on the item; each press counts only for the order shown at that moment.
   const orderPresses: number[] = [];
+  /** Policy.photoBeforeResolution: when the agent recorded that the photo of the damage arrived. */
+  let photoAt: number | null = null;
   // Identity factors the agent's Confirm press verified (each can be undone).
   const confirmedByPress = new Set<Factor["id"]>();
   let issueConfirmedInPanel = false;
@@ -1012,6 +1046,31 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   const refused: RefusedApproval[] = [];
   let unheardApproval: { ev: Evidence; value: "replacement" | "refund" } | null = null;
   const keyAnswers: string[] = [];
+  // C12 (Policy.questionInCheck, only with agentConfirmsMatch, so every spoken match still waits for the press): an answer
+  // to his usual name or address question is checked with that question in front. Never a question with a word from the
+  // customer records in it, even an ordinary word ("May"), and never a read-back: those keep today's check.
+  const checkContext: Record<string, string> = {};
+  const questionInCheck = !!pack.policy.questionInCheck && !!pack.policy.agentConfirmsMatch;
+  const recordWords = new Set(
+    [...pack.customers.flatMap((c) => [c.name, c.address.street, c.address.city, c.address.state]), ...pack.orders.map((o) => o.customerName)].flatMap((t) => textWords(t))
+  );
+  // Every reading of his line must be one of his usual questions: as the fast model heard it, as typed over, and as the
+  // second model heard it again, when it was.
+  const usualAsk = (ask: Evidence, detail: "name" | "address") => {
+    const again = corrected.find((l) => l.key === ask.key)?.reheard?.text;
+    return [ask.text, ask.typedFrom, ask.firstHeard, again].every((t) => t === undefined || t === null || usualQuestion(t, detail, recordWords));
+  };
+  // Only the caller's first line after his question hears it in front: nothing else began in between on either side,
+  // lines still being checked included, and nothing that began before his question was still being said when it ended
+  // (the re-score tested the question, the real pause, then the answer). The store also waits for phrases not yet on the
+  // console (question-check.ts planQuestion).
+  const firstAfter = (ask: Evidence, at: number) => {
+    const askEnd = corrected.find((l) => l.key === ask.key)?.endedAt ?? ask.at;
+    return !corrected.some((l) => l.key !== ask.key && l.startedAt < at && (l.startedAt >= ask.at || l.endedAt > askEnd));
+  };
+  /** His question to put in front of a caller line said at `at` (Infinity: the next one) while `detail` is awaited. */
+  const withQuestion = (detail: typeof expecting, at: number): string | undefined =>
+    questionInCheck && (detail === "name" || detail === "address") && expectingAsk && firstAfter(expectingAsk, at) && usualAsk(expectingAsk, detail) ? expectingAsk.key : undefined;
   const readBackChecks: string[] = [];
   const agentChecks: CopilotView["agentChecks"] = [];
 
@@ -1029,7 +1088,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   // A possible change of mind heard with low confidence puts the outcome on hold until it's confirmed.
   const readyToApprove = () => verified() && !!choice && choice.value !== "both" && issueSupported() && !lowConfidenceChoice;
 
-  const verified = () => name.state === "ok" && address.state === "ok";
+  // A spoken match held for the agent's press (Policy.agentConfirmsMatch) doesn't verify anything until the press.
+  const verified = () => name.state === "ok" && !name.held && address.state === "ok" && !address.held;
   /**
    * An approval, in the panel or on the call, counts only on identity verified when it was given: a name typed later
    * doesn't bring back an approval given while the read-back it relied on was still undecided (Amendment 3 check, and
@@ -1076,6 +1136,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     evs.some((e) => e.lowConfidence) ? "low-confidence" : repeatsItself(text) ? "garbled" : null;
 
   function matched(factor: Factor, ev: Evidence, reason: "low-confidence" | "garbled" | null, method?: string, knownAt = ev.knownAt, evs: Evidence[] = [ev]) {
+    // A match judged outside hear() (volunteered, or a re-answer to a held match) replaces an answer with no name in it too
+    // (independent check of the no-name fix, 24 Nov: the reason stayed on a matched name).
+    if (factor.confirmReason === "no-name") factor.confirmReason = undefined;
     factor.evidence = ev;
     factor.knownAt = knownAt;
     if (reason) {
@@ -1093,8 +1156,18 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     const typedAt = Math.max(...typedEvs.map((e) => e.knownAt));
     const typed = typedEvs.length && agentSaidRecord(factor.id as "name" | "address", method === "email", typedAt) ? "typed by the agent, after the agent said it on the call" : "typed by the agent";
     factor.method = typedEvs.length === 0 ? method : [method, typed].filter(Boolean).join(", ");
+    // His "Stricter matching" (12 Nov), after the 11 Nov calls ("Laura Anderton" written "Laura Anderson" by both speech
+    // models): with Policy.agentConfirmsMatch, no name or address verifies from speech alone. A spoken match waits for
+    // the agent's Confirmed press; typed words are the agent's own and verify as before.
+    factor.held = pack.policy.agentConfirmsMatch && typedEvs.length === 0 ? true : undefined;
     markVerified(ev);
   }
+
+  /** The agent has asked for this detail again since the caller's answer that is held for the press (C11, 20 Nov). */
+  const reasked = (f: Factor) => {
+    const ask = f.id === "name" ? nameAsk : addressAsk;
+    return !!f.held && !!f.evidence && !!ask && ask.at > f.evidence.at;
+  };
 
   /**
    * A Confirm press can only vouch for an answer that matches the record or sounds like it. Text that
@@ -1103,7 +1176,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
    */
   const resemblesRecord = (f: Factor) => {
     const text = f.heard ?? f.evidence?.text ?? "";
-    const result = f.id === "name" ? matchName(text, customer) : matchAddress(text, customer);
+    const result = resultFor(f.id, text);
     return result === "match" || result === "close" || (!deniesIdentity(text) && soundsLikeRecord(f.id, text, customer));
   };
   const confirmable = (f: Factor) =>
@@ -1219,12 +1292,15 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
    */
   const readBackOpen = (f: Factor) => {
     const id = f.id as "name" | "address";
-    const match = (t: string) => (id === "name" ? matchName(t, customer) : matchAddress(t, customer));
-    if ([f.heard, f.heardFirst].some((t) => t !== undefined && match(t) === "match")) return true;
+    const match = (t: string) => resultFor(id, t);
+    // An email that matches never opens a read-back of the street and city, as readBackFits says: the agent would say
+    // words the caller never gave (independent check of C11, 20 Nov: a doubtful email then "Yes." verified the address).
+    const said = (t: string) => match(t) === "match" && (id === "name" || addressMethod(t) === "street and city");
+    if ([f.heard, f.heardFirst].some((t) => t !== undefined && said(t))) return true;
     const log = answerLog[id];
     const readings = log.length ? [log.map((a) => a.text).join(" "), log.map((a) => a.first).join(" ")] : [f.heard ?? f.evidence?.text ?? ""];
-    if (readings.some((t) => exactPart(id, t) && !readBackFits(id, t, customer))) return false;
-    return readings.some((t) => readBackFits(id, t, customer));
+    if (readings.some((t) => exactPart(id, t) && !readBackFits(id, t, customer, strict))) return false;
+    return readings.some((t) => readBackFits(id, t, customer, strict));
   };
   /**
    * The caller's own answer fits a read-back (readBackOpen). A doubtful, garbled, disputed or sound-alike answer can
@@ -1261,6 +1337,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
 
   function hear(factor: Factor, line: TranscriptEvent, ev: Evidence) {
     if (factor.state === "ok" || locked) return;
+    // A new answer replaces one with no name in it: its reason is cleared as soon as the caller answers again (the reason
+    // is set in closeAnswer).
+    if (factor.confirmReason === "no-name") factor.confirmReason = undefined;
     if (pending?.factor !== factor) pending = { factor, evs: [], texts: [], endedAt: 0, result: "none" };
     // The end of the first answer, all of its lines: the start point for "Name accepted" in Call details.
     if (factor.answeredAt === undefined) firstAnswer.set(factor.id, pending);
@@ -1271,7 +1350,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     answerLog[factor.id as "name" | "address"].push({ text: line.text, first: ev.typedFrom === undefined ? line.firstHeard ?? line.text : line.text });
     const heard = pending.texts.join(" ");
     const reason = doubt(pending.evs, heard);
-    const result = factor.id === "name" ? matchName(heard, customer) : matchAddress(heard, customer);
+    const result = resultFor(factor.id, heard);
     factor.heard = heard;
     factor.heardFirst = pending.evs.map((e) => (e.typedFrom === undefined ? e.firstHeard ?? e.text : e.text)).join(" ");
     factor.evidence = ev;
@@ -1312,6 +1391,17 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       // Typed by the agent: no sound-alike leniency. Anything short of a match is a wrong answer.
       factor.state = "asking";
       pending.result = "mismatch";
+    } else if (
+      pack.policy.strictMatch &&
+      !deniesIdentity(heard) &&
+      (result === "close" || soundsLikeRecord(factor.id, heard, customer)) &&
+      strictFlags(factor.id, heard, customer, { readBack: true }).length
+    ) {
+      // With stricter matching, a sound-alike that also says more ("It's for my husband, Sam Millar.", "Church Hill Rode")
+      // is asked again, as the exact answer is: no Confirm, never a failed attempt (review of C10, 12 Nov).
+      factor.state = "confirm";
+      factor.confirmReason = "ambiguous";
+      pending.result = "ambiguous";
     } else if (!deniesIdentity(heard) && (result === "close" || soundsLikeRecord(factor.id, heard, customer))) {
       // Close to the record but not a clear match: the agent decides; never a failed attempt.
       factor.state = "confirm";
@@ -1335,6 +1425,14 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     if (reason) {
       factor.state = "confirm";
       factor.confirmReason = reason;
+      return;
+    }
+    // No word in the answer could be part of a name ("It's for my husband."): asked again, not a failed attempt, and it
+    // verifies nothing (his "No-name fix in C12", 24 Nov; Policy.noNameNotCounted). Spoken answers only: a typed answer
+    // that isn't the record's name is a wrong answer, as before.
+    if (pack.policy.noNameNotCounted && factor.id === "name" && evs.every((e) => e.typedFrom === undefined) && saysNoName(texts.join(" "), nameParts)) {
+      factor.state = "confirm";
+      factor.confirmReason = "no-name";
       return;
     }
     // Said while the question only lingered: a genuinely different answer, so it is asked again (no read-back, no
@@ -1421,12 +1519,28 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           // A later line of the same answer that corrects it withdraws the press (independent review of C7, 23 Oct).
           const answer = corrected.find((l) => l.key === factor.evidence!.key);
           if (answer?.side === "caller") lastMatch[factor.id as "name" | "address"] = { line: answer, heard: factor.heard ?? answer.text, end: answer.endedAt };
+        } else if (factor.state === "ok" && factor.held && factor.evidence && !locked && !answerCheckingAt(factor.id, a.at)) {
+          // A spoken match held for the agent (Policy.agentConfirmsMatch): the press verifies it, recorded as the agent's
+          // confirmation, never as recognition. It counts whenever the match is held, as the match itself would have
+          // verified then: a refused read-back of an earlier answer doesn't stop it (the caller's own email after a "No").
+          // A later line of the same answer that corrects it, or a refused read-back of this one, still withdraws it.
+          // Like the Confirm press, it waits while part of the caller's own answer is still being checked (review of C10,
+          // 12 Nov: "Sorry, that's Church Hill Road." was on the console, and the order showed until its check landed).
+          if (pending?.factor === factor) pending = null;
+          factor.held = undefined;
+          confirmedByPress.add(factor.id);
+          const onLine = corrected.find((l) => l.key === factor.evidence!.key);
+          factor.knownAt = Math.max(pressCountsFrom(a.at, factor.id), onLine && arrived(onLine) > a.at ? a.at : factor.knownAt ?? factor.evidence.knownAt);
+          factor.method = factor.method ? `confirmed by the agent, ${factor.method}` : "confirmed by the agent";
+          markVerified(factor.evidence);
         }
       } else if (a.type === "confirm" && a.target === "issue") {
         if (a.issue) issueChoice = a.issue;
         else issueConfirmedInPanel = true;
       } else if (a.type === "confirm" && a.target === "order") {
         orderPresses.push(a.at);
+      } else if (a.type === "confirm" && a.target === "photo") {
+        if (photoAt === null) photoAt = a.at;
       } else if (a.type === "confirm" && a.target === "choice" && lowConfidenceChoice) {
         const found = readChoice(lowConfidenceChoice.text);
         if (found) setChoice(found.choice, lowConfidenceChoice, a.at);
@@ -1453,6 +1567,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       const changesChoice = !!choice && !!heardChoice && heardChoice !== "both" && heardChoice !== choice.value;
       if (!locked && (!intent || expecting === "name" || expecting === "address" || lowConfidenceChoice || (!choice && (choiceAsked || unreadChoice)) || (choice && (choiceAsked || changesChoice)))) {
         keyAnswers.push(line.key);
+        // C12: an answer to his usual name or address question is checked with that question in front.
+        const asked = withQuestion(expecting, line.startedAt);
+        if (asked) checkContext[line.key] = asked;
       }
       // A reply to the agent's read-back of a detail already verified when it reached the console: it may reject it, so it
       // is checked too. Verified only later (typed after a refused read-back), it is no reply to a verified detail.
@@ -1553,6 +1670,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       if (backed && why === null) {
         if (pending?.factor === name) pending = null;
         name.state = "ok";
+        name.held = undefined;
         name.evidence = backed.ev;
         name.confirmedBy = ev;
         name.knownAt = shownWith(Math.max(backed.ev.knownAt, ev.knownAt), [...answerLines("name", backed.ev.at), ...restOfReply(line)]);
@@ -1591,6 +1709,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       if (backedA && whyA === null) {
         if (pending?.factor === address) pending = null;
         address.state = "ok";
+        address.held = undefined;
         address.evidence = backedA.ev;
         address.confirmedBy = ev;
         address.knownAt = shownWith(Math.max(backedA.ev.knownAt, ev.knownAt), [...answerLines("address", backedA.ev.at), ...restOfReply(line)]);
@@ -1625,10 +1744,15 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         const refusal = { ev, why: "it rejects the read-back", recovery: "ask" as const };
         if (id === "name") [readBackRefused, lastReadBack] = [refusal, null];
         else [addrRefused, lastAddrBack] = [refusal, null];
-        Object.assign(f, { state: "confirm", confirmReason: f.confirmReason ?? "ambiguous", knownAt: undefined, method: undefined, confirmedBy: undefined });
+        // A match still held for the agent's press had verified nothing, so nothing falls with it.
+        const wasHeld = !!f.held;
+        // An answer with no name in it before the refused read-back is "ambiguous" from here on, as a failed attempt is with
+        // the no-name fix off (independent check of the no-name fix, 24 Nov).
+        Object.assign(f, { state: "confirm", confirmReason: wasHeld || f.confirmReason === "no-name" ? "ambiguous" : f.confirmReason ?? "ambiguous", knownAt: undefined, method: undefined, confirmedBy: undefined, held: undefined });
         confirmedByPress.delete(id);
         verifiedAt = undefined;
-        identityFalls.push({ at: Math.max(...part.map((l) => evidenceOf(l).knownAt)), id, said: part[part.length - 1].startedAt, reason: "the caller rejected the read-back after it" });
+        if (!wasHeld)
+          identityFalls.push({ at: Math.max(...part.map((l) => evidenceOf(l).knownAt)), id, said: part[part.length - 1].startedAt, reason: "the caller rejected the read-back after it" });
         delete lastMatch[id];
         if (pending?.factor === f) pending = null;
         rejectedBack.add(id);
@@ -1659,11 +1783,15 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           continue;
         }
         [m.heard, m.end] = [`${m.heard} ${line.text}`, line.endedAt];
-        if ((id === "name" ? matchName(m.heard, customer) : matchAddress(m.heard, customer)) !== "ambiguous") continue;
-        Object.assign(f, { state: "confirm", confirmReason: "ambiguous", heard: m.heard, heardFirst: m.heard, evidence: ev, knownAt: undefined, method: undefined });
+        // A match still held for the agent's press is withdrawn by any later line that leaves the answer short of a match
+        // ("Sam Miller." then "Sorry, Millar."): the card would quote only the first line as matching (review of C10, 12 Nov).
+        const wasHeld = !!f.held;
+        const joined = resultFor(id, m.heard);
+        if (joined !== "ambiguous" && !(wasHeld && joined !== "match")) continue;
+        Object.assign(f, { state: "confirm", confirmReason: "ambiguous", heard: m.heard, heardFirst: m.heard, evidence: ev, knownAt: undefined, method: undefined, held: undefined });
         confirmedByPress.delete(id);
         verifiedAt = undefined;
-        identityFalls.push({ at: ev.knownAt, id, said: line.startedAt });
+        if (!wasHeld) identityFalls.push({ at: ev.knownAt, id, said: line.startedAt });
         selfCorrected.add(id);
         delete lastMatch[id];
         // Later lines of the same answer are read together with it, so flipping back ("Sorry, Sam Miller.") stays asked again.
@@ -1681,24 +1809,15 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       // Spelling the name ("M I L L E R.", "Miller with two Ls.", "That's Miller, double L.") after "Could you spell the last
       // name?" adds nothing to a doubtful answer, so it stays as it was. Spelled letters that make another name don't
       // count as spelling (second review of C7, 23 Oct: it was taken as a second name).
-      const spelledRuns = (w: string[]) => {
-        const runs: string[] = [];
-        let run = "";
-        for (const y of [...w, ""]) {
-          if (/^[a-z]$/.test(y)) run += y;
-          else {
-            if (run.length > 1) runs.push(run);
-            run = "";
-          }
-        }
-        return runs;
-      };
-      const spellsOther = (t: string) => spelledRuns(textWords(t)).some((r) => !nameParts.some((p) => r === p || soundsLike(r, p)));
+      // "M I double L E R", "M, I, two Ls, E, R" and "M as in Mary" spell it too (review of C10, 12 Nov: the held card asks
+      // for the spelling, and the record's own spelling read as another name).
+      const spelledRuns = (w: string[]) => spelledLetters(w, 2);
+      const spellsOther = (t: string) => spelledRuns(textWords(t)).some((r) => r !== nameParts.join("") && !nameParts.some((p) => r === p || soundsLike(r, p)));
       const spellsName = (t: string) => {
-        const w = textWords(t).map((y) => y.replace(/'s$/, ""));
+        const w = withoutExamples(textWords(t).map((y) => y.replace(/'s$/, "")));
         if (spellsOther(t)) return false;
         const rest = w.filter((y) => !/^[a-z]$/.test(y) && !nameParts.some((p) => soundsLike(y, p)));
-        return w.some((y) => /^[a-z]$/.test(y) || /^[a-z]s$/.test(y)) && rest.every((y) => isFiller(y) || /^[a-z]s$/.test(y) || /^(with|two|double|an|a|one|it|its|it's|that|that's|thats|is|spelled|spelt|and|as|in|like|letter|letters|yes|yeah)$/.test(y));
+        return w.some((y) => /^[a-z]$/.test(y) || /^[a-z]s$/.test(y)) && rest.every((y) => isFiller(y) || /^[a-z]s$/.test(y) || /^(with|two|double|three|triple|an|a|one|it|its|it's|that|that's|thats|is|spelled|spelt|and|as|in|like|letter|letters|yes|yeah)$/.test(y));
       };
       // A line about the street and city or the email is never a name ("It's Hill Road in Dallas.", the email with
       // "miller" in it); a line about the name says part of it, sounds like it, or names someone else (namesAnother).
@@ -1710,8 +1829,40 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         saysAddressPart(t) || soundsLikeRecord("address", t, customer) || addressMethod(t) === "email" || /\b(road|street|avenue|drive|lane)\b/i.test(t);
       // While the question only lingers, a line that adds nothing new to a doubtful answer ("Miller, M I L L E R.", "It's
       // Miller with two Ls.") leaves it as it was; only a match, or a line naming someone else, changes it.
+      // An answer with no name in it isn't a doubtful answer on the table: whatever comes next is heard as with the no-name
+      // fix off (independent check of the no-name fix, 24 Nov: a sound-alike or part of the name was dropped).
       const addsNothing = (f: Factor, t: string) =>
-        f.state === "confirm" && (f.id === "name" ? !["match", "ambiguous"].includes(matchName(t, customer)) && !namesAnother(t, customer) : matchAddress(t, customer) === "partial");
+        f.state === "confirm" &&
+        f.confirmReason !== "no-name" &&
+        (f.id === "name" ? !["match", "ambiguous"].includes(nameResult(t)) && !namesAnother(t, customer) : addressResult(t) === "partial");
+      // The card for a match held for the press says "If in doubt, ask again", but hear() never reopens a held match, so
+      // the caller's answer to that question was ignored and the card kept quoting the first answer (C11, 20 Nov). Once the
+      // agent has asked for the detail again, the new answer is judged here: a new match moves the hold, and the card's
+      // quote, to this line; any other answer to the question ("In Boston.", "Tom Baker.") is asked again, never a failed
+      // attempt; part of it, a sound-alike or "Sorry?" leaves the hold as it was.
+      // Independent check of C11 (20 Nov): the rest of a conflicting answer is read with it, as for any answer, so "Lake
+      // Road." then "In Boston." is asked again, not a failed attempt; a doubtful new match doesn't keep the earlier
+      // answer's method; and the answer is logged for the read-back like any other.
+      const reanswerHeld = (f: Factor) => {
+        const id = f.id as "name" | "address";
+        const result = resultFor(id, line.text);
+        const first = ev.typedFrom === undefined ? line.firstHeard ?? line.text : line.text;
+        const heardIt = { heard: line.text, heardFirst: first };
+        if (result === "match" && !spokenAfterRecordSaid(f, [ev], id === "address" && addressMethod(line.text) === "email") && !moreBeingChecked(line, ev.knownAt)) {
+          answerLog[id].push({ text: line.text, first });
+          Object.assign(f, { held: undefined, method: undefined, confirmReason: undefined, ...heardIt });
+          matched(f, ev, doubt([ev], line.text), id === "address" ? addressMethod(line.text) : undefined);
+          if ((f.state as Factor["state"]) === "ok") lastMatch[id] = { line, heard: line.text, end: line.endedAt };
+          else delete lastMatch[id];
+        } else if (result === "mismatch" || result === "ambiguous") {
+          answerLog[id].push({ text: line.text, first });
+          // With the no-name fix, a spoken answer with no name in it says so on its card (independent check, 24 Nov).
+          const noName = pack.policy.noNameNotCounted && id === "name" && result === "mismatch" && ev.typedFrom === undefined && saysNoName(line.text, nameParts);
+          Object.assign(f, { state: "confirm", confirmReason: noName ? "no-name" : "ambiguous", held: undefined, knownAt: undefined, method: undefined, evidence: ev, ...heardIt });
+          delete lastMatch[id];
+          pending = { factor: f, evs: [ev], texts: [line.text], endedAt: line.endedAt, result: "ambiguous", noAttempt: true };
+        }
+      };
       // A typed correction over the caller's reply to a read-back is the agent's words, not the caller's, unless that
       // reply said the detail (independent review of C7, 23 Oct: the record name typed over "Yes." verified).
       const typedOverReply = (backedOrOpen: boolean, says: (t: string) => boolean) => backedOrOpen && ev.typedFrom !== undefined && !says(ev.typedFrom);
@@ -1732,8 +1883,19 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         } else if (expecting === "name" && confirmsOnly(line.text)) {
           // A plain yes answers no name question ("Yes, that's right." to a read-back the fast model misheard as a
           // question): nothing changes, and it is never a failed attempt.
-        } else if (name.state === "confirm" && spellsName(line.text)) {
+        } else if (((name.state === "confirm" && name.confirmReason !== "no-name") || name.held) && spellsName(line.text)) {
+          // (An answer with no name in it isn't a doubtful answer that spelling adds nothing to: the spelled answer is heard
+          // as with the no-name fix off; independent check of the no-name fix, 24 Nov.)
           heardName = true;
+          // With stricter matching, a held match spelled out as another name ("M E L L O R" for Miller) is the caller's
+          // own answer conflicting: asked again, never confirmed.
+          if (name.held && pack.policy.strictMatch && spelledLetters(textWords(line.text)).some((r) => !nameParts.includes(r) && r !== nameParts.join(""))) {
+            Object.assign(name, { state: "confirm", confirmReason: "ambiguous", held: undefined, knownAt: undefined, method: undefined, heard: `${name.heard ?? name.evidence?.text ?? ""} ${line.text}`.trim(), evidence: ev });
+            delete lastMatch.name;
+          }
+        } else if (expecting === "name" && reasked(name)) {
+          heardName = true;
+          reanswerHeld(name);
         } else if (expecting === "name" && (lingering || nameExpiredOpen)) {
           heardName = aboutName(line.text);
           if (heardName && !addsNothing(name, line.text)) hearLingering(name);
@@ -1741,7 +1903,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           heardName = true;
           hear(name, line, ev);
         }
-        else if (name.state !== "ok" && matchName(line.text, customer) === "match" && !spokenAfterRecordSaid(name, [ev]) && !moreBeingChecked(line, ev.knownAt)) {
+        else if (name.state !== "ok" && nameResult(line.text) === "match" && !spokenAfterRecordSaid(name, [ev]) && !moreBeingChecked(line, ev.knownAt)) {
+          // The card quotes the line that matched, not an earlier answer (C11, 20 Nov; see the address below).
+          Object.assign(name, { heard: line.text, heardFirst: ev.typedFrom === undefined ? line.firstHeard ?? line.text : line.text });
           matched(name, ev, doubt([ev], line.text));
           if ((name.state as Factor["state"]) === "ok") lastMatch.name = { line, heard: line.text, end: line.endedAt };
         }
@@ -1757,6 +1921,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           // The same for the address read-back.
         } else if (expecting === "address" && confirmsOnly(line.text)) {
           // The same for the address.
+        } else if (expecting === "address" && reasked(address)) {
+          heardAddress = true;
+          reanswerHeld(address);
         } else if (expecting === "address" && (lingering || addrExpiredOpen)) {
           heardAddress = aboutAddress(line.text);
           if (heardAddress && !addsNothing(address, line.text)) hearLingering(address);
@@ -1766,10 +1933,13 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         }
         else if (
           address.state !== "ok" &&
-          matchAddress(line.text, customer) === "match" &&
+          addressResult(line.text) === "match" &&
           !spokenAfterRecordSaid(address, [ev], addressMethod(line.text) === "email") &&
           !moreBeingChecked(line, ev.knownAt)
         ) {
+          // The card quotes this line: on the 20 Nov C10 call, an unasked "Hill Road in Dallas." would have been held under
+          // "Heard "Church Hillwood in Dallas.", which matches the street and city on the order" (offline what-if, C11).
+          Object.assign(address, { heard: line.text, heardFirst: ev.typedFrom === undefined ? line.firstHeard ?? line.text : line.text });
           matched(address, ev, doubt([ev], line.text), addressMethod(line.text));
           if ((address.state as Factor["state"]) === "ok") lastMatch.address = { line, heard: line.text, end: line.endedAt };
         }
@@ -1782,7 +1952,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           [name, heardName, !!backed || continues, aboutName, address, heardAddress],
           [address, heardAddress, !!backedA || continuesA, aboutAddress, name, heardName],
         ] as const) {
-          if (heardIt || reply || rejectedBack.has(f.id as "name" | "address") || f.state !== "confirm" || f.confirmReason === "ambiguous" || !f.evidence || line.startedAt <= f.evidence.at) continue;
+          // A match still held for the agent's press is the agent's call too (Policy.agentConfirmsMatch).
+          if (heardIt || reply || rejectedBack.has(f.id as "name" | "address") || (f.state !== "confirm" && !f.held) || f.confirmReason === "ambiguous" || (f.state === "confirm" && f.confirmReason === "no-name") || !f.evidence || line.startedAt <= f.evidence.at) continue;
           if (otherHeard || expecting === other.id || other.evidence?.key === line.key) continue;
           // Nor once the agent has asked about something else since the answer ("Is the damage only on the screen?"):
           // the caller is answering that. A question about this detail ("And the last name?") keeps it open.
@@ -1790,8 +1961,12 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
             (l) => l.side === "agent" && l.startedAt > f.evidence!.at && l.startedAt < line.startedAt && /\?/.test(l.text) && !(f.id === "name" ? /name/i : /\b(street|city|address|email|e-mail|zip)\b/i).test(l.text),
           );
           if (asked) continue;
-          const result = f.id === "name" ? matchName(line.text, customer) : matchAddress(line.text, customer);
+          const result = resultFor(f.id, line.text);
           if (!about(line.text) || (result !== "mismatch" && result !== "ambiguous")) continue;
+          if (f.held) {
+            Object.assign(f, { state: "confirm", held: undefined, knownAt: undefined, method: undefined });
+            delete lastMatch[f.id as "name" | "address"];
+          }
           Object.assign(f, { confirmReason: "ambiguous", heard: line.text, heardFirst: line.firstHeard ?? line.text, evidence: ev });
         }
       }
@@ -1834,11 +2009,11 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       // and a caller repeating it never counts as recognition (his rule, 23 Oct: assisted read-back stays separate).
       for (const f of [name, address]) {
         const id = f.id as "name" | "address";
-        if (f.state === "ok" || recordSaidAt[id] !== null) continue;
+        if ((f.state === "ok" && !f.held) || recordSaidAt[id] !== null) continue;
         const said = [line.text, line.reheard?.text].some((t) => !!t && (id === "name" ? mentionsRecordName(t, line.startedAt) : mentionsRecordAddress(t, line.startedAt)));
         if (said) recordSaidAt[id] = line.startedAt;
       }
-      if (address.state !== "ok" && emailSaidAt === null && [line.text, line.reheard?.text].some((t) => !!t && mentionsRecordEmail(t))) emailSaidAt = line.startedAt;
+      if ((address.state !== "ok" || address.held) && emailSaidAt === null && [line.text, line.reheard?.text].some((t) => !!t && mentionsRecordEmail(t))) emailSaidAt = line.startedAt;
       if (!locked && [line.text, line.reheard?.text].some((t) => !!t && readsBackName(t, customer))) backsSaid.name.push(line);
       if (!locked && readsBackAddress(line.text, customer)) backsSaid.address.push(line);
       // No read-back of either detail while the caller's reply to an earlier one is still being checked.
@@ -1956,11 +2131,13 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       if (asks || readBack || addrBack) [earlySaid.name, earlySaid.address] = [null, null];
       if (readBack) {
         expecting = "name";
+        expectingAsk = null;
         readBacksUsed.name++;
         lastReadBack = { ...readBack, line };
         readBacksSeen.push(line);
       } else if (addrBack) {
         expecting = "address";
+        expectingAsk = null;
         readBacksUsed.address++;
         lastAddrBack = { ...addrBack, line };
         addrBacksSeen.push(line);
@@ -1980,11 +2157,19 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       if (asks === "address") [addressAsk, addressAskEnds] = [ev, Infinity];
       if (asks) {
         expecting = asks;
+        expectingAsk = asks === "name" || asks === "address" ? ev : null;
         const factor = asks === "name" ? name : asks === "address" ? address : null;
         if (factor && (factor.state === "idle" || factor.state === "failed" || factor.state === "partial")) factor.state = "asking";
+        // An answer with no name in it ends as a failed attempt does once the agent asks again: no card, and no typing over
+        // that earlier answer (independent check of the no-name fix, 24 Nov).
+        if (factor && factor.state === "confirm" && factor.confirmReason === "no-name") [factor.state, factor.confirmReason] = ["asking", undefined];
       }
 
       if (verified()) for (const mention of findOrderMentions(line.text, idLengths)) agentMentionsAfterVerify.push({ mention, ev });
+      // Said after the caller's answers matched but before the agent's press: it counts once the press confirms those
+      // same answers, as it would have counted had the match verified them by itself.
+      else if (name.state === "ok" && address.state === "ok")
+        for (const mention of findOrderMentions(line.text, idLengths)) agentMentionsAfterVerify.push({ mention, ev, heldOn: heldAnswers() });
 
       if (name.attempts + address.attempts > 0 && agentDisclosesFactor(line.text)) disclosures.push(ev);
 
@@ -2101,14 +2286,15 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     order.state = "heard";
   }
   if (isVerified) {
-    const sources: { mention: OrderMention; ev: Evidence; differ?: { first: string; checked: string }; several?: string[] }[] = [...latestCaller, ...agentMentionsAfterVerify];
+    const afterVerify = agentMentionsAfterVerify.filter((a) => a.heldOn === undefined || a.heldOn === heldAnswers());
+    const sources: { mention: OrderMention; ev: Evidence; differ?: { first: string; checked: string }; several?: string[] }[] = [...latestCaller, ...afterVerify];
     const found = matchOrder(sources.map((s) => s.mention), customerOrders, pack.policy.claimWindowDays);
     if (found) {
       const source = sources.find((s) => s.mention === found.mention);
       // A confirmation is bound to the order number it confirmed: once the caller names a different
       // number after it, it no longer stands, even if they come back to the first (plan Step 5, action 5).
       const stands = (at: number) => !callerMentions.some((c) => c.ev.at > at && !c.mention.candidates.includes(found.order.id));
-      const readBack = agentMentionsAfterVerify.find(
+      const readBack = afterVerify.find(
         (a) => !a.ev.lowConfidence && a.mention.candidates.includes(found.order.id) && stands(a.ev.at)
       );
       // A Confirm press counts only for the order the panel showed when it was pressed.
@@ -2181,8 +2367,13 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       {
         id: "photo",
         label: "Can resolve before the photo arrives",
-        pass: o.price < p.photoRequiredFrom,
-        detail: o.price < p.photoRequiredFrom ? `Under ${money(p.photoRequiredFrom)}: photo within ${p.photoDays} days` : `${money(p.photoRequiredFrom)} or more: photo first`,
+        pass: o.price < p.photoRequiredFrom || (!!p.photoBeforeResolution && photoAt !== null),
+        detail:
+          o.price < p.photoRequiredFrom
+            ? `Under ${money(p.photoRequiredFrom)}: photo within ${p.photoDays} days`
+            : p.photoBeforeResolution && photoAt !== null
+              ? `${money(p.photoRequiredFrom)} or more: photo received (recorded by the agent)`
+              : `${money(p.photoRequiredFrom)} or more: photo first`,
         sopRef: ref("Claim rules"),
       }
     );
@@ -2200,7 +2391,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   const awaiting: CopilotView["awaiting"] =
     locked || escalate
       ? null
-      : identityFactor && identityFactor.state !== "ok"
+      : // Asked again about a match held for the press, the new answer is awaited too: it waits for its check (C11).
+        identityFactor && (identityFactor.state !== "ok" || reasked(identityFactor))
         ? identityFactor.id
         : // The caller's next line may be the reply to a read-back: it waits for its check from the start, so a line that
           // already counted is never hidden later, when the line heard again (or said before the name answer's check
@@ -2214,6 +2406,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
           : !intent
             ? "issue"
             : null;
+  // C12: the caller's next line, when it is the answer awaited to his usual question, is checked with it in front.
+  const awaitingAsk = (awaiting === "name" || awaiting === "address") && awaiting === expecting ? withQuestion(awaiting, Infinity) : undefined;
 
   // A caller line after the choice that the second speech model is still checking, and that reads (as first
   // heard) as a different choice.
@@ -2268,7 +2462,10 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       ...(scenario === "A" ? [choice?.value === "replacement" ? "The customer chose a replacement." : "No preference stated, so replacement is the default."] : []),
     ];
     let prepared: Recommendation["prepared"];
-    if (choice && choice.value !== "both" && itemConfirmed) {
+    // "Orders of $500 or more need the photo before any resolution": nothing is prepared, so nothing can be approved,
+    // until the agent records the photo (Policy.photoBeforeResolution).
+    const photoPending = !!pack.policy.photoBeforeResolution && o.price >= pack.policy.photoRequiredFrom && photoAt === null;
+    if (choice && choice.value !== "both" && itemConfirmed && !photoPending) {
       prepared =
         choice.value === "refund" || refund
           ? {
@@ -2306,6 +2503,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       authorityRow: band.row,
       prepared,
       approval: { state: prepared ? "awaiting" : "not-ready" },
+      ...(photoPending ? { photoPending: true as const } : {}),
     };
     if (prepared && !past) {
       const history: NonNullable<Recommendation["history"]> = [];
@@ -2347,7 +2545,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
         const undoneSince = undone.some((u) => u.confirmedAt <= a.at && u.undoneAt > a.at);
         const fell = identityFalls.find((f) => {
           const factor = f.id === "name" ? name : address;
-          const again = factor.state === "ok" && Math.max(factor.evidence?.at ?? 0, factor.confirmedBy?.at ?? 0) > f.said && (factor.knownAt ?? Infinity) <= a.at;
+          const again = factor.state === "ok" && !factor.held && Math.max(factor.evidence?.at ?? 0, factor.confirmedBy?.at ?? 0) > f.said && (factor.knownAt ?? Infinity) <= a.at;
           return f.at > a.at && !again;
         });
         const fellSince = !!fell;
@@ -2423,7 +2621,11 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     } else if (!past && (given.length || refused.length)) {
       // Nothing is prepared, so nothing can be approved: say why at once, rather than only once the item
       // is read back (Call 11 review, I-24). "Done." before the read-back used to show no reason at all.
-      const missing = !itemConfirmed ? "the item wasn't confirmed with the caller yet" : "the customer's choice wasn't known yet";
+      const missing = !itemConfirmed
+        ? "the item wasn't confirmed with the caller yet"
+        : photoPending && choice && choice.value !== "both"
+          ? "the photo of the damage hadn't arrived yet"
+          : "the customer's choice wasn't known yet";
       // Given while a Confirm press stood that is now undone: say so, as the history does once the item is confirmed again.
       const reasonFor = (a: GivenApproval) => (undone.some((u) => u.confirmedAt <= a.at && u.undoneAt > a.at) ? "a confirmation it relied on was undone" : missing);
       const history = [...given.map((a) => ({ ...a, reason: reasonFor(a) })), ...refused].sort((x, y) => x.at - y.at).map((a) => ({ ...a, counted: false }));
@@ -2614,7 +2816,27 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
             : recordSaidAt.address !== null
               ? AFTER_SAID.address
               : "Type what the caller said (A), or ask again.";
+  /** What a match also said that stricter matching asks again about (Policy.strictMatch), for the card. */
+  const saysMore = (f: Factor): string[] => {
+    const heard = f.heard ?? f.evidence?.text ?? "";
+    // The plain match, without the stricter rules: only an answer that would have matched is described this way.
+    const plain = f.id === "name" ? matchName(heard, customer) : matchAddress(heard, customer);
+    if (!pack.policy.strictMatch || f.confirmReason !== "ambiguous") return [];
+    return plain === "match" ? strictFlags(f.id, heard, customer) : plain === "close" || soundsLikeRecord(f.id, heard, customer) ? strictFlags(f.id, heard, customer, { readBack: true }) : [];
+  };
   for (const f of [name, address]) {
+    if (f.state === "ok" && f.held && f.evidence && !locked) {
+      // His "Stricter matching" (12 Nov): a spoken match waits for the agent, who confirms only what they heard.
+      const what = f.id === "name" ? "the name" : addressMethod(f.heard ?? f.evidence.text) === "email" ? "the email" : "the street and city";
+      prompts.push({
+        target: f.id,
+        text: `Heard "${f.heard ?? f.evidence.text}", which matches ${what} on the order. A spoken match doesn't verify ${what} by itself: press Confirmed only if you clearly heard the caller say it. If in doubt, ${
+          f.id === "name" ? "ask them to spell the last name" : "ask again"
+        }, or type what they said (${f.id === "name" ? "N" : "A"}).`,
+        evidence: f.evidence,
+      });
+      continue;
+    }
     if (f.state === "confirm" && f.evidence && f.confirmReason === "after-read-back" && !locked) {
       const what = f.id === "name" ? "the name" : "the street and city";
       prompts.push({
@@ -2653,7 +2875,22 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       });
       continue;
     }
-    if (f.state === "confirm" && f.evidence && f.id === "name" && readBackRefused) {
+    if (f.state === "confirm" && f.evidence && f.id === "name" && f.confirmReason === "no-name" && (!readBackRefused || f.evidence.at > readBackRefused.ev.at)) {
+      // An answer with no name in it, whatever the read-back's state: never "type what the caller said", because typing
+      // those words would make a wrong answer that counts (independent check of the no-name fix, 24 Nov).
+      prompts.push({
+        target: "name",
+        askAgain: true,
+        text: `Ask for the full name once more. Heard "${f.heard ?? f.evidence.text}": there's no name in it, so it isn't counted as a wrong answer, and it can't verify anyone.${
+          readBackRefused
+            ? " The read-back wasn't confirmed earlier, so reading it back or pressing Confirm won't count on this call."
+            : recordSaidAt.name !== null
+              ? " You've said the name on the call, so the caller repeating it can't verify it: type the name they give (N)."
+              : ""
+        }`,
+        evidence: f.evidence,
+      });
+    } else if (f.state === "confirm" && f.evidence && f.id === "name" && readBackRefused) {
       // After a refused read-back, typing is the way on: neither another read-back nor the Confirm button counts.
       const newer = f.evidence.at > readBackRefused.ev.at;
       prompts.push({
@@ -2685,6 +2922,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
             ? `Name not recognised. ${nameAction} Heard "${heard}"${f.confirmReason === "garbled" ? ", which looks garbled (the same words repeated)" : " with low confidence"}, and it doesn't match the name on the order. Typed words are checked against the order.`
             : f.confirmReason === "disagree"
             ? `Name not recognised. ${nameAction} Heard "${f.heard}", first heard as "${f.evidence.firstHeard}": the two speech models disagree, so it isn't counted as a wrong answer.`
+            : f.confirmReason === "ambiguous" && saysMore(f).length
+            ? `Ask for the full name once more. Heard "${f.heard}": it has the name on the order and more (${saysMore(f).join("; ")}), so it isn't counted either way.`
             : f.confirmReason === "ambiguous"
             ? `Ask for the full name once more. Heard "${f.heard}": it names more than one name, or denies part of one, so it isn't counted either way.`
             : f.confirmReason === "sounds-like"
@@ -2705,6 +2944,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
             ? `Heard "${f.heard ?? f.evidence.text}"${f.confirmReason === "garbled" ? ", which looks garbled (the same words repeated)" : " with low confidence"}, and it doesn't match the ${what} on the order. ${saidIt ? `${AFTER_SAID[f.id as "name" | "address"]} Typed words are checked against the order.` : "Ask the caller to repeat it, or type what they said; typed words are checked against the order."}`
             : f.confirmReason === "disagree"
             ? `Heard "${f.heard}", first heard as "${f.evidence.firstHeard}". The two speech models disagree, so this isn't counted as a wrong answer. ${saidIt ? AFTER_SAID[f.id as "name" | "address"] : "Ask the caller to repeat it, or type what they said."}`
+            : f.confirmReason === "ambiguous" && saysMore(f).length
+            ? `Heard "${f.heard}". It has the ${f.id === "name" ? "name" : "address"} on the order and more (${saysMore(f).join("; ")}), so it isn't counted either way. Ask for the ${f.id === "name" ? "full name" : "street and city"} once more.`
             : f.confirmReason === "ambiguous"
             ? `Heard "${f.heard}". It names more than one ${f.id === "name" ? "name" : "address"}, or denies part of one, so it isn't counted either way. Ask for the ${f.id === "name" ? "full name" : "street and city"} once more.`
             : f.confirmReason === "sounds-like"
@@ -2777,11 +3018,12 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   // From the moment the caller's answer arrives, while the second speech model still checks it, unless the fast
   // model already heard a clear match. A typed answer replaces the line and a late check can't overwrite it.
   let nameEntry: CopilotView["nameEntry"] = null;
-  if (name.state !== "ok") {
+  // Also while a spoken match waits for the agent's press: the agent may type what they heard instead.
+  if (name.state !== "ok" || name.held) {
     const asked = nameAsk as Evidence | null;
     const checkingAnswer =
       asked && !readBack
-        ? [...corrected].reverse().find((l) => l.checking && l.side === "caller" && l.startedAt > asked.at && l.startedAt < nameAskEnds && matchName(l.text, customer) !== "match")
+        ? [...corrected].reverse().find((l) => l.checking && l.side === "caller" && l.startedAt > asked.at && l.startedAt < nameAskEnds && nameResult(l.text) !== "match")
         : undefined;
     const extra = {
       ...(readBackState === "waiting" && !readBackHeld && readBackUntil !== undefined ? { readBackUntil } : {}),
@@ -2798,11 +3040,11 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
   // The same as the name field, once the name is verified: from the moment the caller's answer arrives, unless the
   // fast model already heard a clear match. Never while identity is locked after too many failed attempts.
   let addressEntry: CopilotView["addressEntry"] = null;
-  if (name.state === "ok" && address.state !== "ok" && !locked) {
+  if (name.state === "ok" && (address.state !== "ok" || address.held) && !locked) {
     const asked = addressAsk as Evidence | null;
     const checkingAnswer =
       asked
-        ? [...corrected].reverse().find((l) => l.checking && l.side === "caller" && l.startedAt > asked.at && l.startedAt < addressAskEnds && matchAddress(l.text, customer) !== "match")
+        ? [...corrected].reverse().find((l) => l.checking && l.side === "caller" && l.startedAt > asked.at && l.startedAt < addressAskEnds && addressResult(l.text) !== "match")
         : undefined;
     const extra = pack.policy.addressReadBack
       ? {
@@ -2818,9 +3060,25 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
 
   /* ---------- SOP steps ---------- */
   const factorStep = (f: Factor): StepStatus =>
-    locked && f.state !== "ok" ? "blocked" : f.state === "ok" ? "done" : f.state === "confirm" || f.state === "failed" || f.state === "partial" ? "attention" : f.state === "asking" ? "active" : "pending";
+    locked && (f.state !== "ok" || f.held)
+      ? "blocked"
+      : f.state === "ok" && !f.held
+        ? "done"
+        : f.held || f.state === "confirm" || f.state === "failed" || f.state === "partial"
+          ? "attention"
+          : f.state === "asking"
+            ? "active"
+            : "pending";
   const factorDetail = (f: Factor) =>
-    f.state === "failed" ? `Not matched (${f.attempts})` : f.state === "confirm" ? "Please confirm" : f.state === "asking" && f.heard ? "Listening…" : undefined;
+    f.state === "failed"
+      ? `Not matched (${f.attempts})`
+      : f.state === "confirm" && f.confirmReason === "no-name"
+        ? "Ask again"
+        : f.state === "confirm" || f.held
+          ? "Please confirm"
+          : f.state === "asking" && f.heard
+            ? "Listening…"
+            : undefined;
   const approved = recommendation?.approval.state === "approved";
   const steps: SopStep[] = [
     {
@@ -2831,12 +3089,12 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       evidence: intent?.evidence[0],
       sopRef: sopId,
     },
-    { id: "name", label: "Verify: full name", status: factorStep(name), detail: name.state === "ok" && name.method ? byMethod(name.method) : factorDetail(name), evidence: name.evidence, sopRef: ref("Verification") },
+    { id: "name", label: "Verify: full name", status: factorStep(name), detail: name.state === "ok" && !name.held && name.method ? byMethod(name.method) : factorDetail(name), evidence: name.evidence, sopRef: ref("Verification") },
     {
       id: "address",
       label: "Verify: email, or street and city",
       status: factorStep(address),
-      detail: address.state === "ok" && address.method ? byMethod(address.method) : factorDetail(address),
+      detail: address.state === "ok" && !address.held && address.method ? byMethod(address.method) : factorDetail(address),
       evidence: address.evidence,
       sopRef: ref("Verification"),
     },
@@ -2941,6 +3199,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       suggestedReply = neutral("Thank you. And the email address on the order, or the street and city for the delivery?", "Verification");
     } else if (address.state === "partial" || address.state === "confirm") {
       suggestedReply = neutral("Sorry, could you give me the street and the city once more?", "Verification");
+    } else if ((name.held || address.held) && name.state === "ok" && address.state === "ok") {
+      // Both details heard and matched, waiting for the agent's press (Policy.agentConfirmsMatch).
+      suggestedReply = neutral("Thank you. One moment while I confirm your details.", "Verification");
     } else if (isVerified && !match) {
       suggestedReply = reply(`Thanks, ${firstName}, you're verified. Could you give me the order number, please?`, "Verification");
     } else if (isVerified && o && match && !orderLocated) {
@@ -3151,7 +3412,7 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
       label: "Case summary",
       value:
         isVerified && o
-          ? `${customer.name} (${customer.id}), order ${o.id} ${o.shortName}, damage: ${damage ?? "not established"}, verified by full name${name.method ? ` (${name.method})` : ""} and ${address.method ?? "second factor"}`
+          ? `${customer.name} (${customer.id}), order ${o.id} ${o.shortName}, damage: ${damage ?? "not established"}, verified by full name${name.method ? ` (${name.method})` : ""} and ${address.method?.replace(/^confirmed by the agent, (.+)$/, "$1 (confirmed by the agent)") ?? "second factor"}`
           : null,
     },
     { label: "Resolution", value: approved && recommendation?.prepared ? `${recommendation.prepared.kind === "replacement" ? "Replacement order" : "Refund"} ${recommendation.prepared.reference}` : null },
@@ -3194,7 +3455,8 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     callId: ordered[0]?.callId ?? null,
     lineCount: ordered.length,
     intent,
-    verification: { factors: [name, address], verified: isVerified, verifiedAt, verifiedKnownAt, locked, attemptsLeft },
+    // A match held for the agent's press shows as one to confirm (confirmReason "match"), never as verified.
+    verification: { factors: [name, address].map((f) => (f.state === "ok" && f.held ? { ...f, state: "confirm" as const, confirmReason: "match" as const, method: undefined } : f)), verified: isVerified, verifiedAt, verifiedKnownAt, locked, attemptsLeft },
     order,
     checks,
     choice,
@@ -3206,7 +3468,9 @@ function rules(pack: ClientPack, input: TranscriptEvent[], allActions: AgentActi
     documentation,
     awaiting,
     ...(lingerUntil !== null && !lingerOver && identityFactor && awaiting === identityFactor.id ? { awaitingUntil: lingerUntil } : {}),
+    ...(awaitingAsk ? { awaitingAsk } : {}),
     keyAnswers,
+    ...(Object.keys(checkContext).length ? { checkContext } : {}),
     readBackChecks,
     agentChecks,
     undoable: [
@@ -3243,6 +3507,8 @@ export function approvalReadiness(view: CopilotView): string | null {
           ? "Not ready: checking a possible change of choice."
           : !view.choice
             ? "Not ready: the customer hasn't chosen yet."
+            : rec.photoPending
+              ? "Not ready: the photo of the damage is needed first (order of $500 or more)."
             : view.order.match && !view.order.match.confirmed
               ? "Not ready: read back the order first."
               : "Not ready.";

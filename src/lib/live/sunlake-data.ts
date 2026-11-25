@@ -150,6 +150,17 @@ export const sunlake: ClientPack = {
     nameReadBack: process.env.NEXT_PUBLIC_NAME_READ_BACK === "1",
     // The address read-back, allowed in the development console on 23 Oct with the same conditions; its own build setting.
     addressReadBack: process.env.NEXT_PUBLIC_ADDRESS_READ_BACK === "1",
+    // Stricter matching, for the development console only (his "Stricter matching", 12 Nov): every spoken identity match
+    // waits for the agent's press, and a match that says more than the record is asked again. Build settings, off unless set.
+    agentConfirmsMatch: process.env.NEXT_PUBLIC_AGENT_CONFIRMS_MATCH === "1",
+    strictMatch: process.env.NEXT_PUBLIC_STRICT_MATCH === "1",
+    // C12 (his "Build C12", 23 Nov): the agent's usual question goes in front of a name or address answer for the check.
+    // A build setting, off unless set, and only with agentConfirmsMatch (see Policy.questionInCheck).
+    questionInCheck: process.env.NEXT_PUBLIC_QUESTION_IN_CHECK === "1",
+    // The no-name fix (his "No-name fix in C12", 24 Nov): an answer with no name in it isn't a failed attempt. Off unless set.
+    noNameNotCounted: process.env.NEXT_PUBLIC_NO_NAME_NOT_COUNTED === "1",
+    // The photo rule (his "Approved, Option A", 25 Nov): $500 or more, nothing is approved until the agent records the photo. Off unless set.
+    photoBeforeResolution: process.env.NEXT_PUBLIC_PHOTO_BEFORE_RESOLUTION === "1",
     authority: [
       { upTo: 500, approver: "Agent (Tier 1)", agentCanApprove: true, row: 0 },
       { upTo: 1500, approver: "Team Lead", agentCanApprove: false, row: 1 },

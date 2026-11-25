@@ -4,6 +4,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { CpuIcon, LockSimpleIcon, LockSimpleOpenIcon, ShieldCheckIcon } from "@phosphor-icons/react";
 import { Mono, PanelHeader } from "@/components/workspace/bits";
 import { pack, useCopilot } from "@/lib/live/copilot-store";
+import { questionInCheckState } from "@/lib/live/question-check";
 import { median, useLive } from "@/lib/live/store";
 import { cn } from "@/lib/utils";
 
@@ -15,6 +16,9 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
     </div>
   );
 }
+
+/** C12 on an engine that can't put the question in front (questionInCheckState). */
+const ENGINE_STATE = { waiting: "Waiting for the engine", "no-model": "Off: no check model running", "no-scores": "Off: this engine has no word scores" } as const;
 
 const duration = (ms: number) => {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -111,6 +115,10 @@ export function CallDetails({ className }: { className?: string }) {
   const checked = lines.filter((l) => l.checkSeconds !== undefined && !l.checkFailed && !l.probe).map((l) => (l.availableAtEpoch - l.endedAtEpoch) / 1000);
   const notChecked = lines.filter((l) => !l.probe && (l.checkFailed || l.checkSkipped)).length;
   const checkedMid = median(checked);
+  // C12: how the answers checked with the agent's question in front went (LiveLine.withQuestion).
+  const questionInCheck = !!pack.policy.questionInCheck && !!pack.policy.agentConfirmsMatch;
+  const withQuestion = (outcome: string) => lines.filter((l) => l.withQuestion?.outcome === outcome).length;
+  const engineState = questionInCheckState(health);
   const running = phase === "active" || replaying;
   const elapsed = startedAt === null ? null : (running ? Math.max(now, startedAt) : endedAt ?? startedAt) - startedAt;
   const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
@@ -175,6 +183,25 @@ export function CallDetails({ className }: { className?: string }) {
           {/* A build setting (NEXT_PUBLIC_NAME_READ_BACK), so a recording shows which rules it ran. */}
           <Row label="Name read-back">{pack.policy.nameReadBack ? "On (this build)" : "Off"}</Row>
           <Row label="Address read-back">{pack.policy.addressReadBack ? "On (this build)" : "Off"}</Row>
+          {/* A build setting (NEXT_PUBLIC_QUESTION_IN_CHECK); it needs the engine copy with word scores. */}
+          {questionInCheck && (
+            <Row label="Question in the check">
+              {engineState !== "on" ? (
+                ENGINE_STATE[engineState]
+              ) : (
+                <Mono>
+                  On (this build) · used {withQuestion("used")}
+                  {(
+                    [
+                      ["alone", "heard on its own"],
+                      ["not-sent", "not sent"],
+                      ["failed", "failed"],
+                    ] as const
+                  ).map(([outcome, label]) => (withQuestion(outcome) ? ` · ${label} ${withQuestion(outcome)}` : ""))}
+                </Mono>
+              )}
+            </Row>
+          )}
           {health?.assist === "local" && (
             <>
               <Row label="Local model">
@@ -202,7 +229,11 @@ export function CallDetails({ className }: { className?: string }) {
         </dl>
         <p className="flex items-start gap-2 px-4 pb-4 pt-2 text-xs text-muted-foreground leading-relaxed">
           <ShieldCheckIcon className="size-3.5 shrink-0 mt-0.5" />
-          Call audio is processed in memory and discarded. The transcript and copilot notes live only in this tab.
+          {/* The engine copies made for test calls save each phrase, with what each model heard (EngineHealth.saveAudio); the
+              pitch engine never does. */}
+          {health?.saveAudio
+            ? "This engine copy saves each phrase's audio, with what each speech model heard, on this Mac for review. The copilot notes live only in this tab."
+            : "Call audio is processed in memory and discarded. The transcript and copilot notes live only in this tab."}
         </p>
       </section>
     </div>

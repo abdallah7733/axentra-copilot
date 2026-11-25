@@ -16,6 +16,7 @@ import {
   type TwilioCall,
   type TwilioDevice,
 } from "./engine";
+import { checkWithQuestion, planQuestion, type AloneWhy, type Heard, type QuestionNotSent } from "./question-check";
 import { isShortReply, sendShortReply } from "./short-reply";
 
 /*
@@ -62,6 +63,17 @@ export type LiveLine = {
   probe?: boolean;
   /** What the second model heard on that line (text null: the check failed), and when (epoch ms). */
   reheard?: { text: string | null; confidence: number | null; at: number };
+  /**
+   * C12: how this key answer's check went when the copilot named the agent's question to put in front (`question`: that
+   * line's key). "used": the check heard the question, `pause` seconds of silence and the answer, and the answer was cut
+   * back out (`whole`: what the check wrote for all of it). "alone": that came back unusable (`why`), so the answer was
+   * heard again on its own, as today. "not-sent": the question wasn't put in front (`why`). "failed": a request failed.
+   */
+  withQuestion?:
+    | { outcome: "used"; question: string; pause: number; whole: string; wholeConfidence: number | null; ratio: number }
+    | { outcome: "alone"; question: string; pause: number; why: AloneWhy; whole: string }
+    | { outcome: "not-sent"; question: string; why: QuestionNotSent }
+    | { outcome: "failed"; question: string; pause: number };
 };
 
 export type EngineState = "checking" | "offline" | "online";
@@ -111,8 +123,9 @@ type LiveState = {
    * A key answer that can't be checked is marked on screen (not in a replay, which has no audio).
    * `probe`: an agent line heard again in case it was the name read-back; its text stays as first heard
    * and the second model's hearing is kept beside it (LiveLine.reheard).
+   * `question` (C12): the key of the agent's question to put in front of this answer (LiveLine.withQuestion).
    */
-  checkLine: (key: string, probe?: boolean) => "started" | "no-audio" | "no-model";
+  checkLine: (key: string, probe?: boolean, question?: string) => "started" | "no-audio" | "no-model";
 };
 
 const MIC_KEY = "axentra-mic-label";
@@ -138,6 +151,11 @@ let replayTimers: ReturnType<typeof setTimeout>[] = [];
 // The last few phrases from both sides, in memory only, so a key line can be re-checked. Cleared with each call.
 const recentAudio = new Map<string, Float32Array>();
 const RECENT_AUDIO = 12;
+// C12: phrases handed to the fast model that haven't landed as a line or been dropped yet, by key, with when their speech
+// began (epoch ms). An answer isn't checked with the agent's question in front while one that began between them is here.
+const pending = new Map<string, { startedAtEpoch: number }>();
+/** Tests only: the audio held for checks, and the phrases still with the fast model. */
+export const heldForTests = { recentAudio, pending };
 
 /**
  * performance.now() time to epoch milliseconds, from one anchor per call: the wall clock and
@@ -218,6 +236,7 @@ export const useLive = create<LiveState>((set, get) => {
     callId = id;
     seq = 0;
     recentAudio.clear();
+    pending.clear();
     liveEvents.emit({ type: "call-started", callId, at: epochNow() });
   }
 
@@ -245,6 +264,9 @@ export const useLive = create<LiveState>((set, get) => {
       }
       if (side === "agent") turn.agentEnd = phrase.endedAt;
       const samples = phrase.samples;
+      const key = `${side}-${phrase.id}`;
+      const waiting = { startedAtEpoch: toEpoch(phrase.startedAt) };
+      pending.set(key, waiting);
       queue = queue
         .then(async () => {
           const result = await recognize(side, samples);
@@ -252,11 +274,11 @@ export const useLive = create<LiveState>((set, get) => {
           if (shortReply && !isShortReply(result.text)) return drop("short");
           if (!result.text) return drop("empty");
           // Kept for the second model's check: caller answers, and agent lines the copilot may ask about.
-          recentAudio.set(`${side}-${phrase.id}`, samples);
-          for (const key of [...recentAudio.keys()].slice(0, -RECENT_AUDIO)) recentAudio.delete(key);
+          recentAudio.set(key, samples);
+          for (const old of [...recentAudio.keys()].slice(0, -RECENT_AUDIO)) recentAudio.delete(old);
           addLine(
             {
-              key: `${side}-${phrase.id}`,
+              key,
               side,
               text: result.text,
               startedAt: phrase.startedAt,
@@ -268,6 +290,10 @@ export const useLive = create<LiveState>((set, get) => {
         })
         .catch(() => {
           if (callEpoch === epoch) set({ error: "Local transcription had an error. The call audio is unaffected." });
+        })
+        .finally(() => {
+          // A phrase of an earlier call with the same key may finish after this one was queued: only this phrase's own entry goes.
+          if (pending.get(key) === waiting) pending.delete(key);
         });
     };
   }
@@ -307,6 +333,7 @@ export const useLive = create<LiveState>((set, get) => {
     currentCall = null;
     epoch++;
     recentAudio.clear();
+    pending.clear();
     // A check still running is dropped with the call (its result can't reach the next call), so settle
     // it now: the fast model's text stands, as a doubtful line, instead of "checking" for ever.
     for (const l of get().lines)
@@ -334,7 +361,7 @@ export const useLive = create<LiveState>((set, get) => {
     replaying: false,
     sopOpen: false,
 
-    checkLine: (key, probe = false) => {
+    checkLine: (key, probe = false, question) => {
       const samples = recentAudio.get(key);
       const skipped = !get().health?.check ? "no-model" : !samples ? "no-audio" : null;
       if (skipped || !samples) {
@@ -346,16 +373,57 @@ export const useLive = create<LiveState>((set, get) => {
       const began = performance.now();
       const heard = get().lines.find((l) => l.key === key);
       const fast = heard?.text ?? "";
+      const side = heard?.side ?? "caller";
+      // C12: the agent's question goes in front only with the engine copy that returns word scores, while the question's
+      // audio is still held (it stays held for later checks), when the answer began after the question ended, and when
+      // nothing that began between them is still being said or still with the fast model, on either side.
+      const stillHeard = () => [
+        ...[...pending].filter(([k]) => k !== key && k !== question).map(([, p]) => p.startedAtEpoch),
+        ...captures.flatMap((c) => {
+          const since = c.speakingSince();
+          return since === null ? [] : [toEpoch(since)];
+        }),
+      ];
+      const plan =
+        !probe && question && heard
+          ? planQuestion({
+              question: get().lines.find((l) => l.key === question),
+              audio: recentAudio.get(question),
+              answer: heard,
+              wordScores: !!get().health?.wordScores,
+              heard: stillHeard(),
+            })
+          : null;
+      const asked = plan && question && "send" in plan ? { key: question, ...plan.send } : null;
+      const notSent: LiveLine["withQuestion"] = plan && question && "notSent" in plan ? { outcome: "not-sent", question, why: plan.notSent } : undefined;
       // The copilot asked for this check and already holds the line back (or, for a probe, counts it as heard); only
       // the screen needs to know.
       updateLine(key, probe ? { checking: true, probe: true } : { checking: true }, false);
-      const failed = (checkSeconds: number) =>
-        updateLine(key, probe ? { checking: false, checkSeconds, reheard: { text: null, confidence: null, at: epochNow() } } : { checking: false, checkFailed: true, checkSeconds, availableAtEpoch: epochNow() });
-      recognize(heard?.side ?? "caller", samples, true).then(
-        (result) => {
+      const failed = (checkSeconds: number, change: Partial<LiveLine> = {}) =>
+        updateLine(key, probe ? { checking: false, checkSeconds, reheard: { text: null, confidence: null, at: epochNow() } } : { checking: false, checkFailed: true, checkSeconds, availableAtEpoch: epochNow(), ...change });
+      const check: Promise<{ result: Heard; withQuestion?: LiveLine["withQuestion"] }> = asked
+        ? checkWithQuestion({
+            answer: samples,
+            question: asked.audio,
+            questionText: asked.text,
+            pause: asked.pause,
+            // Once the call has ended, the answer isn't sent again on its own: its result couldn't reach the call anyway.
+            hear: (clip, words) => (callEpoch === epoch ? recognize(side, clip, true, words) : Promise.reject(new Error("The call ended"))),
+          }).then(
+            ({ heard: result, outcome }) => ({
+              result,
+              withQuestion:
+                outcome.kind === "used"
+                  ? { outcome: "used", question: asked.key, pause: outcome.pause, whole: outcome.whole, wholeConfidence: outcome.wholeConfidence, ratio: outcome.ratio }
+                  : { outcome: "alone", question: asked.key, pause: outcome.pause, why: outcome.why, whole: outcome.whole },
+            })
+          )
+        : recognize(side, samples, true).then((result) => ({ result, ...(notSent ? { withQuestion: notSent } : {}) }));
+      check.then(
+        ({ result, withQuestion }) => {
           if (callEpoch !== epoch) return;
           const checkSeconds = (performance.now() - began) / 1000;
-          if (!result.text) return failed(checkSeconds);
+          if (!result.text) return failed(checkSeconds, withQuestion ? { withQuestion } : {});
           if (probe) return updateLine(key, { checking: false, checkSeconds, reheard: { text: result.text, confidence: result.confidence, at: epochNow() } });
           updateLine(key, {
             checking: false,
@@ -364,10 +432,11 @@ export const useLive = create<LiveState>((set, get) => {
             firstHeard: result.text === fast ? undefined : fast,
             checkSeconds,
             availableAtEpoch: epochNow(),
+            ...(withQuestion ? { withQuestion } : {}),
           });
         },
         () => {
-          if (callEpoch === epoch) failed((performance.now() - began) / 1000);
+          if (callEpoch === epoch) failed((performance.now() - began) / 1000, asked ? { withQuestion: { outcome: "failed", question: asked.key, pause: asked.pause } } : {});
         }
       );
       return "started";

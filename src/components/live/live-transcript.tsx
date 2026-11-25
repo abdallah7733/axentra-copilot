@@ -5,13 +5,39 @@ import { AnimatePresence, motion } from "motion/react";
 import { PhoneIcon } from "@phosphor-icons/react";
 import { LiveDot, Mono, PanelHeader, ease } from "@/components/workspace/bits";
 import { useCopilot } from "@/lib/live/copilot-store";
-import { useLive } from "@/lib/live/store";
+import type { AloneWhy, QuestionNotSent } from "@/lib/live/question-check";
+import { useLive, type LiveLine } from "@/lib/live/store";
 import { cn } from "@/lib/utils";
 
 const clock = (ms: number) => {
   const s = Math.max(0, Math.floor(ms / 1000));
   return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 };
+
+/** C12: how a key answer's check used the agent's question (LiveLine.withQuestion). */
+const ALONE_WHY: Record<AloneWhy, string> = {
+  empty: "that check came back empty",
+  "only-question": "only your question came back",
+  "weak-cut": "your question couldn't be cut out cleanly",
+  "no-scores": "no word scores came back",
+  "no-own-score": "the answer's own score couldn't be read",
+};
+const NOT_SENT_WHY: Record<QuestionNotSent, string> = {
+  "no-scores": "this engine has no word scores",
+  "no-audio": "your question's audio was no longer held",
+  overlap: "the caller began before your question ended",
+  unsettled: "something said between them wasn't written down yet",
+};
+const questionNote = (q: LiveLine["withQuestion"]) =>
+  !q
+    ? null
+    : q.outcome === "used"
+      ? ", with your question in front"
+      : q.outcome === "alone"
+        ? `, heard again on its own after a check with your question in front (${ALONE_WHY[q.why]})`
+        : q.outcome === "not-sent"
+          ? `, on its own, not with your question (${NOT_SENT_WHY[q.why]})`
+          : " (asked with your question in front)";
 
 /*
   Real call transcript, same visual language as the scripted Transcript panel:
@@ -93,9 +119,10 @@ export function LiveTranscript({ className }: { className?: string }) {
                           {" "}
                           · checked in <Mono>{t.checkSeconds.toFixed(1)} s</Mono>
                           {t.firstHeard && <>, first heard as “{t.firstHeard}”</>}
+                          {questionNote(t.withQuestion)}
                         </span>
                       )}
-                      {t.checkFailed && <span> · check unavailable, treated as doubtful</span>}
+                      {t.checkFailed && <span> · check unavailable, treated as doubtful{questionNote(t.withQuestion)}</span>}
                       {t.checkSkipped && <span> · not double-checked ({t.checkSkipped === "no-model" ? "no check model running" : "audio no longer held"})</span>}
                       {(() => {
                         const note = !t.checking && t.checkSeconds === undefined && !t.checkSkipped ? agentChecks.find((c) => c.key === t.key && !c.check) : undefined;

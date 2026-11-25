@@ -367,7 +367,8 @@ const SHARED_GPU_S = 1.5;
  * first pass 1.5 s late on its own, with the check times as estimated and with checks landing early. When
  * any of these changes which caller lines the console would check, the case is timing-dependent and the
  * note says which run changed it and its L4. `combined` marks the replay's combined pass, whose engine
- * times include both sides' overlap.
+ * times include both sides' overlap. The checks are of the answer alone, as recorded: C12's check with the agent's
+ * question in front isn't modelled (neither its text nor its second request, which can double the wait).
  */
 export function runCase(c: DevCase, given: CaseLine[], opts: { timed?: boolean; checks?: "console" | "all"; times?: TimesMethod; combined?: boolean } = {}): WorkflowResult {
   const pack = evalPack(c.record);

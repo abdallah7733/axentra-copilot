@@ -5,7 +5,9 @@
   exist, the health check fails, and live mode stays off.
 
   Speech recognition happens on the Mac. Audio goes only to the engine on
-  127.0.0.1, is processed in memory, and is never stored.
+  127.0.0.1 and is processed in memory. The pitch engine never stores it; the
+  engine copies made for test calls save each phrase on the Mac for review, and
+  say so in their health reply (saveAudio).
 */
 
 export type EngineHealth = {
@@ -22,11 +24,31 @@ export type EngineHealth = {
   /** The second speech model (large-v3-turbo) that re-checks key caller answers is ready. */
   check?: boolean;
   checkModel?: string;
+  /**
+   * C12: the engine copy with word scores (server-word-scores.js, his "Engine copy with word scores", 23 Nov 2026) runs:
+   * a check asked with words=1 also returns each word's score. The pitch engine never sends this.
+   */
+  wordScores?: boolean;
+  /**
+   * An engine copy made for test calls saves each phrase's audio, with what each model heard, on the Mac for review;
+   * the pitch engine never does.
+   */
+  saveAudio?: boolean;
 };
 
 export type Side = "caller" | "agent";
 
-export type Recognition = { side: Side; model: string; text: string; confidence: number | null; elapsedMs: number };
+export type Recognition = {
+  side: Side;
+  model: string;
+  text: string;
+  confidence: number | null;
+  elapsedMs: number;
+  /** Only from the engine copy with word scores, only when asked: each word the check model wrote, with its score. */
+  words?: [string, number][];
+  /** Only with `words`: the engine's repeat guard fired, and its confidence was capped at 0.5. */
+  looped?: boolean;
+};
 
 /** Engine endpoints live at the site root, outside the /console base path. */
 export async function readEngineHealth(): Promise<EngineHealth | null> {
@@ -52,15 +74,20 @@ export async function fetchPhoneToken(accessCode: string): Promise<string> {
   return body.token;
 }
 
-/** The engine gives up on a check after 8 s; the console waits a little longer, then keeps the fast text. */
+/**
+ * The engine gives up on a check after 8 s; the console waits a little longer, then keeps the fast text. Per request:
+ * a C12 check with the agent's question in front that comes back unusable is asked again for the answer alone, so it
+ * can hold an answer for up to twice this (question-check.ts checkWithQuestion).
+ */
 export const CHECK_TIMEOUT_MS = 9000;
 
 /**
  * Recognises one phrase. With `check`, the engine uses its second, slower model with the
  * full audio window: short answers heard on their own are where the fast model fails.
+ * With `words` (C12, a check only), the engine copy with word scores also returns each word's score.
  */
-export async function recognize(side: Side, samples: Float32Array, check = false): Promise<Recognition> {
-  const response = await fetch(`/transcribe?${new URLSearchParams({ side, lang: "en", ...(check ? { check: "1" } : {}) })}`, {
+export async function recognize(side: Side, samples: Float32Array, check = false, words = false): Promise<Recognition> {
+  const response = await fetch(`/transcribe?${new URLSearchParams({ side, lang: "en", ...(check ? { check: "1" } : {}), ...(check && words ? { words: "1" } : {}) })}`, {
     method: "POST",
     headers: { "Content-Type": "audio/wav" },
     body: wav(samples, 16000),
@@ -232,10 +259,13 @@ export function createSegmenter(rate: number, onFinal: (p: Phrase) => void) {
       emit(s, s.frames.slice(0, s.frames.length - Math.max(0, s.silence - TAIL)), performance.now() - s.silence * FRAME_MS);
     },
     peak: () => peak,
+    /** When the phrase being said now began (performance.now()), or null between phrases. */
+    speakingSince: () => (seg ? seg.startedAt : null),
   };
 }
 
-export type CaptureHandle = { close: () => Promise<{ peak: number }> };
+/** `speakingSince`: when the phrase being said now began (performance.now()), or null between phrases. */
+export type CaptureHandle = { close: () => Promise<{ peak: number }>; speakingSince: () => number | null };
 
 /** Captures one audio stream at 16 kHz and hands finished phrases to `onPhrase`. */
 export async function captureStream(stream: MediaStream, onPhrase: (p: Phrase) => void): Promise<CaptureHandle> {
@@ -274,6 +304,7 @@ export async function captureStream(stream: MediaStream, onPhrase: (p: Phrase) =
       }
       return { peak: segmenter.peak() };
     },
+    speakingSince: () => (stopped ? null : segmenter.speakingSince()),
   };
 }
 
