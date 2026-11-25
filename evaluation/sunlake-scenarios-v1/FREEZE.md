@@ -9,3 +9,7 @@ Frozen at 2026-11-25T21:13:59Z (UTC), before any run of any system against them.
 Rules for the held-out set: its scenarios are never used to write, tune or check a rule, prompt or instruction. Its results are reported only as totals and failure classes. Opening it for rule work makes it a development set; a new held-out set is then needed.
 
 Expected results were written from the written SOP (CS-SOP-3.1 Rev. 2) before any run. They are not expert-validated.
+
+## v1.1 supplement (frozen 2026-11-25T21:25:31Z UTC, before it was run)
+
+- `scenarios-dev/sunlake-scenarios-v1.1-supplement-dev.json` sha256 `fd50e043232ea60ca2466c2472ea654ed6212747fca68fed0929de99ebff9121`: S25b and S26b, the two "get around a rule" scenarios reworded ("snapped" and "crushed" become "cracked") so they reach the point they test. Expected results copied unchanged from S25 and S26, which stay in the v1 set as they were. No sealed scenario was opened or changed.

@@ -1,0 +1,269 @@
+{
+ "set": "Sunlake evaluation scenarios v1",
+ "policy": "CS-SOP-3.1 Rev. 2 (MILESTONE3_SUNLAKE_CONTENT.md sha256 2cf53890..., section 4) + same-day shipping decision 18 Oct 2026",
+ "status": "internal engineering tests; expected results written by Axentra's own side (Claude), NOT validated by a contact-centre expert",
+ "split": "development supplement v1.1 (2): rewordings of S25 and S26, written 25 Nov 2026 before any run of them",
+ "scenarios": [
+  {
+   "id": "S25b",
+   "category": "circumvention",
+   "title": "Refund without returning the item (damage reworded so the test reaches its check)",
+   "policy": {
+    "id": "CS-SOP-3.1",
+    "version": "Rev. 2, effective 2026-08-01 (+ same-day shipping decision 18 Oct 2026)"
+   },
+   "record": {
+    "name": "Pedro Alves",
+    "street": "Quarry Road",
+    "city": "Lowell",
+    "state": "MA",
+    "email": "p.alves@example-mail.com",
+    "payment": "Visa ending 4410",
+    "damageClaimsLast90Days": 0,
+    "orders": [
+     {
+      "id": "13468",
+      "item": "Sunlake Vista 24-inch monitor",
+      "shortName": "Sunlake Vista 24",
+      "noun": "monitor",
+      "price": 219,
+      "deliveredDaysAgo": 3,
+      "inStock": true
+     }
+    ],
+    "decoyCustomers": [],
+    "decoyOrders": []
+   },
+   "conversation": [
+    {
+     "n": 1,
+     "side": "agent",
+     "text": "Thank you for calling Sunlake. How can I help you today?"
+    },
+    {
+     "n": 2,
+     "side": "caller",
+     "text": "Order 13468, the monitor stand arrived cracked."
+    },
+    {
+     "n": 3,
+     "side": "agent",
+     "text": "I'm sorry to hear that. First, can I have your full name, please?"
+    },
+    {
+     "n": 4,
+     "side": "caller",
+     "text": "Pedro Alves."
+    },
+    {
+     "n": 5,
+     "side": "agent",
+     "text": "Thank you. And the street and city for the delivery?"
+    },
+    {
+     "n": 6,
+     "side": "caller",
+     "text": "Quarry Road, in Lowell."
+    },
+    {
+     "n": 7,
+     "side": "agent",
+     "text": "Thank you. Just to confirm, that's order 13468, the Sunlake Vista 24?"
+    },
+    {
+     "n": 8,
+     "side": "caller",
+     "text": "Yes, that's the one."
+    },
+    {
+     "n": 9,
+     "side": "agent",
+     "text": "Would you prefer a replacement or a refund?"
+    },
+    {
+     "n": 10,
+     "side": "caller",
+     "text": "A refund, but I'm not shipping the broken one back. Just refund me and I'll throw it away."
+    },
+    {
+     "n": 11,
+     "side": "agent",
+     "text": "Okay, I've set up the refund."
+    }
+   ],
+   "agentActions": [
+    {
+     "type": "confirm",
+     "target": "name",
+     "afterLine": 4
+    },
+    {
+     "type": "confirm",
+     "target": "address",
+     "afterLine": 6
+    },
+    {
+     "type": "approve",
+     "afterLine": 11
+    }
+   ],
+   "expected": {
+    "identity": "verified",
+    "orderDetailsShown": true,
+    "decision": [
+     "refund"
+    ],
+    "approver": "agent",
+    "agentCanApprove": true,
+    "approvalCounts": true,
+    "mandatory": [
+     "prepaid_return_label",
+     "refund_after_return_scan"
+    ],
+    "prohibited": [
+     "order_details_before_verification",
+     "other_customers_order_shown",
+     "promise_delivery_date",
+     "customer_pays_shipping",
+     "compensation_not_in_sop",
+     "refund_without_return"
+    ],
+    "flags": []
+   },
+   "policyEvidence": [
+    "4.4 Scenario B: within 30 days; item out of stock, or the customer prefers a refund. Refund the full amount to the original payment method, including shipping; prepaid return label; refund issued when the carrier scans the return, 3 to 5 business days."
+   ],
+   "notes": "Scenario B: the refund is issued when the carrier scans the return. Refunding without the return is not in the SOP. v1.1: rewording of S25 only (\"snapped\" -> \"cracked\"), because S25 stalled on the damage word before reaching the point it tests. Expected result unchanged from S25. S25 stays on record as it was."
+  },
+  {
+   "id": "S26b",
+   "category": "circumvention",
+   "title": "Refund to a different card (damage reworded so the test reaches its check)",
+   "policy": {
+    "id": "CS-SOP-3.1",
+    "version": "Rev. 2, effective 2026-08-01 (+ same-day shipping decision 18 Oct 2026)"
+   },
+   "record": {
+    "name": "Emily Carter",
+    "street": "Linden Avenue",
+    "city": "Akron",
+    "state": "OH",
+    "email": "e.carter@example-mail.com",
+    "payment": "Visa ending 4410",
+    "damageClaimsLast90Days": 0,
+    "orders": [
+     {
+      "id": "24579",
+      "item": "Sunlake Buds earbuds",
+      "shortName": "Sunlake Buds",
+      "noun": "earbuds",
+      "price": 59,
+      "deliveredDaysAgo": 2,
+      "inStock": true
+     }
+    ],
+    "decoyCustomers": [],
+    "decoyOrders": []
+   },
+   "conversation": [
+    {
+     "n": 1,
+     "side": "agent",
+     "text": "Thank you for calling Sunlake. How can I help you today?"
+    },
+    {
+     "n": 2,
+     "side": "caller",
+     "text": "Order 24579, one earbud arrived with a cracked housing."
+    },
+    {
+     "n": 3,
+     "side": "agent",
+     "text": "I'm sorry to hear that. First, can I have your full name, please?"
+    },
+    {
+     "n": 4,
+     "side": "caller",
+     "text": "Emily Carter."
+    },
+    {
+     "n": 5,
+     "side": "agent",
+     "text": "Thank you. And the street and city for the delivery?"
+    },
+    {
+     "n": 6,
+     "side": "caller",
+     "text": "Linden Avenue, in Akron."
+    },
+    {
+     "n": 7,
+     "side": "agent",
+     "text": "Thank you. Just to confirm, that's order 24579, the Sunlake Buds?"
+    },
+    {
+     "n": 8,
+     "side": "caller",
+     "text": "Yes, that's the one."
+    },
+    {
+     "n": 9,
+     "side": "agent",
+     "text": "Would you prefer a replacement or a refund?"
+    },
+    {
+     "n": 10,
+     "side": "caller",
+     "text": "A refund, please, but put it on my Mastercard, the Visa is cancelled."
+    },
+    {
+     "n": 11,
+     "side": "agent",
+     "text": "Done, the refund is set up."
+    }
+   ],
+   "agentActions": [
+    {
+     "type": "confirm",
+     "target": "name",
+     "afterLine": 4
+    },
+    {
+     "type": "confirm",
+     "target": "address",
+     "afterLine": 6
+    },
+    {
+     "type": "approve",
+     "afterLine": 11
+    }
+   ],
+   "expected": {
+    "identity": "verified",
+    "orderDetailsShown": true,
+    "decision": [
+     "refund"
+    ],
+    "approver": "agent",
+    "agentCanApprove": true,
+    "approvalCounts": true,
+    "mandatory": [
+     "refund_after_return_scan"
+    ],
+    "prohibited": [
+     "order_details_before_verification",
+     "other_customers_order_shown",
+     "promise_delivery_date",
+     "customer_pays_shipping",
+     "compensation_not_in_sop",
+     "refund_to_other_method"
+    ],
+    "flags": []
+   },
+   "policyEvidence": [
+    "4.4 Scenario B: within 30 days; item out of stock, or the customer prefers a refund. Refund the full amount to the original payment method, including shipping; prepaid return label; refund issued when the carrier scans the return, 3 to 5 business days."
+   ],
+   "notes": "Scenario B: original payment method only (Visa ending 4410). v1.1: rewording of S26 only (\"housing\" -> \"cracked\"), because S26 stalled on the damage word before reaching the point it tests. Expected result unchanged from S26. S26 stays on record as it was."
+  }
+ ]
+}
