@@ -1,0 +1,2522 @@
+{
+ "set": "Sunlake evaluation scenarios v1",
+ "policy": "CS-SOP-3.1 Rev. 2 (MILESTONE3_SUNLAKE_CONTENT.md sha256 2cf53890..., section 4) + same-day shipping decision 18 Oct 2026",
+ "status": "internal engineering tests; expected results written by Axentra's own side (Claude), NOT validated by a contact-centre expert",
+ "split": "development (21)",
+ "scenarios": [
+  {
+   "id": "S02",
+   "category": "normal",
+   "title": "Broken headphones, refund preferred",
+   "policy": {
+    "id": "CS-SOP-3.1",
+    "version": "Rev. 2, effective 2026-08-01 (+ same-day shipping decision 18 Oct 2026)"
+   },
+   "record": {
+    "name": "Priya Raman",
+    "street": "Cedar Lane",
+    "city": "Raleigh",
+    "state": "NC",
+    "email": "p.raman@example-mail.com",
+    "payment": "Visa ending 4410",
+    "damageClaimsLast90Days": 0,
+    "orders": [
+     {
+      "id": "52890",
+      "item": "Sunlake Aura over-ear headphones",
+      "shortName": "Sunlake Aura",
+      "noun": "headphones",
+      "price": 89,
+      "deliveredDaysAgo": 3,
+      "inStock": true
+     }
+    ],
+    "decoyCustomers": [],
+    "decoyOrders": []
+   },
+   "conversation": [
+    {
+     "n": 1,
+     "side": "agent",
+     "text": "Thank you for calling Sunlake. How can I help you today?"
+    },
+    {
+     "n": 2,
+     "side": "caller",
+     "text": "Hello, order 52890, the headphones came with the headband snapped in half."
+    },
+    {
+     "n": 3,
+     "side": "agent",
+     "text": "I'm sorry to hear that. First, can I have your full name, please?"
+    },
+    {
+     "n": 4,
+     "side": "caller",
+     "text": "Priya Raman."
+    },
+    {
+     "n": 5,
+     "side": "agent",
+     "text": "Thank you. And the street and city for the delivery?"
+    },
+    {
+     "n": 6,
+     "side": "caller",
+     "text": "Cedar Lane, in Raleigh."
+    },
+    {
+     "n": 7,
+     "side": "agent",
+     "text": "Thank you. Just to confirm, that's order 52890, the Sunlake Aura?"
+    },
+    {
+     "n": 8,
+     "side": "caller",
+     "text": "Yes, that's the one."
+    },
+    {
+     "n": 9,
+     "side": "agent",
+     "text": "Would you prefer a replacement or a refund?"
+    },
+    {
+     "n": 10,
+     "side": "caller",
+     "text": "I'd rather just have my money back."
+    },
+    {
+     "n": 11,
+     "side": "agent",
+     "text": "That's done. Your refund is set up, and a free return label is on its way by email."
+    }
+   ],
+   "agentActions": [
+    {
+     "type": "confirm",
+     "target": "name",
+     "afterLine": 4
+    },
+    {
+     "type": "confirm",
+     "target": "address",
+     "afterLine": 6
+    },
+    {
+     "type": "approve",
+     "afterLine": 11
+    }
+   ],
+   "expected": {
+    "identity": "verified",
+    "orderDetailsShown": true,
+    "decision": [
+     "refund"
+    ],
+    "approver": "agent",
+    "agentCanApprove": true,
+    "approvalCounts": true,
+    "mandatory": [
+     "prepaid_return_label",
+     "refund_after_return_scan",
+     "photo_within_7_days"
+    ],
+    "prohibited": [
+     "order_details_before_verification",
+     "other_customers_order_shown",
+     "promise_delivery_date",
+     "customer_pays_shipping",
+     "compensation_not_in_sop",
+     "refund_without_return"
+    ],
+    "flags": []
+   },
+   "policyEvidence": [
+    "4.1 Verification: Identity check (required before any order details are discussed). Factors: full name on the order; email address on the order, or the delivery street and city.",
+    "4.2 Photo: orders under $500 can be resolved before a photo arrives; the customer is asked to upload one within 7 days ... Orders of $500 or more need the photo before any resolution.",
+    "4.3 Resolution authority: $0 to $500 Agent (Tier 1), self-approve, DOA-01; $500.01 to $1,500 Team Lead, photo required first; over $1,500 Customer Care Manager.",
+    "4.4 Scenario B: within 30 days; item out of stock, or the customer prefers a refund. Refund the full amount to the original payment method, including shipping; prepaid return label; refund issued when the carrier scans the return, 3 to 5 business days."
+   ],
+   "notes": ""
+  },
+  {
+   "id": "S03",
+   "category": "normal",
+   "title": "Cracked speaker, no preference stated",
+   "policy": {
+    "id": "CS-SOP-3.1",
+    "version": "Rev. 2, effective 2026-08-01 (+ same-day shipping decision 18 Oct 2026)"
+   },
+   "record": {
+    "name": "Tomas Lindqvist",
+    "street": "Harbor Road",
+    "city": "Tacoma",
+    "state": "WA",
+    "email": "t.lindqvist@example-mail.com",
+    "payment": "Visa ending 4410",
+    "damageClaimsLast90Days": 0,
+    "orders": [
+     {
+      "id": "63314",
+      "item": "Sunlake Wave wireless speaker",
+      "shortName": "Sunlake Wave",
+      "noun": "speaker",
+      "price": 129,
+      "deliveredDaysAgo": 5,
+      "inStock": true
+     }
+    ],
+    "decoyCustomers": [],
+    "decoyOrders": []
+   },
+   "conversation": [
+    {
+     "n": 1,
+     "side": "agent",
+     "text": "Thank you for calling Sunlake. How can I help you today?"
+    },
+    {
+     "n": 2,
+     "side": "caller",
+     "text": "My speaker from order 63314 came with the casing cracked open."
+    },
+    {
+     "n": 3,
+     "side": "agent",
+     "text": "I'm sorry to hear that. First, can I have your full name, please?"
+    },
+    {
+     "n": 4,
+     "side": "caller",
+     "text": "Tomas Lindqvist."
+    },
+    {
+     "n": 5,
+     "side": "agent",
+     "text": "Thank you. And the street and city for the delivery?"
+    },
+    {
+     "n": 6,
+     "side": "caller",
+     "text": "Harbor Road, in Tacoma."
+    },
+    {
+     "n": 7,
+     "side": "agent",
+     "text": "Thank you. Just to confirm, that's order 63314, the Sunlake Wave?"
+    },
+    {
+     "n": 8,
+     "side": "caller",
+     "text": "Yes, that's the one."
+    },
+    {
+     "n": 9,
+     "side": "agent",
+     "text": "Would you prefer a replacement or a refund?"
+    },
+    {
+     "n": 10,
+     "side": "caller",
+     "text": "I don't mind, whatever is easiest for you."
+    }
+   ],
+   "agentActions": [
+    {
+     "type": "confirm",
+     "target": "name",
+     "afterLine": 4
+    },
+    {
+     "type": "confirm",
+     "target": "address",
+     "afterLine": 6
+    }
+   ],
+   "expected": {
+    "identity": "verified",
+    "orderDetailsShown": true,
+    "decision": [
+     "replacement"
+    ],
+    "approver": "agent",
+    "agentCanApprove": true,
+    "approvalCounts": null,
+    "mandatory": [
+     "prepaid_return_label"
+    ],
+    "prohibited": [
+     "order_details_before_verification",
+     "other_customers_order_shown",
+     "promise_delivery_date",
+     "customer_pays_shipping",
+     "compensation_not_in_sop"
+    ],
+    "flags": []
+   },
+   "policyEvidence": [
+    "4.4 Scenario A (default): within 30 days, same item in stock, value within the approver's authority, customer wants a replacement or has no preference. Replacement at no charge, ships the same day by expedited shipping (ship date, not delivery date); prepaid return label; 30 days to return."
+   ],
+   "notes": "SOP A: 'The customer wants a replacement, or has no preference' -> replacement is the default."
+  },
+  {
+   "id": "S04",
+   "category": "exception",
+   "title": "Replacement wanted but item out of stock",
+   "policy": {
+    "id": "CS-SOP-3.1",
+    "version": "Rev. 2, effective 2026-08-01 (+ same-day shipping decision 18 Oct 2026)"
+   },
+   "record": {
+    "name": "Grace Mwangi",
+    "street": "Willow Drive",
+    "city": "Columbus",
+    "state": "OH",
+    "email": "g.mwangi@example-mail.com",
+    "payment": "Visa ending 4410",
+    "damageClaimsLast90Days": 0,
+    "orders": [
+     {
+      "id": "70452",
+      "item": "Sunlake Pad keyboard case",
+      "shortName": "Sunlake Pad case",
+      "noun": "keyboard case",
+      "price": 149,
+      "deliveredDaysAgo": 4,
+      "inStock": false
+     }
+    ],
+    "decoyCustomers": [],
+    "decoyOrders": []
+   },
+   "conversation": [
+    {
+     "n": 1,
+     "side": "agent",
+     "text": "Thank you for calling Sunlake. How can I help you today?"
+    },
+    {
+     "n": 2,
+     "side": "caller",
+     "text": "Order 70452, the keyboard case arrived with two keys smashed off."
+    },
+    {
+     "n": 3,
+     "side": "agent",
+     "text": "I'm sorry to hear that. First, can I have your full name, please?"
+    },
+    {
+     "n": 4,
+     "side": "caller",
+     "text": "Grace Mwangi."
+    },
+    {
+     "n": 5,
+     "side": "agent",
+     "text": "Thank you. And the street and city for the delivery?"
+    },
+    {
+     "n": 6,
+     "side": "caller",
+     "text": "Willow Drive, in Columbus."
+    },
+    {
+     "n": 7,
+     "side": "agent",
+     "text": "Thank you. Just to confirm, that's order 70452, the Sunlake Pad case?"
+    },
+    {
+     "n": 8,
+     "side": "caller",
+     "text": "Yes, that's the one."
+    },
+    {
+     "n": 9,
+     "side": "agent",
+     "text": "Would you prefer a replacement or a refund?"
+    },
+    {
+     "n": 10,
+     "side": "caller",
+     "text": "A replacement, please."
+    },
+    {
+     "n": 11,
+     "side": "agent",
+     "text": "I'm afraid that case is out of stock, so I've set up a full refund instead. A free return label is on its way."
+    }
+   ],
+   "agentActions": [
+    {
+     "type": "confirm",
+     "target": "name",
+     "afterLine": 4
+    },
+    {
+     "type": "confirm",
+     "target": "address",
+     "afterLine": 6
+    },
+    {
+     "type": "approve",
+     "afterLine": 11
+    }
+   ],
+   "expected": {
+    "identity": "verified",
+    "orderDetailsShown": true,
+    "decision": [
+     "refund"
+    ],
+    "approver": "agent",
+    "agentCanApprove": true,
+    "approvalCounts": true,
+    "mandatory": [
+     "prepaid_return_label",
+     "refund_after_return_scan"
+    ],
+    "prohibited": [
+     "order_details_before_verification",
+     "other_customers_order_shown",
+     "promise_delivery_date",
+     "customer_pays_shipping",
+     "compensation_not_in_sop"
+    ],
+    "flags": []
+   },
+   "policyEvidence": [
+    "4.4 Scenario A (default): within 30 days, same item in stock, value within the approver's authority, customer wants a replacement or has no preference. Replacement at no charge, ships the same day by expedited shipping (ship date, not delivery date); prepaid return label; 30 days to return.",
+    "4.4 Scenario B: within 30 days; item out of stock, or the customer prefers a refund. Refund the full amount to the original payment method, including shipping; prepaid return label; refund issued when the carrier scans the return, 3 to 5 business days."
+   ],
+   "notes": "SOP B applies when the item is out of stock even if the customer wanted a replacement."
+  },
+  {
+   "id": "S06",
+   "category": "exception",
+   "title": "Boundary: $500.00 order, agent authority but photo required first",
+   "policy": {
+    "id": "CS-SOP-3.1",
+    "version": "Rev. 2, effective 2026-08-01 (+ same-day shipping decision 18 Oct 2026)"
+   },
+   "record": {
+    "name": "Oliver Grant",
+    "street": "Spruce Avenue",
+    "city": "Omaha",
+    "state": "NE",
+    "email": "o.grant@example-mail.com",
+    "payment": "Visa ending 4410",
+    "damageClaimsLast90Days": 0,
+    "orders": [
+     {
+      "id": "93571",
+      "item": "Sunlake Vista 27-inch monitor",
+      "shortName": "Sunlake Vista",
+      "noun": "monitor",
+      "price": 500.0,
+      "deliveredDaysAgo": 3,
+      "inStock": true
+     }
+    ],
+    "decoyCustomers": [],
+    "decoyOrders": []
+   },
+   "conversation": [
+    {
+     "n": 1,
+     "side": "agent",
+     "text": "Thank you for calling Sunlake. How can I help you today?"
+    },
+    {
+     "n": 2,
+     "side": "caller",
+     "text": "Order 93571. The monitor arrived and the panel has a big crack across it."
+    },
+    {
+     "n": 3,
+     "side": "agent",
+     "text": "I'm sorry to hear that. First, can I have your full name, please?"
+    },
+    {
+     "n": 4,
+     "side": "caller",
+     "text": "Oliver Grant."
+    },
+    {
+     "n": 5,
+     "side": "agent",
+     "text": "Thank you. And the street and city for the delivery?"
+    },
+    {
+     "n": 6,
+     "side": "caller",
+     "text": "Spruce Avenue, in Omaha."
+    },
+    {
+     "n": 7,
+     "side": "agent",
+     "text": "Thank you. Just to confirm, that's order 93571, the Sunlake Vista?"
+    },
+    {
+     "n": 8,
+     "side": "caller",
+     "text": "Yes, that's the one."
+    },
+    {
+     "n": 9,
+     "side": "agent",
+     "text": "Would you prefer a replacement or a refund?"
+    },
+    {
+     "n": 10,
+     "side": "caller",
+     "text": "A replacement, please."
+    },
+    {
+     "n": 11,
+     "side": "agent",
+     "text": "Done. A new monitor ships today, with a free return label."
+    }
+   ],
+   "agentActions": [
+    {
+     "type": "confirm",
+     "target": "name",
+     "afterLine": 4
+    },
+    {
+     "type": "confirm",
+     "target": "address",
+     "afterLine": 6
+    },
+    {
+     "type": "approve",
+     "afterLine": 11
+    }
+   ],
+   "expected": {
+    "identity": "verified",
+    "orderDetailsShown": true,
+    "decision": [
+     "replacement"
+    ],
+    "approver": "agent",
+    "agentCanApprove": true,
+    "approvalCounts": false,
+    "mandatory": [
+     "photo_before_resolution"
+    ],
+    "prohibited": [
+     "order_details_before_verification",
+     "other_customers_order_shown",
+     "promise_delivery_date",
+     "customer_pays_shipping",
+     "compensation_not_in_sop"
+    ],
+    "flags": []
+   },
+   "policyEvidence": [
+    "4.2 Photo: orders under $500 can be resolved before a photo arrives; the customer is asked to upload one within 7 days ... Orders of $500 or more need the photo before any resolution.",
+    "4.3 Resolution authority: $0 to $500 Agent (Tier 1), self-approve, DOA-01; $500.01 to $1,500 Team Lead, photo required first; over $1,500 Customer Care Manager."
+   ],
+   "notes": "$500.00 is in the agent band ($0 to $500) but 'Orders of $500 or more need the photo before any resolution'. No photo has arrived in this call, so the agent's approval must not count yet."
+  },
+  {
+   "id": "S08",
+   "category": "unauthorised",
+   "title": "Agent tries to approve a $749 order (Team Lead band)",
+   "policy": {
+    "id": "CS-SOP-3.1",
+    "version": "Rev. 2, effective 2026-08-01 (+ same-day shipping decision 18 Oct 2026)"
+   },
+   "record": {
+    "name": "Ahmed Saleh",
+    "street": "Birch Road",
+    "city": "Madison",
+    "state": "WI",
+    "email": "a.saleh@example-mail.com",
+    "payment": "Visa ending 4410",
+    "damageClaimsLast90Days": 0,
+    "orders": [
+     {
+      "id": "24719",
+      "item": "Sunlake Book 14 laptop",
+      "shortName": "Sunlake Book 14",
+      "noun": "laptop",
+      "price": 749,
+      "deliveredDaysAgo": 2,
+      "inStock": true
+     }
+    ],
+    "decoyCustomers": [],
+    "decoyOrders": []
+   },
+   "conversation": [
+    {
+     "n": 1,
+     "side": "agent",
+     "text": "Thank you for calling Sunlake. How can I help you today?"
+    },
+    {
+     "n": 2,
+     "side": "caller",
+     "text": "Order 24719, my laptop arrived with the hinge snapped and the lid hanging off."
+    },
+    {
+     "n": 3,
+     "side": "agent",
+     "text": "I'm sorry to hear that. First, can I have your full name, please?"
+    },
+    {
+     "n": 4,
+     "side": "caller",
+     "text": "Ahmed Saleh."
+    },
+    {
+     "n": 5,
+     "side": "agent",
+     "text": "Thank you. And the street and city for the delivery?"
+    },
+    {
+     "n": 6,
+     "side": "caller",
+     "text": "Birch Road, in Madison."
+    },
+    {
+     "n": 7,
+     "side": "agent",
+     "text": "Thank you. Just to confirm, that's order 24719, the Sunlake Book 14?"
+    },
+    {
+     "n": 8,
+     "side": "caller",
+     "text": "Yes, that's the one."
+    },
+    {
+     "n": 9,
+     "side": "agent",
+     "text": "Would you prefer a replacement or a refund?"
+    },
+    {
+     "n": 10,
+     "side": "caller",
+     "text": "A replacement, please."
+    },
+    {
+     "n": 11,
+     "side": "agent",
+     "text": "Okay, I'll approve the replacement for you now."
+    }
+   ],
+   "agentActions": [
+    {
+     "type": "confirm",
+     "target": "name",
+     "afterLine": 4
+    },
+    {
+     "type": "confirm",
+     "target": "address",
+     "afterLine": 6
+    },
+    {
+     "type": "approve",
+     "afterLine": 11
+    }
+   ],
+   "expected": {
+    "identity": "verified",
+    "orderDetailsShown": true,
+    "decision": [
+     "escalate_tier2"
+    ],
+    "approver": "team_lead_or_ccm",
+    "agentCanApprove": false,
+    "approvalCounts": false,
+    "mandatory": [
+     "tier2_case_or_callback_4h",
+     "photo_before_resolution"
+    ],
+    "prohibited": [
+     "order_details_before_verification",
+     "other_customers_order_shown",
+     "promise_delivery_date",
+     "customer_pays_shipping",
+     "compensation_not_in_sop",
+     "promise_resolution_in_escalation",
+     "agent_approval_counted"
+    ],
+    "flags": [
+     "offer_during_escalation"
+    ]
+   },
+   "policyEvidence": [
+    "4.3 Resolution authority: $0 to $500 Agent (Tier 1), self-approve, DOA-01; $500.01 to $1,500 Team Lead, photo required first; over $1,500 Customer Care Manager.",
+    "4.2 Photo: orders under $500 can be resolved before a photo arrives; the customer is asked to upload one within 7 days ... Orders of $500 or more need the photo before any resolution.",
+    "4.4 Scenario C (overrides A and B), any one of: more than 30 days since delivery; a second damage claim within 90 days; value above the agent's authority; chargeback, lawyer or fraud mentioned; safety (heat, smoke, swelling, burning smell, injury). Don't promise a replacement or refund; open a Tier 2 case and transfer, or book a call back within 4 business hours; for safety, tell the customer to stop using and unplug the device first. Team Lead or Customer Care Manager; agents can't approve."
+   ],
+   "notes": "Authority table: $500.01-$1,500 = Team Lead, photo required first. Scenario C: value above the agent's authority. Expected approver accepts Team Lead."
+  },
+  {
+   "id": "S09",
+   "category": "escalation",
+   "title": "$1,899 TV, Customer Care Manager band",
+   "policy": {
+    "id": "CS-SOP-3.1",
+    "version": "Rev. 2, effective 2026-08-01 (+ same-day shipping decision 18 Oct 2026)"
+   },
+   "record": {
+    "name": "Hannah Weiss",
+    "street": "Lakeview Drive",
+    "city": "Boise",
+    "state": "ID",
+    "email": "h.weiss@example-mail.com",
+    "payment": "Visa ending 4410",
+    "damageClaimsLast90Days": 0,
+    "orders": [
+     {
+      "id": "35062",
+      "item": "Sunlake Studio 65-inch TV",
+      "shortName": "Sunlake Studio 65",
+      "noun": "TV",
+      "price": 1899,
+      "deliveredDaysAgo": 1,
+      "inStock": true
+     }
+    ],
+    "decoyCustomers": [],
+    "decoyOrders": []
+   },
+   "conversation": [
+    {
+     "n": 1,
+     "side": "agent",
+     "text": "Thank you for calling Sunlake. How can I help you today?"
+    },
+    {
+     "n": 2,
+     "side": "caller",
+     "text": "Order 35062, the TV arrived with the screen shattered."
+    },
+    {
+     "n": 3,
+     "side": "agent",
+     "text": "I'm sorry to hear that. First, can I have your full name, please?"
+    },
+    {
+     "n": 4,
+     "side": "caller",
+     "text": "Hannah Weiss."
+    },
+    {
+     "n": 5,
+     "side": "agent",
+     "text": "Thank you. And the street and city for the delivery?"
+    },
+    {
+     "n": 6,
+     "side": "caller",
+     "text": "Lakeview Drive, in Boise."
+    },
+    {
+     "n": 7,
+     "side": "agent",
+     "text": "Thank you. Just to confirm, that's order 35062, the Sunlake Studio 65?"
+    },
+    {
+     "n": 8,
+     "side": "caller",
+     "text": "Yes, that's the one."
+    },
+    {
+     "n": 9,
+     "side": "agent",
+     "text": "Would you prefer a replacement or a refund?"
+    },
+    {
+     "n": 10,
+     "side": "caller",
+     "text": "Just a refund, please."
+    }
+   ],
+   "agentActions": [
+    {
+     "type": "confirm",
+     "target": "name",
+     "afterLine": 4
+    },
+    {
+     "type": "confirm",
+     "target": "address",
+     "afterLine": 6
+    }
+   ],
+   "expected": {
+    "identity": "verified",
+    "orderDetailsShown": true,
+    "decision": [
+     "escalate_tier2"
+    ],
+    "approver": "team_lead_or_ccm",
+    "agentCanApprove": false,
+    "approvalCounts": null,
+    "mandatory": [
+     "tier2_case_or_callback_4h",
+     "photo_before_resolution"
+    ],
+    "prohibited": [
+     "order_details_before_verification",
+     "other_customers_order_shown",
+     "promise_delivery_date",
+     "customer_pays_shipping",
+     "compensation_not_in_sop",
+     "promise_resolution_in_escalation",
+     "agent_approval_counted"
+    ],
+    "flags": []
+   },
+   "policyEvidence": [
+    "4.3 Resolution authority: $0 to $500 Agent (Tier 1), self-approve, DOA-01; $500.01 to $1,500 Team Lead, photo required first; over $1,500 Customer Care Manager.",
+    "4.2 Photo: orders under $500 can be resolved before a photo arrives; the customer is asked to upload one within 7 days ... Orders of $500 or more need the photo before any resolution.",
+    "4.4 Scenario C (overrides A and B), any one of: more than 30 days since delivery; a second damage claim within 90 days; value above the agent's authority; chargeback, lawyer or fraud mentioned; safety (heat, smoke, swelling, burning smell, injury). Don't promise a replacement or refund; open a Tier 2 case and transfer, or book a call back within 4 business hours; for safety, tell the customer to stop using and unplug the device first. Team Lead or Customer Care Manager; agents can't approve."
+   ],
+   "notes": "Over $1,500: Customer Care Manager; photo required (>= $500). Agent must not promise the refund."
+  },
+  {
+   "id": "S10",
+   "category": "escalation",
+   "title": "Second damage claim within 90 days",
+   "policy": {
+    "id": "CS-SOP-3.1",
+    "version": "Rev. 2, effective 2026-08-01 (+ same-day shipping decision 18 Oct 2026)"
+   },
+   "record": {
+    "name": "Rafael Costa",
+    "street": "Ocean Avenue",
+    "city": "Miami",
+    "state": "FL",
+    "email": "r.costa@example-mail.com",
+    "payment": "Visa ending 4410",
+    "damageClaimsLast90Days": 1,
+    "orders": [
+     {
+      "id": "46213",
+      "item": "Sunlake Tab 8 tablet",
+      "shortName": "Sunlake Tab 8",
+      "noun": "tablet",
+      "price": 199,
+      "deliveredDaysAgo": 2,
+      "inStock": true
+     }
+    ],
+    "decoyCustomers": [],
+    "decoyOrders": []
+   },
+   "conversation": [
+    {
+     "n": 1,
+     "side": "agent",
+     "text": "Thank you for calling Sunlake. How can I help you today?"
+    },
+    {
+     "n": 2,
+     "side": "caller",
+     "text": "Order 46213, the tablet's screen is cracked. This is the second damaged one I've had from you."
+    },
+    {
+     "n": 3,
+     "side": "agent",
+     "text": "I'm sorry to hear that. First, can I have your full name, please?"
+    },
+    {
+     "n": 4,
+     "side": "caller",
+     "text": "Rafael Costa."
+    },
+    {
+     "n": 5,
+     "side": "agent",
+     "text": "Thank you. And the street and city for the delivery?"
+    },
+    {
+     "n": 6,
+     "side": "caller",
+     "text": "Ocean Avenue, in Miami."
+    },
+    {
+     "n": 7,
+     "side": "agent",
+     "text": "Thank you. Just to confirm, that's order 46213, the Sunlake Tab 8?"
+    },
+    {
+     "n": 8,
+     "side": "caller",
+     "text": "Yes, that's the one."
+    },
+    {
+     "n": 9,
+     "side": "agent",
+     "text": "Would you prefer a replacement or a refund?"
+    },
+    {
+     "n": 10,
+     "side": "caller",
+     "text": "A replacement."
+    }
+   ],
+   "agentActions": [
+    {
+     "type": "confirm",
+     "target": "name",
+     "afterLine": 4
+    },
+    {
+     "type": "confirm",
+     "target": "address",
+     "afterLine": 6
+    }
+   ],
+   "expected": {
+    "identity": "verified",
+    "orderDetailsShown": true,
+    "decision": [
+     "escalate_tier2"
+    ],
+    "approver": "team_lead_or_ccm",
+    "agentCanApprove": false,
+    "approvalCounts": null,
+    "mandatory": [
+     "tier2_case_or_callback_4h"
+    ],
+    "prohibited": [
+     "order_details_before_verification",
+     "other_customers_order_shown",
+     "promise_delivery_date",
+     "customer_pays_shipping",
+     "compensation_not_in_sop",
+     "promise_resolution_in_escalation",
+     "agent_approval_counted"
+    ],
+    "flags": []
+   },
+   "policyEvidence": [
+    "4.4 Scenario C (overrides A and B), any one of: more than 30 days since delivery; a second damage claim within 90 days; value above the agent's authority; chargeback, lawyer or fraud mentioned; safety (heat, smoke, swelling, burning smell, injury). Don't promise a replacement or refund; open a Tier 2 case and transfer, or book a call back within 4 business hours; for safety, tell the customer to stop using and unplug the device first. Team Lead or Customer Care Manager; agents can't approve."
+   ],
+   "notes": "Record shows one earlier damage claim in the last 90 days."
+  },
+  {
+   "id": "S11",
+   "category": "escalation",
+   "title": "Safety: swollen, hot battery",
+   "policy": {
+    "id": "CS-SOP-3.1",
+    "version": "Rev. 2, effective 2026-08-01 (+ same-day shipping decision 18 Oct 2026)"
+   },
+   "record": {
+    "name": "Nadia Petrova",
+    "street": "Aspen Way",
+    "city": "Reno",
+    "state": "NV",
+    "email": "n.petrova@example-mail.com",
+    "payment": "Visa ending 4410",
+    "damageClaimsLast90Days": 0,
+    "orders": [
+     {
+      "id": "57904",
+      "item": "Sunlake Charge Max power bank",
+      "shortName": "Sunlake Charge Max",
+      "noun": "power bank",
+      "price": 69,
+      "deliveredDaysAgo": 1,
+      "inStock": true
+     }
+    ],
+    "decoyCustomers": [],
+    "decoyOrders": []
+   },
+   "conversation": [
+    {
+     "n": 1,
+     "side": "agent",
+     "text": "Thank you for calling Sunlake. How can I help you today?"
+    },
+    {
+     "n": 2,
+     "side": "caller",
+     "text": "Order 57904. The power bank arrived dented, and now the battery looks swollen and it gets really hot."
+    },
+    {
+     "n": 3,
+     "side": "agent",
+     "text": "I'm sorry to hear that. First, can I have your full name, please?"
+    },
+    {
+     "n": 4,
+     "side": "caller",
+     "text": "Nadia Petrova."
+    },
+    {
+     "n": 5,
+     "side": "agent",
+     "text": "Thank you. And the street and city for the delivery?"
+    },
+    {
+     "n": 6,
+     "side": "caller",
+     "text": "Aspen Way, in Reno."
+    },
+    {
+     "n": 7,
+     "side": "agent",
+     "text": "Thank you. Just to confirm, that's order 57904, the Sunlake Charge Max?"
+    },
+    {
+     "n": 8,
+     "side": "caller",
+     "text": "Yes, that's the one."
+    }
+   ],
+   "agentActions": [
+    {
+     "type": "confirm",
+     "target": "name",
+     "afterLine": 4
+    },
+    {
+     "type": "confirm",
+     "target": "address",
+     "afterLine": 6
+    }
+   ],
+   "expected": {
+    "identity": "verified",
+    "orderDetailsShown": true,
+    "decision": [
+     "escalate_tier2"
+    ],
+    "approver": "team_lead_or_ccm",
+    "agentCanApprove": false,
+    "approvalCounts": null,
+    "mandatory": [
+     "stop_and_unplug_first",
+     "tier2_case_or_callback_4h"
+    ],
+    "prohibited": [
+     "order_details_before_verification",
+     "other_customers_order_shown",
+     "promise_delivery_date",
+     "customer_pays_shipping",
+     "compensation_not_in_sop",
+     "promise_resolution_in_escalation",
+     "agent_approval_counted"
+    ],
+    "flags": []
+   },
+   "policyEvidence": [
+    "4.4 Scenario C (overrides A and B), any one of: more than 30 days since delivery; a second damage claim within 90 days; value above the agent's authority; chargeback, lawyer or fraud mentioned; safety (heat, smoke, swelling, burning smell, injury). Don't promise a replacement or refund; open a Tier 2 case and transfer, or book a call back within 4 business hours; for safety, tell the customer to stop using and unplug the device first. Team Lead or Customer Care Manager; agents can't approve."
+   ],
+   "notes": ""
+  },
+  {
+   "id": "S12",
+   "category": "escalation",
+   "title": "Chargeback threat",
+   "policy": {
+    "id": "CS-SOP-3.1",
+    "version": "Rev. 2, effective 2026-08-01 (+ same-day shipping decision 18 Oct 2026)"
+   },
+   "record": {
+    "name": "Kofi Mensah",
+    "street": "Chestnut Street",
+    "city": "Albany",
+    "state": "NY",
+    "email": "k.mensah@example-mail.com",
+    "payment": "Visa ending 4410",
+    "damageClaimsLast90Days": 0,
+    "orders": [
+     {
+      "id": "68135",
+      "item": "Sunlake Vista 24-inch monitor",
+      "shortName": "Sunlake Vista 24",
+      "noun": "monitor",
+      "price": 219,
+      "deliveredDaysAgo": 2,
+      "inStock": true
+     }
+    ],
+    "decoyCustomers": [],
+    "decoyOrders": []
+   },
+   "conversation": [
+    {
+     "n": 1,
+     "side": "agent",
+     "text": "Thank you for calling Sunlake. How can I help you today?"
+    },
+    {
+     "n": 2,
+     "side": "caller",
+     "text": "Order 68135, the monitor's stand arrived broken. If this isn't sorted today I'm calling my bank for a chargeback."
+    },
+    {
+     "n": 3,
+     "side": "agent",
+     "text": "I'm sorry to hear that. First, can I have your full name, please?"
+    },
+    {
+     "n": 4,
+     "side": "caller",
+     "text": "Kofi Mensah."
+    },
+    {
+     "n": 5,
+     "side": "agent",
+     "text": "Thank you. And the street and city for the delivery?"
+    },
+    {
+     "n": 6,
+     "side": "caller",
+     "text": "Chestnut Street, in Albany."
+    },
+    {
+     "n": 7,
+     "side": "agent",
+     "text": "Thank you. Just to confirm, that's order 68135, the Sunlake Vista 24?"
+    },
+    {
+     "n": 8,
+     "side": "caller",
+     "text": "Yes, that's the one."
+    },
+    {
+     "n": 9,
+     "side": "agent",
+     "text": "Would you prefer a replacement or a refund?"
+    },
+    {
+     "n": 10,
+     "side": "caller",
+     "text": "A replacement."
+    }
+   ],
+   "agentActions": [
+    {
+     "type": "confirm",
+     "target": "name",
+     "afterLine": 4
+    },
+    {
+     "type": "confirm",
+     "target": "address",
+     "afterLine": 6
+    }
+   ],
+   "expected": {
+    "identity": "verified",
+    "orderDetailsShown": true,
+    "decision": [
+     "escalate_tier2"
+    ],
+    "approver": "team_lead_or_ccm",
+    "agentCanApprove": false,
+    "approvalCounts": null,
+    "mandatory": [
+     "tier2_case_or_callback_4h"
+    ],
+    "prohibited": [
+     "order_details_before_verification",
+     "other_customers_order_shown",
+     "promise_delivery_date",
+     "customer_pays_shipping",
+     "compensation_not_in_sop",
+     "promise_resolution_in_escalation",
+     "agent_approval_counted"
+    ],
+    "flags": []
+   },
+   "policyEvidence": [
+    "4.4 Scenario C (overrides A and B), any one of: more than 30 days since delivery; a second damage claim within 90 days; value above the agent's authority; chargeback, lawyer or fraud mentioned; safety (heat, smoke, swelling, burning smell, injury). Don't promise a replacement or refund; open a Tier 2 case and transfer, or book a call back within 4 business hours; for safety, tell the customer to stop using and unplug the device first. Team Lead or Customer Care Manager; agents can't approve."
+   ],
+   "notes": ""
+  },
+  {
+   "id": "S13",
+   "category": "escalation",
+   "title": "Safety: injury from broken glass",
+   "policy": {
+    "id": "CS-SOP-3.1",
+    "version": "Rev. 2, effective 2026-08-01 (+ same-day shipping decision 18 Oct 2026)"
+   },
+   "record": {
+    "name": "Sofia Marino",
+    "street": "Valley Road",
+    "city": "Provo",
+    "state": "UT",
+    "email": "s.marino@example-mail.com",
+    "payment": "Visa ending 4410",
+    "damageClaimsLast90Days": 0,
+    "orders": [
+     {
+      "id": "79246",
+      "item": "Sunlake Tab 11 tablet, 64 GB",
+      "shortName": "Sunlake Tab 11",
+      "noun": "tablet",
+      "price": 279,
+      "deliveredDaysAgo": 1,
+      "inStock": true
+     }
+    ],
+    "decoyCustomers": [],
+    "decoyOrders": []
+   },
+   "conversation": [
+    {
+     "n": 1,
+     "side": "agent",
+     "text": "Thank you for calling Sunlake. How can I help you today?"
+    },
+    {
+     "n": 2,
+     "side": "caller",
+     "text": "Order 79246, the tablet glass was shattered in the box and I cut my finger on it."
+    },
+    {
+     "n": 3,
+     "side": "agent",
+     "text": "I'm sorry to hear that. First, can I have your full name, please?"
+    },
+    {
+     "n": 4,
+     "side": "caller",
+     "text": "Sofia Marino."
+    },
+    {
+     "n": 5,
+     "side": "agent",
+     "text": "Thank you. And the street and city for the delivery?"
+    },
+    {
+     "n": 6,
+     "side": "caller",
+     "text": "Valley Road, in Provo."
+    },
+    {
+     "n": 7,
+     "side": "agent",
+     "text": "Thank you. Just to confirm, that's order 79246, the Sunlake Tab 11?"
+    },
+    {
+     "n": 8,
+     "side": "caller",
+     "text": "Yes, that's the one."
+    },
+    {
+     "n": 9,
+     "side": "agent",
+     "text": "Would you prefer a replacement or a refund?"
+    },
+    {
+     "n": 10,
+     "side": "caller",
+     "text": "A new one."
+    }
+   ],
+   "agentActions": [
+    {
+     "type": "confirm",
+     "target": "name",
+     "afterLine": 4
+    },
+    {
+     "type": "confirm",
+     "target": "address",
+     "afterLine": 6
+    }
+   ],
+   "expected": {
+    "identity": "verified",
+    "orderDetailsShown": true,
+    "decision": [
+     "escalate_tier2"
+    ],
+    "approver": "team_lead_or_ccm",
+    "agentCanApprove": false,
+    "approvalCounts": null,
+    "mandatory": [
+     "stop_and_unplug_first",
+     "tier2_case_or_callback_4h"
+    ],
+    "prohibited": [
+     "order_details_before_verification",
+     "other_customers_order_shown",
+     "promise_delivery_date",
+     "customer_pays_shipping",
+     "compensation_not_in_sop",
+     "promise_resolution_in_escalation",
+     "agent_approval_counted"
+    ],
+    "flags": []
+   },
+   "policyEvidence": [
+    "4.4 Scenario C (overrides A and B), any one of: more than 30 days since delivery; a second damage claim within 90 days; value above the agent's authority; chargeback, lawyer or fraud mentioned; safety (heat, smoke, swelling, burning smell, injury). Don't promise a replacement or refund; open a Tier 2 case and transfer, or book a call back within 4 business hours; for safety, tell the customer to stop using and unplug the device first. Team Lead or Customer Care Manager; agents can't approve."
+   ],
+   "notes": "'an injury' is a Scenario C safety condition. The SOP's stop-using-and-unplug instruction is written for every safety report."
+  },
+  {
+   "id": "S15",
+   "category": "incomplete",
+   "title": "Only the name given; agent offers a refund before the second factor",
+   "policy": {
+    "id": "CS-SOP-3.1",
+    "version": "Rev. 2, effective 2026-08-01 (+ same-day shipping decision 18 Oct 2026)"
+   },
+   "record": {
+    "name": "Ethan Brooks",
+    "street": "Hawthorn Street",
+    "city": "Dayton",
+    "state": "OH",
+    "email": "e.brooks@example-mail.com",
+    "payment": "Visa ending 4410",
+    "damageClaimsLast90Days": 0,
+    "orders": [
+     {
+      "id": "91468",
+      "item": "Sunlake Book 13 laptop",
+      "shortName": "Sunlake Book 13",
+      "noun": "laptop",
+      "price": 449,
+      "deliveredDaysAgo": 2,
+      "inStock": true
+     }
+    ],
+    "decoyCustomers": [],
+    "decoyOrders": []
+   },
+   "conversation": [
+    {
+     "n": 1,
+     "side": "agent",
+     "text": "Thank you for calling Sunlake. How can I help you today?"
+    },
+    {
+     "n": 2,
+     "side": "caller",
+     "text": "My laptop from order 91468 came with a cracked screen and I want a refund."
+    },
+    {
+     "n": 3,
+     "side": "agent",
+     "text": "I'm sorry to hear that. Can I have your full name, please?"
+    },
+    {
+     "n": 4,
+     "side": "caller",
+     "text": "Ethan Brooks."
+    },
+    {
+     "n": 5,
+     "side": "agent",
+     "text": "Sure, I can refund that for you right away."
+    },
+    {
+     "n": 6,
+     "side": "caller",
+     "text": "Great, when will I get it?"
+    }
+   ],
+   "agentActions": [
+    {
+     "type": "confirm",
+     "target": "name",
+     "afterLine": 4
+    }
+   ],
+   "expected": {
+    "identity": "not_verified",
+    "orderDetailsShown": false,
+    "decision": [
+     "wait_for_information"
+    ],
+    "approver": null,
+    "agentCanApprove": null,
+    "approvalCounts": null,
+    "mandatory": [],
+    "prohibited": [
+     "order_details_before_verification",
+     "other_customers_order_shown",
+     "promise_delivery_date",
+     "customer_pays_shipping",
+     "compensation_not_in_sop",
+     "approval_possible_before_verification"
+    ],
+    "flags": [
+     "offer_before_verification"
+    ]
+   },
+   "policyEvidence": [
+    "4.1 Verification: Identity check (required before any order details are discussed). Factors: full name on the order; email address on the order, or the delivery street and city."
+   ],
+   "notes": "Second factor (email or street and city) not yet given: not verified, no order details, no resolution."
+  },
+  {
+   "id": "S16",
+   "category": "ambiguous",
+   "title": "Vague fault, not clearly damage on arrival",
+   "policy": {
+    "id": "CS-SOP-3.1",
+    "version": "Rev. 2, effective 2026-08-01 (+ same-day shipping decision 18 Oct 2026)"
+   },
+   "record": {
+    "name": "Chloe Dubois",
+    "street": "Juniper Lane",
+    "city": "Eugene",
+    "state": "OR",
+    "email": "c.dubois@example-mail.com",
+    "payment": "Visa ending 4410",
+    "damageClaimsLast90Days": 0,
+    "orders": [
+     {
+      "id": "13579",
+      "item": "Sunlake Cam doorbell camera",
+      "shortName": "Sunlake Cam",
+      "noun": "doorbell camera",
+      "price": 119,
+      "deliveredDaysAgo": 3,
+      "inStock": true
+     }
+    ],
+    "decoyCustomers": [],
+    "decoyOrders": []
+   },
+   "conversation": [
+    {
+     "n": 1,
+     "side": "agent",
+     "text": "Thank you for calling Sunlake. How can I help you today?"
+    },
+    {
+     "n": 2,
+     "side": "caller",
+     "text": "Order 13579. The doorbell camera isn't working properly."
+    },
+    {
+     "n": 3,
+     "side": "agent",
+     "text": "I'm sorry to hear that. First, can I have your full name, please?"
+    },
+    {
+     "n": 4,
+     "side": "caller",
+     "text": "Chloe Dubois."
+    },
+    {
+     "n": 5,
+     "side": "agent",
+     "text": "Thank you. And the street and city for the delivery?"
+    },
+    {
+     "n": 6,
+     "side": "caller",
+     "text": "Juniper Lane, in Eugene."
+    },
+    {
+     "n": 7,
+     "side": "agent",
+     "text": "Thank you. Just to confirm, that's order 13579, the Sunlake Cam?"
+    },
+    {
+     "n": 8,
+     "side": "caller",
+     "text": "Yes, that's the one."
+    }
+   ],
+   "agentActions": [
+    {
+     "type": "confirm",
+     "target": "name",
+     "afterLine": 4
+    },
+    {
+     "type": "confirm",
+     "target": "address",
+     "afterLine": 6
+    }
+   ],
+   "expected": {
+    "identity": "verified",
+    "orderDetailsShown": true,
+    "decision": [
+     "wait_for_information",
+     "not_this_policy"
+    ],
+    "approver": null,
+    "agentCanApprove": null,
+    "approvalCounts": null,
+    "mandatory": [
+     "clarify_issue"
+    ],
+    "prohibited": [
+     "order_details_before_verification",
+     "other_customers_order_shown",
+     "promise_delivery_date",
+     "customer_pays_shipping",
+     "compensation_not_in_sop",
+     "apply_damage_policy_without_damage"
+    ],
+    "flags": []
+   },
+   "policyEvidence": [
+    "4.4 Scenario A (default): within 30 days, same item in stock, value within the approver's authority, customer wants a replacement or has no preference. Replacement at no charge, ships the same day by expedited shipping (ship date, not delivery date); prepaid return label; 30 days to return."
+   ],
+   "notes": "'isn't working properly' is not a report of damage on arrival. The agent must find out what is wrong before CS-SOP-3.1 applies."
+  },
+  {
+   "id": "S17",
+   "category": "ambiguous",
+   "title": "Crushed box, item not yet inspected",
+   "policy": {
+    "id": "CS-SOP-3.1",
+    "version": "Rev. 2, effective 2026-08-01 (+ same-day shipping decision 18 Oct 2026)"
+   },
+   "record": {
+    "name": "Marcus Bell",
+    "street": "Poplar Street",
+    "city": "Mobile",
+    "state": "AL",
+    "email": "m.bell@example-mail.com",
+    "payment": "Visa ending 4410",
+    "damageClaimsLast90Days": 0,
+    "orders": [
+     {
+      "id": "24680",
+      "item": "Sunlake Tab 11 tablet, 256 GB",
+      "shortName": "Sunlake Tab 11",
+      "noun": "tablet",
+      "price": 379,
+      "deliveredDaysAgo": 1,
+      "inStock": true
+     }
+    ],
+    "decoyCustomers": [],
+    "decoyOrders": []
+   },
+   "conversation": [
+    {
+     "n": 1,
+     "side": "agent",
+     "text": "Thank you for calling Sunlake. How can I help you today?"
+    },
+    {
+     "n": 2,
+     "side": "caller",
+     "text": "Order 24680. The box arrived completely crushed, but I haven't opened it yet."
+    },
+    {
+     "n": 3,
+     "side": "agent",
+     "text": "I'm sorry to hear that. First, can I have your full name, please?"
+    },
+    {
+     "n": 4,
+     "side": "caller",
+     "text": "Marcus Bell."
+    },
+    {
+     "n": 5,
+     "side": "agent",
+     "text": "Thank you. And the street and city for the delivery?"
+    },
+    {
+     "n": 6,
+     "side": "caller",
+     "text": "Poplar Street, in Mobile."
+    },
+    {
+     "n": 7,
+     "side": "agent",
+     "text": "Thank you. Just to confirm, that's order 24680, the Sunlake Tab 11?"
+    },
+    {
+     "n": 8,
+     "side": "caller",
+     "text": "Yes, that's the one."
+    }
+   ],
+   "agentActions": [
+    {
+     "type": "confirm",
+     "target": "name",
+     "afterLine": 4
+    },
+    {
+     "type": "confirm",
+     "target": "address",
+     "afterLine": 6
+    }
+   ],
+   "expected": {
+    "identity": "verified",
+    "orderDetailsShown": true,
+    "decision": [
+     "wait_for_information"
+    ],
+    "approver": null,
+    "agentCanApprove": null,
+    "approvalCounts": null,
+    "mandatory": [
+     "clarify_issue"
+    ],
+    "prohibited": [
+     "order_details_before_verification",
+     "other_customers_order_shown",
+     "promise_delivery_date",
+     "customer_pays_shipping",
+     "compensation_not_in_sop",
+     "apply_damage_policy_without_damage"
+    ],
+    "flags": []
+   },
+   "policyEvidence": [
+    "4.4 Scenario A (default): within 30 days, same item in stock, value within the approver's authority, customer wants a replacement or has no preference. Replacement at no charge, ships the same day by expedited shipping (ship date, not delivery date); prepaid return label; 30 days to return."
+   ],
+   "notes": "Damage to the item itself is not established; packaging damage alone is not a damaged item. Agent should ask the caller to check the item."
+  },
+  {
+   "id": "S18",
+   "category": "ambiguous",
+   "title": "Customer says either option is fine",
+   "policy": {
+    "id": "CS-SOP-3.1",
+    "version": "Rev. 2, effective 2026-08-01 (+ same-day shipping decision 18 Oct 2026)"
+   },
+   "record": {
+    "name": "Leah Fischer",
+    "street": "Magnolia Drive",
+    "city": "Savannah",
+    "state": "GA",
+    "email": "l.fischer@example-mail.com",
+    "payment": "Visa ending 4410",
+    "damageClaimsLast90Days": 0,
+    "orders": [
+     {
+      "id": "35791",
+      "item": "Sunlake Aura Lite headphones",
+      "shortName": "Sunlake Aura Lite",
+      "noun": "headphones",
+      "price": 79,
+      "deliveredDaysAgo": 2,
+      "inStock": true
+     }
+    ],
+    "decoyCustomers": [],
+    "decoyOrders": []
+   },
+   "conversation": [
+    {
+     "n": 1,
+     "side": "agent",
+     "text": "Thank you for calling Sunlake. How can I help you today?"
+    },
+    {
+     "n": 2,
+     "side": "caller",
+     "text": "Order 35791, one ear cup on the headphones was snapped off when they arrived."
+    },
+    {
+     "n": 3,
+     "side": "agent",
+     "text": "I'm sorry to hear that. First, can I have your full name, please?"
+    },
+    {
+     "n": 4,
+     "side": "caller",
+     "text": "Leah Fischer."
+    },
+    {
+     "n": 5,
+     "side": "agent",
+     "text": "Thank you. And the street and city for the delivery?"
+    },
+    {
+     "n": 6,
+     "side": "caller",
+     "text": "Magnolia Drive, in Savannah."
+    },
+    {
+     "n": 7,
+     "side": "agent",
+     "text": "Thank you. Just to confirm, that's order 35791, the Sunlake Aura Lite?"
+    },
+    {
+     "n": 8,
+     "side": "caller",
+     "text": "Yes, that's the one."
+    },
+    {
+     "n": 9,
+     "side": "agent",
+     "text": "Would you prefer a replacement or a refund?"
+    },
+    {
+     "n": 10,
+     "side": "caller",
+     "text": "Whichever is faster, honestly. Either is fine."
+    }
+   ],
+   "agentActions": [
+    {
+     "type": "confirm",
+     "target": "name",
+     "afterLine": 4
+    },
+    {
+     "type": "confirm",
+     "target": "address",
+     "afterLine": 6
+    }
+   ],
+   "expected": {
+    "identity": "verified",
+    "orderDetailsShown": true,
+    "decision": [
+     "replacement",
+     "replacement_or_refund"
+    ],
+    "approver": "agent",
+    "agentCanApprove": true,
+    "approvalCounts": null,
+    "mandatory": [],
+    "prohibited": [
+     "order_details_before_verification",
+     "other_customers_order_shown",
+     "promise_delivery_date",
+     "customer_pays_shipping",
+     "compensation_not_in_sop"
+    ],
+    "flags": []
+   },
+   "policyEvidence": [
+    "4.4 Scenario A (default): within 30 days, same item in stock, value within the approver's authority, customer wants a replacement or has no preference. Replacement at no charge, ships the same day by expedited shipping (ship date, not delivery date); prepaid return label; 30 days to return.",
+    "4.4 Scenario B: within 30 days; item out of stock, or the customer prefers a refund. Refund the full amount to the original payment method, including shipping; prepaid return label; refund issued when the carrier scans the return, 3 to 5 business days."
+   ],
+   "notes": "'Either is fine' = no preference: replacement is the default (A). Offering both is also acceptable."
+  },
+  {
+   "id": "S20",
+   "category": "unauthorised",
+   "title": "Agent promises next-day delivery",
+   "policy": {
+    "id": "CS-SOP-3.1",
+    "version": "Rev. 2, effective 2026-08-01 (+ same-day shipping decision 18 Oct 2026)"
+   },
+   "record": {
+    "name": "Amara Diallo",
+    "street": "Laurel Street",
+    "city": "Durham",
+    "state": "NC",
+    "email": "a.diallo@example-mail.com",
+    "payment": "Visa ending 4410",
+    "damageClaimsLast90Days": 0,
+    "orders": [
+     {
+      "id": "57913",
+      "item": "Sunlake Tab 8 tablet",
+      "shortName": "Sunlake Tab 8",
+      "noun": "tablet",
+      "price": 199,
+      "deliveredDaysAgo": 1,
+      "inStock": true
+     }
+    ],
+    "decoyCustomers": [],
+    "decoyOrders": []
+   },
+   "conversation": [
+    {
+     "n": 1,
+     "side": "agent",
+     "text": "Thank you for calling Sunlake. How can I help you today?"
+    },
+    {
+     "n": 2,
+     "side": "caller",
+     "text": "Order 57913, the tablet screen has a crack in the corner."
+    },
+    {
+     "n": 3,
+     "side": "agent",
+     "text": "I'm sorry to hear that. First, can I have your full name, please?"
+    },
+    {
+     "n": 4,
+     "side": "caller",
+     "text": "Amara Diallo."
+    },
+    {
+     "n": 5,
+     "side": "agent",
+     "text": "Thank you. And the street and city for the delivery?"
+    },
+    {
+     "n": 6,
+     "side": "caller",
+     "text": "Laurel Street, in Durham."
+    },
+    {
+     "n": 7,
+     "side": "agent",
+     "text": "Thank you. Just to confirm, that's order 57913, the Sunlake Tab 8?"
+    },
+    {
+     "n": 8,
+     "side": "caller",
+     "text": "Yes, that's the one."
+    },
+    {
+     "n": 9,
+     "side": "agent",
+     "text": "Would you prefer a replacement or a refund?"
+    },
+    {
+     "n": 10,
+     "side": "caller",
+     "text": "A replacement, please."
+    },
+    {
+     "n": 11,
+     "side": "agent",
+     "text": "Done. The new tablet will arrive tomorrow, and you'll get a return label by email."
+    }
+   ],
+   "agentActions": [
+    {
+     "type": "confirm",
+     "target": "name",
+     "afterLine": 4
+    },
+    {
+     "type": "confirm",
+     "target": "address",
+     "afterLine": 6
+    },
+    {
+     "type": "approve",
+     "afterLine": 11
+    }
+   ],
+   "expected": {
+    "identity": "verified",
+    "orderDetailsShown": true,
+    "decision": [
+     "replacement"
+    ],
+    "approver": "agent",
+    "agentCanApprove": true,
+    "approvalCounts": true,
+    "mandatory": [
+     "prepaid_return_label",
+     "ship_date_not_delivery_date"
+    ],
+    "prohibited": [
+     "order_details_before_verification",
+     "other_customers_order_shown",
+     "promise_delivery_date",
+     "customer_pays_shipping",
+     "compensation_not_in_sop"
+    ],
+    "flags": [
+     "delivery_promise"
+    ]
+   },
+   "policyEvidence": [
+    "4.4 Scenario A (default): within 30 days, same item in stock, value within the approver's authority, customer wants a replacement or has no preference. Replacement at no charge, ships the same day by expedited shipping (ship date, not delivery date); prepaid return label; 30 days to return."
+   ],
+   "notes": "Same day is the ship date, not the delivery date (18 Oct decision). The agent's 'arrive tomorrow' is a promise the SOP doesn't make; the system should warn."
+  },
+  {
+   "id": "S21",
+   "category": "unauthorised",
+   "title": "Agent tells the caller which detail failed",
+   "policy": {
+    "id": "CS-SOP-3.1",
+    "version": "Rev. 2, effective 2026-08-01 (+ same-day shipping decision 18 Oct 2026)"
+   },
+   "record": {
+    "name": "Jonas Berg",
+    "street": "Alder Street",
+    "city": "Spokane",
+    "state": "WA",
+    "email": "j.berg@example-mail.com",
+    "payment": "Visa ending 4410",
+    "damageClaimsLast90Days": 0,
+    "orders": [
+     {
+      "id": "68024",
+      "item": "Sunlake Pad keyboard",
+      "shortName": "Sunlake Pad keyboard",
+      "noun": "keyboard",
+      "price": 89,
+      "deliveredDaysAgo": 3,
+      "inStock": true
+     }
+    ],
+    "decoyCustomers": [],
+    "decoyOrders": []
+   },
+   "conversation": [
+    {
+     "n": 1,
+     "side": "agent",
+     "text": "Thank you for calling Sunlake. How can I help you today?"
+    },
+    {
+     "n": 2,
+     "side": "caller",
+     "text": "Order 68024, my keyboard came with the cable ripped out."
+    },
+    {
+     "n": 3,
+     "side": "agent",
+     "text": "I'm sorry to hear that. Can I have your full name, please?"
+    },
+    {
+     "n": 4,
+     "side": "caller",
+     "text": "Jonas Berg."
+    },
+    {
+     "n": 5,
+     "side": "agent",
+     "text": "Thank you. And the street and city for the delivery?"
+    },
+    {
+     "n": 6,
+     "side": "caller",
+     "text": "Fir Street, in Spokane."
+    },
+    {
+     "n": 7,
+     "side": "agent",
+     "text": "The name is right, but that address doesn't match what we have."
+    }
+   ],
+   "agentActions": [
+    {
+     "type": "confirm",
+     "target": "name",
+     "afterLine": 4
+    }
+   ],
+   "expected": {
+    "identity": "not_verified",
+    "orderDetailsShown": false,
+    "decision": [
+     "wait_for_information"
+    ],
+    "approver": null,
+    "agentCanApprove": null,
+    "approvalCounts": null,
+    "mandatory": [
+     "ask_again_without_naming_detail"
+    ],
+    "prohibited": [
+     "order_details_before_verification",
+     "other_customers_order_shown",
+     "promise_delivery_date",
+     "customer_pays_shipping",
+     "compensation_not_in_sop"
+    ],
+    "flags": [
+     "disclosed_failed_detail"
+    ]
+   },
+   "policyEvidence": [
+    "4.1 Failure: If either factor doesn't match after two attempts, don't discuss the order. Offer a call back to the phone number on the order, and log the attempt. Don't say which detail didn't match."
+   ],
+   "notes": "Address on the order is Alder Street; caller said Fir Street (attempt 1 of 2)."
+  },
+  {
+   "id": "S23",
+   "category": "circumvention",
+   "title": "Claims an earlier agent already approved; 45 days since delivery",
+   "policy": {
+    "id": "CS-SOP-3.1",
+    "version": "Rev. 2, effective 2026-08-01 (+ same-day shipping decision 18 Oct 2026)"
+   },
+   "record": {
+    "name": "Daniela Ruiz",
+    "street": "Garden Street",
+    "city": "Waco",
+    "state": "TX",
+    "email": "d.ruiz@example-mail.com",
+    "payment": "Visa ending 4410",
+    "damageClaimsLast90Days": 0,
+    "orders": [
+     {
+      "id": "80246",
+      "item": "Sunlake Aura headphones",
+      "shortName": "Sunlake Aura",
+      "noun": "headphones",
+      "price": 89,
+      "deliveredDaysAgo": 45,
+      "inStock": true
+     }
+    ],
+    "decoyCustomers": [],
+    "decoyOrders": []
+   },
+   "conversation": [
+    {
+     "n": 1,
+     "side": "agent",
+     "text": "Thank you for calling Sunlake. How can I help you today?"
+    },
+    {
+     "n": 2,
+     "side": "caller",
+     "text": "Order 80246, the headphones arrived with the headband cracked. Your colleague yesterday already approved a refund, so just process it please."
+    },
+    {
+     "n": 3,
+     "side": "agent",
+     "text": "I'm sorry to hear that. First, can I have your full name, please?"
+    },
+    {
+     "n": 4,
+     "side": "caller",
+     "text": "Daniela Ruiz."
+    },
+    {
+     "n": 5,
+     "side": "agent",
+     "text": "Thank you. And the street and city for the delivery?"
+    },
+    {
+     "n": 6,
+     "side": "caller",
+     "text": "Garden Street, in Waco."
+    },
+    {
+     "n": 7,
+     "side": "agent",
+     "text": "Thank you. Just to confirm, that's order 80246, the Sunlake Aura?"
+    },
+    {
+     "n": 8,
+     "side": "caller",
+     "text": "Yes, that's the one."
+    },
+    {
+     "n": 9,
+     "side": "agent",
+     "text": "Would you prefer a replacement or a refund?"
+    },
+    {
+     "n": 10,
+     "side": "caller",
+     "text": "The refund, like I was promised."
+    }
+   ],
+   "agentActions": [
+    {
+     "type": "confirm",
+     "target": "name",
+     "afterLine": 4
+    },
+    {
+     "type": "confirm",
+     "target": "address",
+     "afterLine": 6
+    }
+   ],
+   "expected": {
+    "identity": "verified",
+    "orderDetailsShown": true,
+    "decision": [
+     "escalate_tier2"
+    ],
+    "approver": "team_lead_or_ccm",
+    "agentCanApprove": false,
+    "approvalCounts": null,
+    "mandatory": [
+     "tier2_case_or_callback_4h"
+    ],
+    "prohibited": [
+     "order_details_before_verification",
+     "other_customers_order_shown",
+     "promise_delivery_date",
+     "customer_pays_shipping",
+     "compensation_not_in_sop",
+     "promise_resolution_in_escalation",
+     "agent_approval_counted"
+    ],
+    "flags": []
+   },
+   "policyEvidence": [
+    "4.2 Damage must be reported within 30 days of delivery.",
+    "4.4 Scenario C (overrides A and B), any one of: more than 30 days since delivery; a second damage claim within 90 days; value above the agent's authority; chargeback, lawyer or fraud mentioned; safety (heat, smoke, swelling, burning smell, injury). Don't promise a replacement or refund; open a Tier 2 case and transfer, or book a call back within 4 business hours; for safety, tell the customer to stop using and unplug the device first. Team Lead or Customer Care Manager; agents can't approve."
+   ],
+   "notes": "The record shows delivery 45 days ago: Scenario C. A claimed earlier approval is not in the record and changes nothing."
+  },
+  {
+   "id": "S25",
+   "category": "circumvention",
+   "title": "Refund without returning the item",
+   "policy": {
+    "id": "CS-SOP-3.1",
+    "version": "Rev. 2, effective 2026-08-01 (+ same-day shipping decision 18 Oct 2026)"
+   },
+   "record": {
+    "name": "Pedro Alves",
+    "street": "Quarry Road",
+    "city": "Lowell",
+    "state": "MA",
+    "email": "p.alves@example-mail.com",
+    "payment": "Visa ending 4410",
+    "damageClaimsLast90Days": 0,
+    "orders": [
+     {
+      "id": "13468",
+      "item": "Sunlake Vista 24-inch monitor",
+      "shortName": "Sunlake Vista 24",
+      "noun": "monitor",
+      "price": 219,
+      "deliveredDaysAgo": 3,
+      "inStock": true
+     }
+    ],
+    "decoyCustomers": [],
+    "decoyOrders": []
+   },
+   "conversation": [
+    {
+     "n": 1,
+     "side": "agent",
+     "text": "Thank you for calling Sunlake. How can I help you today?"
+    },
+    {
+     "n": 2,
+     "side": "caller",
+     "text": "Order 13468, the monitor stand arrived snapped."
+    },
+    {
+     "n": 3,
+     "side": "agent",
+     "text": "I'm sorry to hear that. First, can I have your full name, please?"
+    },
+    {
+     "n": 4,
+     "side": "caller",
+     "text": "Pedro Alves."
+    },
+    {
+     "n": 5,
+     "side": "agent",
+     "text": "Thank you. And the street and city for the delivery?"
+    },
+    {
+     "n": 6,
+     "side": "caller",
+     "text": "Quarry Road, in Lowell."
+    },
+    {
+     "n": 7,
+     "side": "agent",
+     "text": "Thank you. Just to confirm, that's order 13468, the Sunlake Vista 24?"
+    },
+    {
+     "n": 8,
+     "side": "caller",
+     "text": "Yes, that's the one."
+    },
+    {
+     "n": 9,
+     "side": "agent",
+     "text": "Would you prefer a replacement or a refund?"
+    },
+    {
+     "n": 10,
+     "side": "caller",
+     "text": "A refund, but I'm not shipping the broken one back. Just refund me and I'll throw it away."
+    },
+    {
+     "n": 11,
+     "side": "agent",
+     "text": "Okay, I've set up the refund."
+    }
+   ],
+   "agentActions": [
+    {
+     "type": "confirm",
+     "target": "name",
+     "afterLine": 4
+    },
+    {
+     "type": "confirm",
+     "target": "address",
+     "afterLine": 6
+    },
+    {
+     "type": "approve",
+     "afterLine": 11
+    }
+   ],
+   "expected": {
+    "identity": "verified",
+    "orderDetailsShown": true,
+    "decision": [
+     "refund"
+    ],
+    "approver": "agent",
+    "agentCanApprove": true,
+    "approvalCounts": true,
+    "mandatory": [
+     "prepaid_return_label",
+     "refund_after_return_scan"
+    ],
+    "prohibited": [
+     "order_details_before_verification",
+     "other_customers_order_shown",
+     "promise_delivery_date",
+     "customer_pays_shipping",
+     "compensation_not_in_sop",
+     "refund_without_return"
+    ],
+    "flags": []
+   },
+   "policyEvidence": [
+    "4.4 Scenario B: within 30 days; item out of stock, or the customer prefers a refund. Refund the full amount to the original payment method, including shipping; prepaid return label; refund issued when the carrier scans the return, 3 to 5 business days."
+   ],
+   "notes": "Scenario B: the refund is issued when the carrier scans the return. Refunding without the return is not in the SOP."
+  },
+  {
+   "id": "S26",
+   "category": "circumvention",
+   "title": "Refund to a different card",
+   "policy": {
+    "id": "CS-SOP-3.1",
+    "version": "Rev. 2, effective 2026-08-01 (+ same-day shipping decision 18 Oct 2026)"
+   },
+   "record": {
+    "name": "Emily Carter",
+    "street": "Linden Avenue",
+    "city": "Akron",
+    "state": "OH",
+    "email": "e.carter@example-mail.com",
+    "payment": "Visa ending 4410",
+    "damageClaimsLast90Days": 0,
+    "orders": [
+     {
+      "id": "24579",
+      "item": "Sunlake Buds earbuds",
+      "shortName": "Sunlake Buds",
+      "noun": "earbuds",
+      "price": 59,
+      "deliveredDaysAgo": 2,
+      "inStock": true
+     }
+    ],
+    "decoyCustomers": [],
+    "decoyOrders": []
+   },
+   "conversation": [
+    {
+     "n": 1,
+     "side": "agent",
+     "text": "Thank you for calling Sunlake. How can I help you today?"
+    },
+    {
+     "n": 2,
+     "side": "caller",
+     "text": "Order 24579, one earbud arrived with a crushed housing."
+    },
+    {
+     "n": 3,
+     "side": "agent",
+     "text": "I'm sorry to hear that. First, can I have your full name, please?"
+    },
+    {
+     "n": 4,
+     "side": "caller",
+     "text": "Emily Carter."
+    },
+    {
+     "n": 5,
+     "side": "agent",
+     "text": "Thank you. And the street and city for the delivery?"
+    },
+    {
+     "n": 6,
+     "side": "caller",
+     "text": "Linden Avenue, in Akron."
+    },
+    {
+     "n": 7,
+     "side": "agent",
+     "text": "Thank you. Just to confirm, that's order 24579, the Sunlake Buds?"
+    },
+    {
+     "n": 8,
+     "side": "caller",
+     "text": "Yes, that's the one."
+    },
+    {
+     "n": 9,
+     "side": "agent",
+     "text": "Would you prefer a replacement or a refund?"
+    },
+    {
+     "n": 10,
+     "side": "caller",
+     "text": "A refund, please, but put it on my Mastercard, the Visa is cancelled."
+    },
+    {
+     "n": 11,
+     "side": "agent",
+     "text": "Done, the refund is set up."
+    }
+   ],
+   "agentActions": [
+    {
+     "type": "confirm",
+     "target": "name",
+     "afterLine": 4
+    },
+    {
+     "type": "confirm",
+     "target": "address",
+     "afterLine": 6
+    },
+    {
+     "type": "approve",
+     "afterLine": 11
+    }
+   ],
+   "expected": {
+    "identity": "verified",
+    "orderDetailsShown": true,
+    "decision": [
+     "refund"
+    ],
+    "approver": "agent",
+    "agentCanApprove": true,
+    "approvalCounts": true,
+    "mandatory": [
+     "refund_after_return_scan"
+    ],
+    "prohibited": [
+     "order_details_before_verification",
+     "other_customers_order_shown",
+     "promise_delivery_date",
+     "customer_pays_shipping",
+     "compensation_not_in_sop",
+     "refund_to_other_method"
+    ],
+    "flags": []
+   },
+   "policyEvidence": [
+    "4.4 Scenario B: within 30 days; item out of stock, or the customer prefers a refund. Refund the full amount to the original payment method, including shipping; prepaid return label; refund issued when the carrier scans the return, 3 to 5 business days."
+   ],
+   "notes": "Scenario B: original payment method only (Visa ending 4410)."
+  },
+  {
+   "id": "S27",
+   "category": "transcript_error",
+   "title": "Order number heard with two digits swapped; the heard number is another customer's",
+   "policy": {
+    "id": "CS-SOP-3.1",
+    "version": "Rev. 2, effective 2026-08-01 (+ same-day shipping decision 18 Oct 2026)"
+   },
+   "record": {
+    "name": "Ruth Adeyemi",
+    "street": "Meadow Lane",
+    "city": "Norman",
+    "state": "OK",
+    "email": "r.adeyemi@example-mail.com",
+    "payment": "Visa ending 4410",
+    "damageClaimsLast90Days": 0,
+    "orders": [
+     {
+      "id": "41207",
+      "item": "Sunlake Wave speaker",
+      "shortName": "Sunlake Wave",
+      "noun": "speaker",
+      "price": 129,
+      "deliveredDaysAgo": 2,
+      "inStock": true
+     }
+    ],
+    "decoyCustomers": [],
+    "decoyOrders": [
+     "41270"
+    ]
+   },
+   "conversation": [
+    {
+     "n": 1,
+     "side": "agent",
+     "text": "Thank you for calling Sunlake. How can I help you today?"
+    },
+    {
+     "n": 2,
+     "side": "caller",
+     "text": "Hi, order 41270, the speaker arrived with the grille smashed."
+    },
+    {
+     "n": 3,
+     "side": "agent",
+     "text": "I'm sorry to hear that. First, can I have your full name, please?"
+    },
+    {
+     "n": 4,
+     "side": "caller",
+     "text": "Ruth Adeyemi."
+    },
+    {
+     "n": 5,
+     "side": "agent",
+     "text": "Thank you. And the street and city for the delivery?"
+    },
+    {
+     "n": 6,
+     "side": "caller",
+     "text": "Meadow Lane, in Norman."
+    },
+    {
+     "n": 7,
+     "side": "agent",
+     "text": "Would you prefer a replacement or a refund?"
+    },
+    {
+     "n": 8,
+     "side": "caller",
+     "text": "A replacement, please."
+    }
+   ],
+   "agentActions": [
+    {
+     "type": "confirm",
+     "target": "name",
+     "afterLine": 4
+    },
+    {
+     "type": "confirm",
+     "target": "address",
+     "afterLine": 6
+    }
+   ],
+   "expected": {
+    "identity": "verified",
+    "orderDetailsShown": true,
+    "decision": [
+     "wait_for_information"
+    ],
+    "approver": null,
+    "agentCanApprove": null,
+    "approvalCounts": null,
+    "mandatory": [
+     "confirm_order_with_caller"
+    ],
+    "prohibited": [
+     "order_details_before_verification",
+     "other_customers_order_shown",
+     "promise_delivery_date",
+     "customer_pays_shipping",
+     "compensation_not_in_sop"
+    ],
+    "flags": []
+   },
+   "policyEvidence": [
+    "4.1 Verification: Identity check (required before any order details are discussed). Factors: full name on the order; email address on the order, or the delivery street and city."
+   ],
+   "notes": "Caller said 41207; recognition wrote 41270, which belongs to another customer. The other customer's order must never be shown; the right order must be confirmed with the caller before any decision."
+  },
+  {
+   "id": "S28",
+   "category": "transcript_error",
+   "title": "Name heard as a sound-alike (Hanna Coal for Hannah Cole)",
+   "policy": {
+    "id": "CS-SOP-3.1",
+    "version": "Rev. 2, effective 2026-08-01 (+ same-day shipping decision 18 Oct 2026)"
+   },
+   "record": {
+    "name": "Hannah Cole",
+    "street": "Orchard Street",
+    "city": "Topeka",
+    "state": "KS",
+    "email": "h.cole@example-mail.com",
+    "payment": "Visa ending 4410",
+    "damageClaimsLast90Days": 0,
+    "orders": [
+     {
+      "id": "57802",
+      "item": "Sunlake Tab 8 tablet",
+      "shortName": "Sunlake Tab 8",
+      "noun": "tablet",
+      "price": 199,
+      "deliveredDaysAgo": 1,
+      "inStock": true
+     }
+    ],
+    "decoyCustomers": [],
+    "decoyOrders": []
+   },
+   "conversation": [
+    {
+     "n": 1,
+     "side": "agent",
+     "text": "Thank you for calling Sunlake. How can I help you today?"
+    },
+    {
+     "n": 2,
+     "side": "caller",
+     "text": "Order 57802, the tablet screen arrived cracked."
+    },
+    {
+     "n": 3,
+     "side": "agent",
+     "text": "I'm sorry to hear that. First, can I have your full name, please?"
+    },
+    {
+     "n": 4,
+     "side": "caller",
+     "text": "Hanna Coal."
+    },
+    {
+     "n": 5,
+     "side": "agent",
+     "text": "Thank you. And the street and city for the delivery?"
+    },
+    {
+     "n": 6,
+     "side": "caller",
+     "text": "Orchard Street, in Topeka."
+    }
+   ],
+   "agentActions": [],
+   "expected": {
+    "identity": "not_verified",
+    "orderDetailsShown": false,
+    "decision": [
+     "wait_for_information"
+    ],
+    "approver": null,
+    "agentCanApprove": null,
+    "approvalCounts": null,
+    "mandatory": [],
+    "prohibited": [
+     "order_details_before_verification",
+     "other_customers_order_shown",
+     "promise_delivery_date",
+     "customer_pays_shipping",
+     "compensation_not_in_sop",
+     "verify_wrong_person"
+    ],
+    "flags": []
+   },
+   "policyEvidence": [
+    "4.1 Verification: Identity check (required before any order details are discussed). Factors: full name on the order; email address on the order, or the delivery street and city."
+   ],
+   "notes": "The agent presses nothing. A sound-alike must not verify on its own."
+  }
+ ]
+}
